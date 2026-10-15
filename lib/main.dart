@@ -34,17 +34,32 @@ Future<void> main() async {
   // `rustCoreProvider` 保持 null，目录仓库自动回退到 mock（见 catalog_providers.dart）。
   RustCoreHolder? rustCoreHolder;
   try {
-    rustCoreHolder = RustCoreHolder(await RustCore.spawn());
+    final core = await RustCore.spawn();
     // 设备身份初始化（签名用稳定身份；失败则用进程内临时身份，不阻断）。
     try {
       final support = await getApplicationDocumentsDirectory();
-      await rustCoreHolder.core.call(
+      await core.call(
         'init',
         params: <String, Object?>{'dataDir': support.path},
       );
     } catch (error) {
       debugPrint('Rust 核心 init 失败，将用临时设备身份：$error');
     }
+    // 取本机代理端口（封面/媒体）：缓存里的封面 URL 需按当前端口改写，
+    // 否则重启后旧端口失效，海报墙会退化成渐变占位。
+    int? mediaPort;
+    try {
+      final version = await core.call('version');
+      if (version['ok'] == true) {
+        final data = version['data'];
+        if (data is Map) {
+          mediaPort = (data['mediaPort'] as num?)?.toInt();
+        }
+      }
+    } catch (error) {
+      debugPrint('取 mediaPort 失败，封面将不做端口改写：$error');
+    }
+    rustCoreHolder = RustCoreHolder(core, mediaPort: mediaPort);
   } catch (error) {
     debugPrint('[W2] Rust 核心启动失败，将回退 mock 数据：$error');
   }

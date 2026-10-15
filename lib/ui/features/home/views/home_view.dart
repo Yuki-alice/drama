@@ -26,10 +26,10 @@ class HomeView extends ConsumerWidget {
     // W2 弱网：true 表示当前展示的是缓存兜底结果。
     final isStale = ref.watch(staleDataNoticeProvider);
 
-    // 横滑推荐条的高度随字号自适应：海报高（132 × 4/3 = 176）+ 标题/元信息区，
+    // 横滑推荐条：封面 3:4（168×224）+ 标题/元信息区；高度随字号自适应，
     // 否则大字模式（F-09）下卡片下方文字会溢出。
     final textScale = MediaQuery.textScalerOf(context).scale(1.0);
-    final stripHeight = 176.0 + 58.0 * textScale;
+    final stripHeight = 224.0 + 56.0 * textScale;
 
     // 分类是页面骨架（提供切类入口与标题），失败整页给错误态 + 重试。
     return categoriesAsync.when(
@@ -47,11 +47,19 @@ class HomeView extends ConsumerWidget {
           }
         }
 
+        // 选中「推荐」分类时，下方网格本身就是推荐位（同一个 `recommend` op），
+        // 再显示顶部横滑条会让首屏上下重复展示同一批剧目 → 此时隐藏横滑条。
+        final showsRecommendStrip = filter.categoryId != 'recommend';
+
         return CustomScrollView(
           slivers: <Widget>[
             // 缓存兜底轻提示（不遮挡内容、不新增玻璃卡）。
             if (isStale) const SliverToBoxAdapter(child: _StaleNotice()),
-            const SliverToBoxAdapter(child: SectionHeader(title: '为你推荐')),
+            if (!showsRecommendStrip)
+              const SliverToBoxAdapter(child: SizedBox(height: AppSpacing.lg)),
+            if (showsRecommendStrip)
+              const SliverToBoxAdapter(child: SectionHeader(title: '为你推荐')),
+            if (showsRecommendStrip)
             SliverToBoxAdapter(
               child: recommendationsAsync.when(
                 data: (recommendations) => SizedBox(
@@ -69,7 +77,7 @@ class HomeView extends ConsumerWidget {
                           itemBuilder: (context, index) {
                             final drama = recommendations[index];
                             return SizedBox(
-                              width: 132,
+                              width: 168,
                               child: DramaPosterCard(
                                 drama: drama,
                                 onTap: () =>
@@ -144,10 +152,13 @@ class HomeView extends ConsumerWidget {
                     sliver: SliverGrid(
                       gridDelegate:
                           const SliverGridDelegateWithMaxCrossAxisExtent(
-                            maxCrossAxisExtent: 180,
-                            mainAxisSpacing: AppSpacing.md,
+                            maxCrossAxisExtent: 168,
+                            mainAxisSpacing: AppSpacing.lg,
                             crossAxisSpacing: AppSpacing.md,
-                            childAspectRatio: 0.56,
+                            // 3:4 封面 + 两行文字（标题/元信息）的合成比例。
+                            // 168 列宽 → 封面 224 + 文字 ≈44 → 168/268 ≈ 0.63。
+                            // 略收紧到 0.62 给文字留富余（大字模式更安全）。
+                            childAspectRatio: 0.62,
                           ),
                       delegate: SliverChildBuilderDelegate((context, index) {
                         final drama = value.items[index];

@@ -1,7 +1,10 @@
 import 'package:drama_app/data/repositories/progress_repository.dart';
+import 'package:drama_app/data/services/rust_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  _coverUrlRewriteGroup();
+
   group('FollowEntry.fromJson', () {
     test('完整字段解析（含 totalEpisode）', () {
       final entry = FollowEntry.fromJson(<String, Object?>{
@@ -116,6 +119,42 @@ void main() {
       expect(opHistoryPut, 'historyPut');
       expect(opHistoryGet, 'historyGet');
       expect(opHistoryClear, 'historyClear');
+    });
+  });
+}
+
+/// 封面 URL 端口改写：目录会落盘缓存，端口是实现细节，不该写死进缓存数据。
+void _coverUrlRewriteGroup() {
+  group('rewriteProxyPort', () {
+    test('把缓存里的旧端口改写到本次会话端口', () {
+      expect(
+        rewriteProxyPort('http://127.0.0.1:59789/img/abc.def', 47800),
+        'http://127.0.0.1:47800/img/abc.def',
+      );
+    });
+
+    test('端口已一致时原样返回', () {
+      const url = 'http://127.0.0.1:47800/img/abc.def';
+      expect(rewriteProxyPort(url, 47800), url);
+    });
+
+    test('端口未知时不改写', () {
+      const url = 'http://127.0.0.1:59789/img/abc.def';
+      expect(rewriteProxyPort(url, null), url);
+    });
+
+    test('非本机地址不改写（只动我们自己的代理地址）', () {
+      const remote = 'https://cdn.example.com/a.png';
+      expect(rewriteProxyPort(remote, 47800), remote);
+      expect(rewriteProxyPort('', 47800), '');
+      expect(rewriteProxyPort('not a url', 47800), 'not a url');
+    });
+
+    test('媒体代理地址同样适用（/play/ 路径）', () {
+      expect(
+        rewriteProxyPort('http://127.0.0.1:59789/play/tok/video.mp4', 47800),
+        'http://127.0.0.1:47800/play/tok/video.mp4',
+      );
     });
   });
 }

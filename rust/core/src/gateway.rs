@@ -77,13 +77,39 @@ static MEDIA_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
 
 /// 确保代理在跑，返回端口。已在跑则直接返回。
 /// 必须在 Tokio 上下文内调用（`play` op 经 `RUNTIME.block_on` 进入，满足条件）。
+/// 网关首选端口区间。
+///
+/// **为什么不用 `:0`（内核随机分配）**：封面代理 URL 会**落盘进目录缓存**
+/// （见 `covers` 模块），而 URL 里含端口。若每次启动换端口，重启后缓存里
+/// 的封面地址全部指向一个没人监听的端口，海报墙整体退化成渐变占位——
+/// 这是实测发现的问题。改为在固定区间内取第一个可用端口，使端口在
+/// 绝大多数情况下跨启动稳定（被占用时才顺延）。
+const PORT_RANGE_START: u16 = 47_800;
+const PORT_RANGE_END: u16 = 47_899;
+
 async fn ensure_running() -> Result<u16, String> {
     if let Some(port) = BOUND_PORT.get() {
         return Ok(*port);
     }
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| format!("bind loopback: {e}"))?;
+    let mut listener = None;
+    let mut last_err = String::new();
+    for port in PORT_RANGE_START..=PORT_RANGE_END {
+        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(l) => {
+                listener = Some(l);
+                break;
+            }
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    let listener = match listener {
+        Some(l) => l,
+        // 区间全被占（极端情况）：退回内核随机端口。此时本次会话的封面
+        // 仍可用，只是重启后缓存里的旧地址需等目录缓存过期才会自愈。
+        None => tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("bind loopback: {e} (range last err: {last_err})"))?,
+    };
     let port = listener
         .local_addr()
         .map_err(|e| format!("loopback addr: {e}"))?
@@ -141,6 +167,13 @@ fn ensure_port_blocking() -> Result<u16, String> {
     GATEWAY_RT
         .block_on(ensure_running())
         .map_err(|e| e.to_string())
+}
+
+/// 供封面代理复用同一端口（本机只占一个回环端口，便于排查与放行）。
+///
+/// 与 [`register`] 同约束：可在任意线程调用（内部 `block_on` 网关运行时）。
+pub fn ensure_port() -> Result<u16, String> {
+    ensure_port_blocking()
 }
 
 fn new_token() -> String {
@@ -279,10 +312,24 @@ async fn serve_connection(mut stream: tokio::net::TcpStream) -> Result<(), Strin
         return respond_simple(&mut stream, 405, "method not allowed").await;
     }
     let is_head = method == "HEAD";
-    let token = target
-        .split('?')
-        .next()
-        .unwrap_or("")
+    let path = target.split('?').next().unwrap_or("");
+
+    // 封面代理：与媒体走同一端口，路径前缀区分（`/img/{token}`）。
+    // token 形如 `{base64url(cdnUrl)}.{sig}`，由 covers 模块自行校验签名；
+    // 这里只做基本长度/字符集粗筛，避免把畸形串喂给解析。
+    if let Some(token) = path.strip_prefix("/img/") {
+        let looks_valid = token.len() <= 2048
+            && token.contains('.')
+            && token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
+        if !looks_valid {
+            return respond_simple(&mut stream, 404, "not found").await;
+        }
+        return crate::covers::serve(&mut stream, token, is_head).await;
+    }
+
+    let token = path
         .strip_prefix("/play/")
         .and_then(|rest| rest.split('/').next())
         .unwrap_or("");

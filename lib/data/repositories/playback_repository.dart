@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../ui/core/playback/playback_settings.dart';
 import '../services/rust_core.dart';
 import 'catalog_providers.dart';
 
@@ -145,6 +146,10 @@ class SeriesCoreShim {
 
 /// 取流 provider：按（剧，集）解析；切集自动重解。
 /// Rust 侧无核心时抛 [StateError]（调用方走错误态，不静默回退假地址）。
+///
+/// **清晰度来自播放偏好**（`playbackSettingsProvider.qualityParam`）：
+/// watch 它意味着用户在设置里改清晰度后，正在播放的集也会重新解析——
+/// 这是想要的行为（改设置立刻生效），代价只是重新取一次流。
 final playPlanProvider =
     FutureProvider.family<PlaybackPlan, ({String id, int episode})>((
       ref,
@@ -154,6 +159,36 @@ final playPlanProvider =
       if (holder == null) {
         throw StateError('Rust 核心不可用，无法解析播放');
       }
+      final quality = ref.watch(
+        playbackSettingsProvider.select((s) => s.qualityParam),
+      );
       final repository = PlaybackRepository(SeriesCoreShim(holder.core));
-      return repository.resolve(seriesId: key.id, episode: key.episode);
+      return repository.resolve(
+        seriesId: key.id,
+        episode: key.episode,
+        quality: quality,
+      );
+    });
+
+/// 预取下一集（可选能力；失败静默忽略）。
+///
+/// 提前把 moov 解析与 CDN 首字节做完，用户点「下一集」时打开即播。
+/// 只在有下一集时才发起。
+final preloadNextProvider =
+    FutureProvider.family<String?, ({String id, int episode, int total})>((
+      ref,
+      key,
+    ) async {
+      if (key.episode >= key.total) return null;
+      final holder = ref.watch(rustCoreProvider);
+      if (holder == null) return null;
+      final quality = ref.watch(
+        playbackSettingsProvider.select((s) => s.qualityParam),
+      );
+      final repository = PlaybackRepository(SeriesCoreShim(holder.core));
+      return repository.preload(
+        seriesId: key.id,
+        episode: key.episode + 1,
+        quality: quality,
+      );
     });

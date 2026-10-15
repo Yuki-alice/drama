@@ -139,6 +139,37 @@ void main() {
     );
     expect(await reopenedRepo.cachedPages('hot'), 3);
   });
+
+  test('(v) 封面地址经缓存往返不丢失（回归：曾导致海报墙全变渐变）', () async {
+    final target = cacheFile('cover.json');
+    final store = FileCacheStore(file: target);
+    await store.load();
+    final repo = CachingCatalogRepository(inner: _FakeInner(), store: store);
+
+    final first = await repo.catalog(categoryId: 'hot', page: 0);
+    expect(first.items.single.cover, isNotEmpty);
+
+    // 「重启」后走缓存读回：cover 必须仍在。
+    await store.flush();
+    final reopened = FileCacheStore(file: target);
+    await reopened.load();
+    final cachedRepo = CachingCatalogRepository(
+      inner: _FakeInner(),
+      store: reopened,
+    );
+    final fromCache = await cachedRepo.catalog(categoryId: 'hot', page: 0);
+    expect(
+      fromCache.items.single.cover,
+      first.items.single.cover,
+      reason: '缓存编解码丢掉了 cover 字段',
+    );
+
+    // 推荐 / 榜单两条链路同样不能丢。
+    final recs = await cachedRepo.recommendations();
+    expect(recs.single.cover, isNotEmpty);
+    final rank = await cachedRepo.ranking(boardId: 'hot');
+    expect(rank.single.cover, isNotEmpty);
+  });
 }
 
 /// 可切换失败的 fake inner：验证弱网回退与熔断。
@@ -192,4 +223,7 @@ Drama _drama(int n) => Drama(
   categoryId: 'hot',
   categoryName: 'H',
   episodeCount: 3,
+  // 签名代理 URL（形如本机地址）——缓存编解码必须原样保留，
+  // 否则命中缓存时海报墙会整体退化成渐变占位（曾实测发生）。
+  cover: 'http://127.0.0.1:1234/img/cGF5bG9hZA.deadbeefdeadbeef',
 );

@@ -4,5 +4,11 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- 本机回环 HTTP 服务：Rust 网关（媒体代理 + 封面代理）监听 127.0.0.1。 -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<!-- 出站网络：Rust 核心要访问源站与其 CDN。 -->
+	<key>com.apple.security.network.client</key>
+	<true/>
 </dict>
 </plist>

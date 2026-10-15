@@ -36,11 +36,11 @@ final catalogRepositoryProvider = Provider<CatalogRepository>((ref) {
   final store = ref.watch(cacheStoreProvider);
   if (store == null) {
     // 未注入缓存：直接返回真实仓库（widget 测试路径）。
-    return HongguoCatalogRepository(holder.core);
+    return HongguoCatalogRepository(holder.core, holder: holder);
   }
 
   return CachingCatalogRepository(
-    inner: HongguoCatalogRepository(holder.core),
+    inner: HongguoCatalogRepository(holder.core, holder: holder),
     store: store,
     onStale: (message) {
       // 延迟到当前调用栈之后，避免在别的 provider 构建期间同步改状态。

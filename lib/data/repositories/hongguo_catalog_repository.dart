@@ -14,9 +14,13 @@ import 'catalog_repository.dart';
 /// - `suggest` params `{keyword}`        → `{items:[string]}`
 /// - `detail` params `{id}`              → `{drama:Drama, episodes:[Episode]}`
 class HongguoCatalogRepository implements CatalogRepository {
-  HongguoCatalogRepository(this._core);
+  HongguoCatalogRepository(this._core, {this.holder});
 
   final RustCore _core;
+
+  /// 用于把封面 URL 的端口改写到本次会话（缓存里的旧端口会失效）。
+  /// 为 null 时（旧调用点/测试）原样透传地址。
+  final RustCoreHolder? holder;
 
   static const String _source = 'hongguo';
 
@@ -150,6 +154,10 @@ class HongguoCatalogRepository implements CatalogRepository {
         ? DramaStatus.ongoing
         : DramaStatus.finished,
     vip: json['vip'] == true,
+    // Rust 已把源站 CDN 地址换成本机代理地址（见 rust/core/src/covers.rs）。
+    // 端口需改写为本次会话的端口：目录会落盘缓存，而缓存里的端口可能已失效。
+    cover: holder?.resolveCoverUrl(json['cover'] as String? ?? '') ??
+        (json['cover'] as String? ?? ''),
   );
 
   Episode _episode(Map<String, Object?> json) {

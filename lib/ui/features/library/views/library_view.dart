@@ -7,7 +7,7 @@ import '../../../../data/services/rust_core.dart';
 import '../../../../router/routes.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/content_widgets.dart';
-import '../../../core/widgets/poster_artwork.dart';
+import '../../../core/widgets/drama_cover.dart';
 import '../view_models/library_view_model.dart';
 
 /// 追剧 / 历史：四档横滑切换 + 观看进度列表。
@@ -120,11 +120,13 @@ class _LibraryRow extends StatelessWidget {
           children: <Widget>[
             SizedBox(
               width: 56,
-              child: PosterArtwork(
+              child: DramaCover(
                 seed: item.id,
+                cover: item.cover,
                 title: item.title,
                 aspectRatio: 0.75,
-                radius: 10,
+                radius: AppRadii.md,
+                showTitleOverlay: false,
               ),
             ),
             const SizedBox(width: AppSpacing.md),

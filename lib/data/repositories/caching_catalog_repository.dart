@@ -314,6 +314,10 @@ Map<String, Object?> _encodeDrama(Drama drama) => <String, Object?>{
   'tags': drama.tags,
   'status': drama.status.name,
   'vip': drama.vip,
+  // 封面地址必须一并缓存，否则命中缓存时海报墙整体退化成渐变占位。
+  // 该地址是**签名**代理 URL（见 rust/core/src/covers.rs）：由持久化的
+  // install_id 签名，重启后依然有效，因此可以安全落盘。
+  'cover': drama.cover,
 };
 
 Map<String, Object?> _encodeDramas(List<Drama> dramas) => <String, Object?>{
@@ -339,6 +343,7 @@ Drama _decodeDrama(Object? raw) {
         ? DramaStatus.ongoing
         : DramaStatus.finished,
     vip: json['vip'] == true,
+    cover: json['cover'] as String? ?? '',
   );
 }
 

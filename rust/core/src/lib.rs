@@ -17,6 +17,7 @@
 
 pub mod app_api;
 pub mod cancel;
+pub mod covers;
 pub mod decrypt;
 
 /// 测试串行锁：`device` 与 `store` 测试共享进程级可变全局（`DATA_DIR`），
@@ -211,7 +212,16 @@ fn dispatch(input: &str) -> Value {
                 .iter()
                 .map(|p| json!({ "id": p.id(), "caps": p.caps().to_json() }))
                 .collect();
-            ok(json!({ "core": env!("CARGO_PKG_VERSION"), "sources": list }))
+            // `mediaPort`：本机代理（媒体 + 封面）当前监听端口。
+            // Dart 侧用它把**落盘缓存里**的封面 URL 改写到本次会话的端口——
+            // 端口是实现细节，不该成为缓存数据的一部分。
+            // 首次调用时顺带完成绑定；绑定失败返回 null（封面回落占位）。
+            let media_port = covers::media_port();
+            ok(json!({
+                "core": env!("CARGO_PKG_VERSION"),
+                "sources": list,
+                "mediaPort": media_port,
+            }))
         }
 
         // 取消在途读：`{session, sequence}` → `{canceled:N}`；不阻塞、不参与仲裁。

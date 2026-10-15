@@ -6,7 +6,12 @@
 	<true/>
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
+	<!-- 本机回环 HTTP 服务：Rust 网关（媒体代理 + 封面代理）监听 127.0.0.1。 -->
 	<key>com.apple.security.network.server</key>
+	<true/>
+	<!-- 出站网络：Rust 核心要访问源站与其 CDN。缺这一项会导致
+	     app 沙箱下所有外发请求被拒（目录/封面/取流全部卡住）。 -->
+	<key>com.apple.security.network.client</key>
 	<true/>
 </dict>
 </plist>

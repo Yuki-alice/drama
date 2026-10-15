@@ -9,7 +9,7 @@ import '../../../../domain/models/drama.dart';
 import '../../../../router/routes.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/content_widgets.dart';
-import '../../../core/widgets/poster_artwork.dart';
+import '../../../core/widgets/drama_cover.dart';
 import '../view_models/ranking_view_model.dart';
 
 /// 榜单：横滑切板 + 带名次的列表。
@@ -131,11 +131,13 @@ class _RankingRow extends StatelessWidget {
             const SizedBox(width: AppSpacing.md),
             SizedBox(
               width: 56,
-              child: PosterArtwork(
+              child: DramaCover(
                 seed: drama.coverSeed,
+                cover: drama.cover,
                 title: drama.title,
                 aspectRatio: 0.75,
-                radius: 10,
+                radius: AppRadii.md,
+                showTitleOverlay: false,
               ),
             ),
             const SizedBox(width: AppSpacing.md),

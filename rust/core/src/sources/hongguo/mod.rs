@@ -11,6 +11,9 @@ use crate::{app_api, gateway};
 /// 站点根。
 const BASE: &str = "https://www.hongguoduanju.com";
 
+/// 封面/详情图的 Referer（源站 CDN 对此宽容，但带上更稳）。
+const SITE_REFERER: &str = "https://www.hongguoduanju.com/";
+
 /// 默认分类路由（`category` 缺省时使用， route 之一）。
 const DEFAULT_CATEGORY_ROUTE: &str = "real-drama";
 
@@ -59,13 +62,13 @@ impl SourceProvider for HongguoProvider {
         };
         let html = http::fetch_text_throttled(&url)?;
         let data = web_ssr::extract_router_data(&html)?;
-        web_ssr::parse_catalog(&data, page)
+        web_ssr::parse_catalog(&data, page).map(proxy_covers)
     }
 
     fn recommend(&self) -> Result<Value, SourceError> {
         let html = http::fetch_text_throttled(&format!("{BASE}/"))?;
         let data = web_ssr::extract_router_data(&html)?;
-        web_ssr::parse_recommend(&data)
+        web_ssr::parse_recommend(&data).map(proxy_covers)
     }
 
     fn ranking(&self, board: Option<&str>) -> Result<Value, SourceError> {
@@ -77,20 +80,20 @@ impl SourceProvider for HongguoProvider {
         {
             let items = web_ssr::parse_rank_items(&data);
             if !items.is_empty() {
-                return Ok(json!({ "items": items }));
+                return Ok(proxy_covers(json!({ "items": items })));
             }
         }
         // 降级：首页 homeSections（W2 方案）。
         let html = http::fetch_text_throttled(&format!("{BASE}/"))?;
         let data = web_ssr::extract_router_data(&html)?;
-        web_ssr::parse_home_ranking(&data, section_index_for(board))
+        web_ssr::parse_home_ranking(&data, section_index_for(board)).map(proxy_covers)
     }
 
     fn search(&self, keyword: &str) -> Result<Value, SourceError> {
         let url = format!("{BASE}/search/{}", urlencode_path(keyword));
         let html = http::fetch_text_throttled(&url)?;
         let data = web_ssr::extract_router_data(&html)?;
-        web_ssr::parse_search(&data)
+        web_ssr::parse_search(&data).map(proxy_covers)
     }
 
     fn suggest(&self, keyword: &str) -> Result<Value, SourceError> {
@@ -102,16 +105,17 @@ impl SourceProvider for HongguoProvider {
 
     fn detail(&self, series_id: &str) -> Result<Value, SourceError> {
         // App 主链 → SSR 降级：取消/超时直接返回，其余错误才降级。
-        match crate::app_api::app_detail(series_id) {
-            Ok(v) => Ok(v),
-            Err(e @ (SourceError::Canceled | SourceError::Timeout)) => Err(e),
+        let out = match crate::app_api::app_detail(series_id) {
+            Ok(v) => v,
+            Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
             Err(_) => {
                 let url = format!("{BASE}/detail?series_id={series_id}");
                 let html = http::fetch_text_throttled(&url)?;
                 let data = web_ssr::extract_router_data(&html)?;
-                web_ssr::parse_detail(&data)
+                web_ssr::parse_detail(&data)?
             }
-        }
+        };
+        Ok(proxy_covers(out))
     }
 
     fn play(
@@ -204,6 +208,35 @@ fn register_and_warm(
     Ok((proxy_url, warmed))
 }
 
+/// 把结果里所有 `cover` 字段从源站 CDN 换成本机代理 URL。
+///
+/// **为什么在这一层做**：本函数位于 provider 返回值的**唯一出口**（每个 op 都
+/// 过一遍），因此不会漏掉某条新加的链路；且 Dart 侧永远只看到 `127.0.0.1`，
+/// 遵守「Dart 禁直连源站」的纪律（见 `covers` 模块头注释）。
+///
+/// 递归处理 `items` / `drama` / 任意嵌套数组与对象；空白 cover 原样保留
+/// （Dart 侧据此回落到渐变占位）。`covers::proxy_url` 在端口未绑定或
+/// 未 `init` 时返回空串，此时同样回落占位，不影响主流程。
+fn proxy_covers(value: Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.into_iter().map(proxy_covers).collect()),
+        Value::Object(mut map) => {
+            if let Some(Value::String(raw)) = map.get("cover") {
+                let proxied = crate::covers::proxy_url(raw, SITE_REFERER);
+                if !proxied.is_empty() {
+                    map.insert("cover".to_owned(), Value::String(proxied));
+                }
+            }
+            for (_, child) in map.iter_mut() {
+                let taken = std::mem::take(child);
+                *child = proxy_covers(taken);
+            }
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
 /// `keyHex` → 16 字节（网关解密用；非法即报错，不静默降级为透传）。
 fn hex_to_key(hex: &str) -> Result<[u8; 16], SourceError> {
     if hex.len() != 32 {
@@ -276,6 +309,96 @@ mod tests {
         assert_eq!(urlencode_path("abc123"), "abc123");
         assert_eq!(urlencode_path("a b"), "a%20b");
         assert_eq!(urlencode_path("剧"), "%E5%89%A7");
+    }
+
+    #[test]
+    fn proxy_covers_never_rewrites_blank_or_relative() {
+        // 空白与相对路径**永远**不得被改写（否则 Dart 侧会拿到一个
+        // 指向代理但上游无效的地址，比直接留空更糟）。
+        // 注意：绝对 URL 是否被改写取决于本进程内网关端口能否绑定
+        // （OnceLock 全局），故那部分单独测，且不依赖测试执行顺序。
+        let out = proxy_covers(json!({
+            "items": [
+                {"id": "a", "cover": "", "title": "A"},
+                {"id": "b", "cover": "   ", "title": "B"},
+                {"id": "c", "cover": "/rel.png", "title": "C"},
+                {"id": "d", "cover": "ftp://cdn/x.png", "title": "D"},
+            ]
+        }));
+        assert_eq!(out["items"][0]["cover"], json!(""));
+        assert_eq!(out["items"][1]["cover"], json!("   "));
+        assert_eq!(out["items"][2]["cover"], json!("/rel.png"));
+        assert_eq!(out["items"][3]["cover"], json!("ftp://cdn/x.png"));
+    }
+
+    #[test]
+    fn proxy_covers_rewrites_absolute_url_to_loopback_when_port_available() {
+        let out = proxy_covers(json!({
+            "items": [{"id": "a", "cover": "https://p11-novel-seo.byteimg.com/x.png"}]
+        }));
+        let cover = out["items"][0]["cover"].as_str().unwrap();
+        if crate::gateway::ensure_port().is_ok() {
+            // 端口可用 → 必须换成本机地址，绝不把源站地址漏给 Dart。
+            assert!(
+                cover.starts_with("http://127.0.0.1:"),
+                "expected loopback proxy, got {cover}"
+            );
+            assert!(cover.contains("/img/"), "expected /img/ path, got {cover}");
+        } else {
+            // 端口不可用（极少数沙箱环境）→ 保持原值，Dart 侧回落占位。
+            assert_eq!(cover, "https://p11-novel-seo.byteimg.com/x.png");
+        }
+    }
+
+    #[test]
+    fn proxy_covers_recurses_nested_objects_and_keeps_other_fields() {
+        let out = proxy_covers(json!({
+            "drama": {"id": "d1", "cover": "", "episodeCount": 12},
+            "episodes": [{"index": 1, "vid": "v1"}]
+        }));
+        // 结构与非 cover 字段原样保留。
+        assert_eq!(out["drama"]["episodeCount"], json!(12));
+        assert_eq!(out["episodes"][0]["vid"], json!("v1"));
+        assert_eq!(out["drama"]["cover"], json!(""));
+    }
+
+    /// 联网测试（默认跳过）：验证封面代理端到端可服务真实图片。
+    #[test]
+    #[ignore = "联网：需访问 hongguoduanju.com 与其 CDN"]
+    fn network_cover_proxy_serves_real_image() {
+        // 先把 dataDir 指到临时目录（封面磁盘缓存要落盘）。
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        let dir = std::env::temp_dir().join("drama-cover-probe");
+        let _ = std::fs::create_dir_all(&dir);
+        crate::device::set_data_dir(dir.clone());
+
+        let p = source::provider(Some("hongguo")).unwrap();
+        let cat = p.catalog(Some("real-drama"), 1).unwrap();
+        let cover = cat["items"][0]["cover"].as_str().unwrap_or("").to_owned();
+        eprintln!("cover field = {cover}");
+        assert!(
+            cover.starts_with("http://127.0.0.1:"),
+            "cover must be loopback, got {cover}"
+        );
+        assert!(cover.contains("/img/"), "cover must use /img/: {cover}");
+
+        // 真的把它取下来（走本机代理 → 回源 → 缓存）。
+        let bytes = crate::http::runtime_handle()
+            .block_on(async { reqwest::get(&cover).await.unwrap().bytes().await.unwrap() });
+        eprintln!("proxied cover bytes = {}", bytes.len());
+        assert!(bytes.len() > 1000, "cover too small: {}", bytes.len());
+        // PNG/JPEG 魔数校验：确认拿到的是图片而不是错误页。
+        let is_png = bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]);
+        let is_jpg = bytes.starts_with(&[0xFF, 0xD8, 0xFF]);
+        let is_webp = bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP";
+        assert!(
+            is_png || is_jpg || is_webp,
+            "not an image: {:?}",
+            &bytes[..8.min(bytes.len())]
+        );
+
+        crate::device::clear_data_dir();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 联网测试（默认跳过）：`cargo test -- --ignored` 才跑。

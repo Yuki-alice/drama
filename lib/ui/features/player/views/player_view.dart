@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../../../data/repositories/playback_repository.dart';
 import '../../../../data/repositories/progress_repository.dart';
 import '../../../../data/services/rust_core.dart';
+import '../../../core/playback/playback_settings.dart';
 import '../../../../domain/models/episode.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/app_glass_scaffold.dart';
@@ -95,8 +96,9 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
     );
   }
 
-  /// 自动连播：仅当当前集不是最后一集时前进。
+  /// 自动连播：受设置开关约束，且仅当当前集不是最后一集时前进。
   void _playNextIfAny() {
+    if (!ref.read(playbackSettingsProvider).autoPlayNext) return;
     final episodes =
         ref.read(detailProvider(widget.id)).value?.episodes.length ?? 0;
     if (episodes == 0 || _episode >= episodes) return;
@@ -111,13 +113,33 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
     });
   }
 
+  /// 拖动进度条：跳转并把当前位置**立即**上报，避免「拖完就退出」丢进度。
+  void _onSeek(Duration target) {
+    unawaited(_player.seek(target));
+    final actions = ref.read(progressActionsProvider);
+    actions.markReported(widget.id, DateTime.now());
+    unawaited(
+      actions
+          .reportProgress(
+            ref,
+            id: widget.id,
+            episode: _episode,
+            position: target,
+            duration: _player.state.duration,
+          )
+          .catchError((Object _) {}),
+    );
+  }
+
   /// 打开该集媒体；若本集正是上次观看到的那一集，则跳到上次位置续播。
   ///
   /// 续播只在「记录集号 == 当前集」时生效——历史记录只存最后观看的一集，
   /// 用户手动切到别的集时不该套用旧偏移。
   Future<void> _openAndMaybeResume(PlaybackPlan plan) async {
     final episodeAtOpen = _episode;
-    await _player.open(Media(plan.proxyUrl));
+    // 尊重「进入播放页立即播放」设置：关闭时只装载不播放（用户按播放键开始）。
+    final autoPlay = ref.read(playbackSettingsProvider).autoPlayOnOpen;
+    await _player.open(Media(plan.proxyUrl), play: autoPlay);
     if (!mounted) return;
     // 打开过程中用户可能已切集：此时这次 open 的结果已过期，
     // 记下集号也无意义（下一次 plan 会重新 open）。
@@ -149,6 +171,19 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
         unawaited(_openAndMaybeResume(plan));
       });
     });
+
+    // 预取下一集：把 moov 解析与 CDN 首字节提前做完，点「下一集」即播。
+    // 只在详情已就绪且确实还有下一集时发起；失败静默（可选能力）。
+    final episodeCount = detailAsync.value?.episodes.length ?? 0;
+    if (episodeCount > _episode) {
+      ref.watch(
+        preloadNextProvider((
+          id: widget.id,
+          episode: _episode,
+          total: episodeCount,
+        )),
+      );
+    }
 
     return detailAsync.when(
       data: (detail) => _playerBody(context, detail.episodes),
@@ -185,8 +220,9 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
       playPlanProvider((id: widget.id, episode: _episode)),
     );
 
+    final settings = ref.watch(playbackSettingsProvider);
     return AppGlassScaffold(
-      title: '第 $_episode 集',
+      title: '第 $_episode 集 · ${settings.qualityLabel}',
       leading: _backAction(context),
       body: ListView(
         children: <Widget>[
@@ -194,7 +230,9 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
           AspectRatio(
             aspectRatio: 16 / 9,
             child: ColoredBox(
-              color: const Color(0xFF000000),
+              // 视频区恒为纯黑：暖色底会在画面边缘透出，污染观感
+              // （HIG dark-mode.md：媒体沉浸场景用固定深底是合理例外）。
+              color: Colors.black,
               child: Stack(
                 fit: StackFit.expand,
                 children: <Widget>[
@@ -213,7 +251,7 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
                               _errorMessage(error),
                               textAlign: TextAlign.center,
                               style: AppText.callout.copyWith(
-                                color: const Color(0xB3FFFFFF),
+                                color: Colors.white.withValues(alpha: 0.82),
                               ),
                             ),
                             const SizedBox(height: AppSpacing.sm),
@@ -236,58 +274,13 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
             ),
           ),
 
-          // ── 进度条（播放器真实位置） ───────────────────────────
+          // ── 可拖动进度条 + 时间 + 缓冲/清晰度 ─────────────────
           Padding(
             padding: AppSpacing.pageH,
-            child: StreamBuilder<Duration>(
-              stream: _player.stream.position,
-              builder: (context, position) => StreamBuilder<Duration>(
-                stream: _player.stream.duration,
-                builder: (context, duration) {
-                  final total = duration.data ?? Duration.zero;
-                  final current = position.data ?? Duration.zero;
-                  final progress = total.inMilliseconds > 0
-                      ? (current.inMilliseconds / total.inMilliseconds).clamp(
-                          0.0,
-                          1.0,
-                        )
-                      : 0.0;
-                  return Column(
-                    children: <Widget>[
-                      const SizedBox(height: AppSpacing.lg),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(AppRadii.capsule),
-                        child: LinearProgressIndicator(
-                          value: progress,
-                          minHeight: 4,
-                          backgroundColor: colors.divider,
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            colors.accent,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: AppSpacing.sm),
-                      Row(
-                        children: <Widget>[
-                          Text(
-                            _formatDuration(current),
-                            style: AppText.caption.copyWith(
-                              color: colors.textTertiary,
-                            ),
-                          ),
-                          const Spacer(),
-                          Text(
-                            _formatDuration(total),
-                            style: AppText.caption.copyWith(
-                              color: colors.textTertiary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  );
-                },
-              ),
+            child: _Scrubber(
+              player: _player,
+              accent: colors.accent,
+              onSeek: _onSeek,
             ),
           ),
 
@@ -368,6 +361,152 @@ String _formatDuration(Duration duration) {
   final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
   final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
   return '$minutes:$seconds';
+}
+
+/// 可拖动进度条 + 时间读数 + 缓冲/清晰度状态。
+///
+/// 拖动期间**不被播放位置流覆盖**：手指按住时以本地拖拽值为准，
+/// 松手才 `seek` 并交回流驱动——否则拖动会被每秒数次的位置回调打断。
+class _Scrubber extends StatefulWidget {
+  const _Scrubber({
+    required this.player,
+    required this.accent,
+    required this.onSeek,
+  });
+
+  final Player player;
+  final Color accent;
+  final ValueChanged<Duration> onSeek;
+
+  @override
+  State<_Scrubber> createState() => _ScrubberState();
+}
+
+class _ScrubberState extends State<_Scrubber> {
+  /// 拖拽中的临时位置；null = 未在拖动。
+  double? _dragValue;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Column(
+      children: <Widget>[
+        const SizedBox(height: AppSpacing.lg),
+        StreamBuilder<Duration>(
+          stream: widget.player.stream.position,
+          builder: (context, positionSnap) => StreamBuilder<Duration>(
+            stream: widget.player.stream.duration,
+            builder: (context, durationSnap) => StreamBuilder<Duration>(
+              stream: widget.player.stream.buffer,
+              builder: (context, bufferSnap) => StreamBuilder<bool>(
+                stream: widget.player.stream.buffering,
+                builder: (context, bufferingSnap) {
+                  final total = durationSnap.data ?? Duration.zero;
+                  final streamed = positionSnap.data ?? Duration.zero;
+                  final buffered = bufferSnap.data ?? Duration.zero;
+                  final buffering = bufferingSnap.data ?? false;
+                  final totalMs = total.inMilliseconds;
+                  final maxValue = totalMs > 0 ? totalMs.toDouble() : 1.0;
+                  final raw = _dragValue ?? streamed.inMilliseconds.toDouble();
+                  final value = raw.clamp(0.0, maxValue);
+                  final shown = Duration(milliseconds: value.round());
+
+                  return Column(
+                    children: <Widget>[
+                      SliderTheme(
+                        data: SliderThemeData(
+                          trackHeight: 4,
+                          activeTrackColor: widget.accent,
+                          // 已缓冲但未播放的部分用中性色，与已播部分区分。
+                          secondaryActiveTrackColor: colors.borderStrong,
+                          inactiveTrackColor: colors.divider,
+                          thumbColor: widget.accent,
+                          overlayColor: colors.accentSubtle,
+                          thumbShape: const RoundSliderThumbShape(
+                            enabledThumbRadius: 7,
+                          ),
+                          overlayShape: const RoundSliderOverlayShape(
+                            overlayRadius: 18,
+                          ),
+                        ),
+                        child: Slider(
+                          value: value,
+                          max: maxValue,
+                          // 已缓冲到哪：secondary 段从当前值画到 buffer 值。
+                          secondaryTrackValue: buffered.inMilliseconds
+                              .toDouble()
+                              .clamp(value, maxValue),
+                          // 时长未知（尚未拿到 metadata）时禁用拖动，避免乱跳。
+                          onChanged: totalMs > 0
+                              ? (v) => setState(() => _dragValue = v)
+                              : null,
+                          onChangeEnd: totalMs > 0
+                              ? (v) {
+                                  final target = Duration(
+                                    milliseconds: v.round(),
+                                  );
+                                  setState(() => _dragValue = null);
+                                  widget.onSeek(target);
+                                }
+                              : null,
+                        ),
+                      ),
+                      // Slider 自带留白较大，这里收紧后放读数行。
+                      Transform.translate(
+                        offset: const Offset(0, -6),
+                        child: Row(
+                          children: <Widget>[
+                            Text(
+                              _formatDuration(shown),
+                              style: AppText.caption.copyWith(
+                                color: colors.textSecondary,
+                                fontFeatures: const <FontFeature>[
+                                  FontFeature.tabularFigures(),
+                                ],
+                              ),
+                            ),
+                            if (buffering) ...<Widget>[
+                              const SizedBox(width: AppSpacing.sm),
+                              SizedBox(
+                                width: 10,
+                                height: 10,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.5,
+                                  color: colors.textTertiary,
+                                ),
+                              ),
+                              const SizedBox(width: AppSpacing.xs),
+                              Text(
+                                '缓冲中',
+                                style: AppText.caption.copyWith(
+                                  color: colors.textTertiary,
+                                ),
+                              ),
+                            ],
+                            const Spacer(),
+                            Text(
+                              // 时长未知时显示占位，而不是刺眼的 00:00。
+                              totalMs > 0 ? _formatDuration(total) : '--:--',
+                              style: AppText.caption.copyWith(
+                                color: colors.textSecondary,
+                                fontFeatures: const <FontFeature>[
+                                  FontFeature.tabularFigures(),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _MiniEpisodeChip extends StatelessWidget {

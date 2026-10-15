@@ -24,10 +24,14 @@ class LibraryItem {
     required this.watchedEpisode,
     required this.totalEpisode,
     required this.position,
+    this.cover = '',
   });
 
   final String id;
   final String title;
+
+  /// 封面地址（本机代理 URL）；空串回落渐变占位。
+  final String cover;
 
   /// 已看到第几集。
   final int watchedEpisode;
@@ -81,6 +85,7 @@ final libraryItemsProvider = FutureProvider<List<LibraryItem>>((ref) async {
         watchedEpisode: entry.episode,
         totalEpisode: entry.totalEpisode,
         position: entry.position,
+        cover: entry.cover,
       ),
   ];
 });

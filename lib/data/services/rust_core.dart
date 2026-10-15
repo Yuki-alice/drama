@@ -275,9 +275,32 @@ class RustCore {
 /// 用**可空** `Provider` 表达"核心不可用"（native asset 缺失 / 初始化失败），
 /// 比让 Provider 抛异常更好：上层可据此回退到 mock，而不是整站崩溃。
 class RustCoreHolder {
-  const RustCoreHolder(this.core);
+  const RustCoreHolder(this.core, {this.mediaPort});
 
   final RustCore core;
+
+  /// 本机代理（媒体 + 封面）本次会话监听的端口；`null` = 未取到。
+  ///
+  /// 端口是实现细节，但**封面 URL 会被落盘缓存**，因此重启后缓存里记的
+  /// 端口可能已失效。UI 侧用 [mediaPort] 把地址改写到当前端口（见
+  /// `resolveCoverUrl`），使缓存数据自愈，而不是把端口写死进缓存。
+  final int? mediaPort;
+
+  /// 把任意本机代理 URL 的端口改写为本次会话的端口。
+  String resolveCoverUrl(String raw) => rewriteProxyPort(raw, mediaPort);
+}
+
+/// 把本机代理 URL 的端口改写为 [port]（纯函数，便于单测）。
+///
+/// 非本机地址 / 空串 / 端口未知时原样返回——只有我们自己的代理地址才需改写。
+/// 之所以要改写：封面 URL 会**落盘进目录缓存**，而端口是实现细节，
+/// 重启后可能变化（见 rust/core/src/covers.rs 与 gateway.rs 的端口策略）。
+String rewriteProxyPort(String raw, int? port) {
+  if (port == null || raw.isEmpty) return raw;
+  final uri = Uri.tryParse(raw);
+  if (uri == null || uri.host != '127.0.0.1') return raw;
+  if (uri.port == port) return raw;
+  return uri.replace(port: port, host: '127.0.0.1').toString();
 }
 
 /// worker isolate 入口：接收 `{id, payload}`，调用 C ABI，回传 `{id, reply}`。

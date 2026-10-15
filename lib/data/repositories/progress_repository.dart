@@ -218,17 +218,24 @@ final resumeProvider = FutureProvider.family<HistoryEntry?, String>((
 class ProgressActions {
   ProgressActions();
 
-  /// 加入/更新追剧。`drama` 的基本信息随写入，供追剧页离线渲染。
+  /// 加入/更新追剧。剧目的基本信息随写入，供追剧页离线渲染。
+  ///
+  /// 注意 [cover] 存的是**本机代理地址**（`127.0.0.1:{port}/img/{token}`），
+  /// token 有 6 小时有效期。因此跨会话读回的旧封面地址可能已过期——
+  /// 这是**可接受**的：过期后代理返回 404，`DramaCover` 静默回落渐变占位，
+  /// 重新进入详情页会刷新为新的代理地址。
   Future<void> follow(
     WidgetRef ref, {
     required String id,
     String title = '',
+    String cover = '',
     int episode = 1,
     int totalEpisode = 0,
   }) async {
     await _repositoryOf(ref.read(rustCoreProvider)).follow(
       id: id,
       title: title,
+      cover: cover,
       episode: episode,
       totalEpisode: totalEpisode,
     );

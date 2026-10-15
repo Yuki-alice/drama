@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../domain/models/drama.dart';
 import '../tokens/app_tokens.dart';
 import 'app_glass_scaffold.dart';
-import 'poster_artwork.dart';
+import 'drama_cover.dart';
 
 /// 区块标题 + 可选右侧动作。
 class SectionHeader extends StatelessWidget {
@@ -57,6 +57,8 @@ class SectionHeader extends StatelessWidget {
 }
 
 /// 剧目海报卡（内容层，不透明；标题在玻璃层之外）。
+///
+/// 真实封面由 Rust 代理供给（见 `DramaCover`）；无封面时回落确定性渐变。
 class DramaPosterCard extends StatelessWidget {
   const DramaPosterCard({super.key, required this.drama, required this.onTap});
 
@@ -72,7 +74,16 @@ class DramaPosterCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          PosterArtwork(seed: drama.coverSeed, title: drama.title),
+          Expanded(
+            child: DramaCover(
+              seed: drama.coverSeed,
+              cover: drama.cover,
+              title: drama.title,
+              // 格子形状由外层 grid/父级决定，封面填满即可（不再套 AspectRatio，
+              // 否则约束冲突会留白）。
+              fill: true,
+            ),
+          ),
           const SizedBox(height: AppSpacing.sm),
           Text(
             drama.title,
@@ -132,9 +143,10 @@ class DramaPosterGrid extends StatelessWidget {
     itemCount: dramas.length,
     gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
       maxCrossAxisExtent: maxCrossAxisExtent,
-      mainAxisSpacing: AppSpacing.md,
+      mainAxisSpacing: AppSpacing.lg,
       crossAxisSpacing: AppSpacing.md,
-      childAspectRatio: 0.56,
+      // 3:4 封面 + 两行文字；与 home 的网格口径一致。
+      childAspectRatio: 0.62,
     ),
     itemBuilder: (context, index) => DramaPosterCard(
       drama: dramas[index],

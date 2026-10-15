@@ -30,10 +30,16 @@ enum HomeStatusFilter {
 @immutable
 class HomeFilter {
   const HomeFilter({
-    this.categoryId = 'recommend',
+    // 默认落在「真人短剧」而非「推荐」：`recommend` 走的是 `recommend` op，
+    // 与顶部「为你推荐」横滑条**同源**，会让首屏上下重复展示同一批剧目。
+    // 选一个真实分类，首屏才是两种内容。
+    this.categoryId = _defaultCategoryId,
     this.sort = HomeSort.latest,
     this.status = HomeStatusFilter.all,
   });
+
+  /// 与 `HongguoCategories.all` 的首个真实分类保持一致（`recommend` 是聚合位，不作默认）。
+  static const String _defaultCategoryId = 'real-drama';
 
   final String categoryId;
   final HomeSort sort;

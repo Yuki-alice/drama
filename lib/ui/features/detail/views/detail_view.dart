@@ -12,7 +12,7 @@ import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/app_glass_scaffold.dart';
 import '../../../core/widgets/content_widgets.dart';
 import '../../../core/widgets/glass_kit.dart';
-import '../../../core/widgets/poster_artwork.dart';
+import '../../../core/widgets/drama_cover.dart';
 import '../view_models/detail_view_model.dart';
 
 /// 详情 + 选集。
@@ -99,7 +99,12 @@ class _DetailViewState extends ConsumerState<DetailView> {
                 children: <Widget>[
                   SizedBox(
                     width: 124,
-                    child: PosterArtwork(seed: drama.coverSeed),
+                    child: DramaCover(
+                      seed: drama.coverSeed,
+                      cover: drama.cover,
+                      title: drama.title,
+                      showTitleOverlay: false,
+                    ),
                   ),
                   const SizedBox(width: AppSpacing.lg),
                   Expanded(
@@ -273,6 +278,7 @@ class _DetailViewState extends ConsumerState<DetailView> {
           ref,
           id: widget.id,
           title: drama.title,
+          cover: drama.cover,
           totalEpisode: drama.episodeCount,
         );
       }

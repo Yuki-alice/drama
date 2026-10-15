@@ -164,9 +164,8 @@ class _RailItem extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Material(
-        color: selected
-            ? colors.accent.withValues(alpha: 0.16)
-            : const Color(0x00000000),
+        // 选中用低饱和强调底（Notion 风：靠底色而非描边表达选中）。
+        color: selected ? colors.accentSubtle : Colors.transparent,
         borderRadius: BorderRadius.circular(AppRadii.md),
         clipBehavior: Clip.antiAlias,
         child: InkWell(

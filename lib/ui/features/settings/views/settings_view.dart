@@ -5,6 +5,7 @@ import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../../../../data/repositories/catalog_providers.dart';
 import '../../../../router/routes.dart';
+import '../../../core/playback/playback_settings.dart';
 import '../../../core/theme/appearance_controller.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/tokens/glass_tier.dart';
@@ -24,6 +25,7 @@ class SettingsView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final appearance = ref.watch(appearanceProvider);
     final controller = ref.read(appearanceProvider.notifier);
+    final playback = ref.watch(playbackSettingsProvider);
     final colors = AppColors.of(context);
 
     return AppGlassScaffold(
@@ -73,21 +75,30 @@ class SettingsView extends ConsumerWidget {
             ),
           ),
 
-          // ── 播放（W1 纯本地 mock，不持久化） ────────────────────
+          // ── 播放（接到真实偏好，持久化；播放页读同一份） ────────
           const SectionHeader(title: '播放'),
           _ChipField(
             label: '默认清晰度',
-            options: const <String>['标清', '高清', '超清'],
-            selectedIndex: ref.watch(_playbackQualityProvider),
-            onSelected: ref.read(_playbackQualityProvider.notifier).update,
+            options: PlaybackSettings.labels,
+            selectedIndex: playback.quality,
+            onSelected: ref.read(playbackSettingsProvider.notifier).setQuality,
           ),
           _SwitchRow(
             label: '自动连播下一集',
-            value: ref.watch(_autoPlayNextProvider),
-            onChanged: ref.read(_autoPlayNextProvider.notifier).update,
+            value: playback.autoPlayNext,
+            onChanged: ref
+                .read(playbackSettingsProvider.notifier)
+                .setAutoPlayNext,
+          ),
+          _SwitchRow(
+            label: '进入播放页立即播放',
+            value: playback.autoPlayOnOpen,
+            onChanged: ref
+                .read(playbackSettingsProvider.notifier)
+                .setAutoPlayOnOpen,
           ),
 
-          // ── 下载（W1 纯本地 mock，不持久化） ────────────────────
+          // ── 下载（能力未实现；此处如实标注，不让用户误以为已生效） ──
           const SectionHeader(title: '下载'),
           _ChipField(
             label: '同时下载任务数',
@@ -96,6 +107,18 @@ class SettingsView extends ConsumerWidget {
             onSelected: (index) => ref
                 .read(_downloadConcurrencyProvider.notifier)
                 .update(index + 1),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.gutter,
+              0,
+              AppSpacing.gutter,
+              AppSpacing.sm,
+            ),
+            child: Text(
+              '下载能力尚未实现，此项暂不生效。',
+              style: AppText.caption.copyWith(color: colors.textTertiary),
+            ),
           ),
 
           // ── 存储 ───────────────────────────────────────────────
@@ -138,17 +161,10 @@ class SettingsView extends ConsumerWidget {
 // ── 本地 mock 状态（W1 外壳，不持久化；仅用小型 Notifier，保持页面为
 //    ConsumerWidget） ─────────────────────────────────────────────────────
 
-/// 播放清晰度：0 标清 / 1 高清 / 2 超清。
-final _playbackQualityProvider = NotifierProvider<_IntNotifier, int>(
-  () => _IntNotifier(1),
-);
-
-/// 是否自动连播下一集。
-final _autoPlayNextProvider = NotifierProvider<_BoolNotifier, bool>(
-  () => _BoolNotifier(true),
-);
-
-/// 下载并发数（默认 2）。
+/// 下载并发数。
+///
+/// **刻意保留为纯内存**：下载能力整体未实现（`moveDownloads` 仍是
+/// `UNSUPPORTED`），把它持久化会让用户以为设置已生效。等下载落地后再接。
 final _downloadConcurrencyProvider = NotifierProvider<_IntNotifier, int>(
   () => _IntNotifier(2),
 );
@@ -162,17 +178,6 @@ class _IntNotifier extends Notifier<int> {
   int build() => _initial;
 
   void update(int value) => state = value;
-}
-
-class _BoolNotifier extends Notifier<bool> {
-  _BoolNotifier(this._initial);
-
-  final bool _initial;
-
-  @override
-  bool build() => _initial;
-
-  void update(bool value) => state = value;
 }
 
 const List<ThemeMode> _themeModes = <ThemeMode>[
