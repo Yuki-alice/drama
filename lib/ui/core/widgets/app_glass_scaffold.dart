@@ -47,7 +47,15 @@ class AppGlassScaffold extends StatelessWidget {
     final colors = AppColors.of(context);
     final hasBar = title != null || leading != null || actions != null;
 
-    return GlassScaffold(
+    // 统一包一层 Material：`GlassScaffold` 自身**不创建 Material**，
+    // 而 `MaterialApp` 会在根部装一个「错误文本样式」（红色等宽 + 黄色双下划线，
+    // 见 material/app.dart 的 _errorTextStyle）作为兜底 `DefaultTextStyle`。
+    // 因此任何不在 Material 下的 `Text` 都会继承它——实测外观是标题/导航标签
+    // 下方出现黄色下划线。`Material` 会装上主题的 bodyMedium 覆盖该兜底样式。
+    //
+    // 用 `MaterialType.transparency`：只借它的文本样式与墨水层语义，不引入背景色
+    // （背景由 GlassScaffold 的 `background`/`backgroundColor` 负责）。
+    final scaffold = GlassScaffold(
       backgroundColor: colors.background,
       background: const AppBackdrop(),
       statusBarStyle: GlassStatusBarStyle.auto,
@@ -69,6 +77,10 @@ class AppGlassScaffold extends StatelessWidget {
       bottomBar: bottomBar,
       body: Material(type: MaterialType.transparency, child: body),
     );
+
+    // body 已在上面包了 Material；这里再包一层覆盖 appBar / bottomBar
+    // （它们由 GlassScaffold 直接摆放，不在 body 的 Material 之下）。
+    return Material(type: MaterialType.transparency, child: scaffold);
   }
 }
 

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../widgets/drama_cover.dart';
 
 /// `SharedPreferences` 实例。
 ///
@@ -81,8 +80,6 @@ class AppearanceController extends Notifier<AppearanceSettings> {
 
   Future<void> setHighContrast(bool enabled) async {
     state = state.copyWith(highContrast: enabled);
-    // 高对比会改变渐变占位的取色与分区，丢弃已解码封面避免长期占用。
-    CoverImageCache.clear();
     await _prefs.setBool(_keyHighContrast, enabled);
   }
 

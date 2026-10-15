@@ -54,6 +54,22 @@ Flutter 只做渲染，Rust 做引擎。红果为内置唯一源（规则扩展�
 `network.client`（出站访问源站/CDN）与 `network.server`（本机回环代理）。
 缺 `network.client` 会让目录、封面、取流全部静默失败。
 
+## 两个易踩的框架陷阱
+
+**1. 构建钩子必须先判 `buildCodeAssets`。**
+`hook/build.dart` 不只在「编译 code asset」时被调用，SDK 还会用**空
+`build_asset_types`** 调一次（依赖发现阶段）。此时读 `input.config.code` 会抛
+`Bad state: HookConfig.code should only be accessed when building code assets`，
+表现为 `Building native assets failed. build.dart returned with exit code: 255`。
+
+**2. 玻璃外壳必须自带 `Material`。**
+`MaterialApp` 在根部把 `_errorTextStyle`（红色等宽 + 黄色双下划线）装成兜底
+`DefaultTextStyle`，用于提示「缺少 Material 祖先」。`GlassScaffold` **自身不创建
+Material**，因此它直接摆放的 appBar 标题与 bottomBar 标签会继承该样式——
+实机表现是导航标签下方出现黄色双下划线。`AppGlassScaffold` 已在外层包
+`MaterialType.transparency`；改动该文件时别把这层去掉
+（回归用例见 `test/glass_text_style_test.dart`）。
+
 **能力契约**：`Caps` 未声明的能力必须返回 `UNSUPPORTED`，**绝不返回空列表冒充"查过了"**。
 
 ## 设计系统
