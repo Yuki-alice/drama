@@ -46,6 +46,11 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+  # 集成测试：在**真实应用**里跑（唯一能验证 media_kit 真解码的环境——
+  # `flutter test` 没有 libmpv，Player() 构造即抛）。
+  integration_test:
+    sdk: flutter
+
   flutter_lints: ^6.0.0
 
   # --- FFI 绑定生成 ---

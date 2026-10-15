@@ -29,6 +29,9 @@ const WEB_BASE: &str = "https://www.hongguoduanju.com";
 /// 播放器侧 Referer（取流地址要求）。
 pub const PLAYER_REFERER: &str = "https://novel.snssdk.com/";
 
+/// 官网站内资源（公开轨视频、播放页）的 Referer。
+pub const WEB_REFERER: &str = "https://www.hongguoduanju.com/";
+
 /// 数字 ID 形状（1~32 位）。
 fn is_numeric_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_digit())
@@ -315,7 +318,19 @@ fn app_status(detail: &Value) -> &'static str {
     if raw == "1" { "finished" } else { "ongoing" }
 }
 
-/// 取流：App 主链 → 网页取流降级。`preferred` 为期望清晰度上限（0 表示要最高）。
+/// 取流主链：App 签名接口 → 网页**公开轨** → 网页 SSR。
+///
+/// **三条轨的实测行为**（联网校准）：
+/// 1. `video_model/v1`（App 签名，正常时给 1080p 加密流）——当前上游对未授权
+///    客户端返回 `HTTP 200` + **空 body**（同一签名打 `video_detail` 却有 84KB，
+///    故不是签名/身份问题），因此实际取流靠下面两条；
+/// 2. 网页公开轨 `{WEB_BASE}/video/public/{vid}/360p.mp4`——**免签、明文、可直接播**。
+///    这是官网网页播放器自己用的地址；覆盖每部剧前 `accessible_episode_cnt` 集
+///    （多剧实测均为 3 集），其余集 404。见 [`resolve_public_media`]；
+/// 3. 网页 SSR `video_player_info`——站点已改为 `protectedPlayback` 且
+///    `videoList` 为空对象，该字段不再下发，保留仅为站点回退时可用。
+///
+/// `preferred` 为期望清晰度上限（0 表示要最高）；公开轨只有 360p，不受其影响。
 pub fn resolve_media(
     series_id: &str,
     video_id: &str,
@@ -324,16 +339,49 @@ pub fn resolve_media(
     if !is_numeric_id(series_id) || !is_numeric_id(video_id) {
         return Err(SourceError::Parse("invalid series/video id".to_owned()));
     }
+    let mut errors: Vec<String> = Vec::new();
+
     match resolve_app_media(video_id, preferred) {
-        Ok(m) => Ok(m),
-        Err(app_err) => {
-            if matches!(app_err, SourceError::Canceled | SourceError::Timeout) {
-                return Err(app_err);
-            }
-            resolve_web_media(series_id, video_id)
-                .map_err(|web_err| SourceError::Parse(format!("app: {app_err}; web: {web_err}")))
+        Ok(media) => return Ok(media),
+        // 取消/超时是「本次不该继续」的信号，不做降级。
+        Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
+        Err(e) => errors.push(format!("app: {e}")),
+    }
+
+    match resolve_public_media(video_id) {
+        Ok(media) => return Ok(media),
+        Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
+        Err(e) => errors.push(format!("public: {e}")),
+    }
+
+    match resolve_web_media(series_id, video_id) {
+        Ok(media) => Ok(media),
+        Err(e) => {
+            errors.push(format!("web: {e}"));
+            Err(SourceError::Parse(errors.join("; ")))
         }
     }
+}
+
+/// 网页**公开轨**：`/video/public/{vid}/360p.mp4`。
+///
+/// 免签、明文 H.264/AAC（实测无 `pssh`/`encv`，`moov` 正常），播放器可直接打开，
+/// 因此**无需**本机解密代理（`encrypted=false`）。代价是仅 360p。
+///
+/// 先发一次 Range 探测确认可播：不可播的集返回 404，直接判 `NotFound` 让上层
+/// 继续降级，而不是把一个 404 地址交给播放器（那会表现为「黑屏无错」）。
+fn resolve_public_media(video_id: &str) -> Result<ResolvedMedia, SourceError> {
+    let url = format!("{WEB_BASE}/video/public/{video_id}/360p.mp4");
+    http::probe_playable(&url, WEB_REFERER)?;
+    Ok(ResolvedMedia {
+        url: url.clone(),
+        referer: WEB_REFERER,
+        duration_secs: 0.0,
+        quality: 360,
+        encrypted: false,
+        key_hex: String::new(),
+        variants: vec![ResolvedVariant { url, quality: 360 }],
+    })
 }
 
 /// App 取流：`video_model/v1` → 按清晰度打分选最优 + 全量 variants。

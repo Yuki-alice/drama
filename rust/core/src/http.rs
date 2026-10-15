@@ -239,6 +239,35 @@ pub fn fetch_bytes_unthrottled(url: &str) -> Result<Vec<u8>, HttpError> {
     RUNTIME.block_on(request_bytes(url, false))
 }
 
+/// 公开轨探测：用 `Range: bytes=0-1` 确认该地址**真的可播**。
+///
+/// 为什么要探测而不是直接把 URL 交给播放器：公开轨对未开放的集返回 404，
+/// 若原样下发，播放器只会黑屏且不报错（用户看不到任何原因）。这里只取 2 字节
+/// 即可判定，代价可忽略；非 2xx 一律映射为不可播，让上层继续降级。
+///
+/// 只接受 `200`/`206`：`206` 是 Range 生效时的正常响应。
+pub fn probe_playable(url: &str, referer: &'static str) -> Result<(), HttpError> {
+    RUNTIME.block_on(async move {
+        let resp = CLIENT
+            .get(url)
+            .header("Referer", referer)
+            .header("User-Agent", USER_AGENT_VALUE)
+            .header("Range", "bytes=0-1")
+            .send()
+            .await
+            .map_err(|e| HttpError::new(None, true, e.to_string()))?;
+        let status = resp.status().as_u16();
+        if status == 200 || status == 206 {
+            return Ok(());
+        }
+        Err(HttpError::new(
+            Some(status),
+            false,
+            format!("media not playable (status {status})"),
+        ))
+    })
+}
+
 /// 一次请求（可选限流），**施加取消与内层超时**。
 ///
 /// 用 `tokio::select!` 同时等待「HTTP 结果」与「取消信号」；用 `timeout_at` 施加截止点。

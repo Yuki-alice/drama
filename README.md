@@ -35,9 +35,23 @@ Flutter 只做渲染，Rust 做引擎。红果为内置唯一源（规则扩展�
 **session 按逻辑流划分**（`logicalStreamFor`）：首页会并发打 `catalog/recommend/ranking`，
 若共用一个 session，后发的会立刻把先发的判为迟到，首页随机空白。故按逻辑流分 session。
 
-**播放链**：`play` 走签名 App 接口取流（失败降级 SSR），Rust 起**本机回环 HTTP 代理**
-（`gateway.rs`）持有 Referer 鉴权与 CENC 解密密钥；播放器只打开返回的 `proxyUrl`，
-不直接碰源站。加密流按 Range 虚拟化重写 moov 并逐样本 AES-128-CTR 解密；明文流为流式透传。
+**播放链**：`play` 三级降级取流，Rust 起**本机回环 HTTP 代理**（`gateway.rs`）
+持有 Referer 鉴权与（加密轨的）CENC 密钥；播放器只打开返回的 `proxyUrl`，不直接碰源站。
+
+| 轨 | 地址 | 状态（联网实测） |
+|---|---|---|
+| App 签名 | `video_model/v1` | 上游对未授权客户端返回 `200` + **空 body**（同一签名打 `video_detail` 有 84KB，故非签名问题）；恢复后可用 1080p 加密流 |
+| **网页公开轨** | `{site}/video/public/{vid}/360p.mp4` | **可用**：免签明文 H.264/AAC，覆盖每部剧前 `accessible_episode_cnt` 集（多剧实测均为 3 集），其余集 404 |
+| 网页 SSR | `video_player_info` | 站点已改 `protectedPlayback`，该字段不再下发，保留兜底 |
+
+公开轨是**官网网页播放器自己用的地址**（见其 `player.*.js` 的
+`"/video/public/".concat(vid, "/360p.mp4")`）。它免签且明文，因此无需解密代理；
+下发前会先发 `Range: bytes=0-1` 探测，避免把 404 地址交给播放器（那会表现为黑屏无错）。
+加密轨仍在位：一旦上游恢复，`resolve_media` 会自动走回它并启用 moov 重写 + 逐样本解密。
+
+**media_kit 必须初始化**：`main()` 里 `MediaKit.ensureInitialized()` 不可删——
+漏掉会让播放页整页变红（`must be called before using any API from package:media_kit`）。
+
 播放页支持拖动定位（松手即 seek 并立即上报进度）、缓冲态提示、下一集预取、
 自动连播与「进入即播」开关；清晰度取自设置页（两处共用同一份偏好）。
 
@@ -98,7 +112,7 @@ Material**，因此它直接摆放的 appBar 标题与 bottomBar 标签会继承
 
 ```sh
 flutter pub get
-dart analyze lib test tool hook
+dart analyze lib test tool hook integration_test
 flutter test
 cargo test --manifest-path rust/core/Cargo.toml
 cargo clippy --manifest-path rust/core/Cargo.toml --locked --all-targets -- -D warnings
@@ -112,6 +126,13 @@ Rust 工具链由 `rust/core/rust-toolchain.toml` 锁定（**必须精确版本*
 
 ```sh
 cargo test --manifest-path rust/core/Cargo.toml -- --ignored
+```
+
+**播放链路验证**用集成测试（`flutter test` 的宿主进程没有 libmpv，
+`Player()` 构造即抛，故必须在真实 app bundle 里跑）：
+
+```sh
+flutter test integration_test/playback_test.dart -d macos
 ```
 
 FFI 绑定（`lib/data/services/drama_core_bindings.dart`）**为手写并须保持手写**：

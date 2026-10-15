@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -146,6 +147,11 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
     if (episodeAtOpen != _episode) return;
     _openedEpisode = episodeAtOpen;
 
+    // 诊断留痕：把实际解析到的轨道信息打到日志。
+    // 播放失败常表现为「静默黑屏」，没有这行日志就无从区分是取流、代理还是
+    // 解码的问题（实测踩过：media_kit 未初始化时整页变红且无其他线索）。
+    unawaited(_logPlaybackState(plan));
+
     if (_resumeApplied) return;
     final resume = await ref.read(resumeProvider(widget.id).future);
     if (!mounted || _resumeApplied) return;
@@ -160,6 +166,39 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
     }
     _resumeApplied = true;
     await _player.seek(target);
+  }
+
+  /// 轮询并打印播放器实际状态（时长/分辨率/是否在推进）。
+  ///
+  /// 只在 `kDebugMode` 下工作；失败不抛（诊断代码不该影响播放）。
+  Future<void> _logPlaybackState(PlaybackPlan plan) async {
+    if (!kDebugMode) return;
+    try {
+      final deadline = DateTime.now().add(const Duration(seconds: 15));
+      while (mounted && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        final duration = _player.state.duration;
+        final width = _player.state.width ?? 0;
+        if (duration > Duration.zero && width > 0) {
+          debugPrint(
+            '[player] ready ep=$_episode quality=${plan.quality} '
+            'encrypted=${plan.encrypted} '
+            '${width}x${_player.state.height} duration=$duration',
+          );
+          final p0 = _player.state.position;
+          await Future<void>.delayed(const Duration(seconds: 3));
+          final p1 = _player.state.position;
+          debugPrint('[player] position $p0 -> $p1 playing=${_player.state.playing}');
+          return;
+        }
+      }
+      debugPrint(
+        '[player] NOT ready after 15s (duration=${_player.state.duration} '
+        'width=${_player.state.width}) url=${plan.proxyUrl}',
+      );
+    } catch (error) {
+      debugPrint('[player] state probe failed: $error');
+    }
   }
 
   @override

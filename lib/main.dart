@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
@@ -15,6 +16,11 @@ import 'ui/core/theme/appearance_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // media_kit 必须在**任何** Player/VideoController 之前初始化，否则构造播放器时
+  // 直接抛 `MediaKit.ensureInitialized() must be called before using any API from
+  // package:media_kit`，播放页整页变红。此前漏了这一步，播放链路在运行时必崩。
+  MediaKit.ensureInitialized();
 
   // shader 预编译是纯异步磁盘 I/O，不阻塞首帧且失败不抛异常；
   // shader 未就绪时 premium 面会渲染空白（首帧白闪来源）→ 首帧 UI 不依赖 premium 面。
