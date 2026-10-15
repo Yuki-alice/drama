@@ -68,9 +68,11 @@ Rust 工具链由 `rust/core/rust-toolchain.toml` 锁定（**必须精确版本*
 cargo test --manifest-path rust/core/Cargo.toml -- --ignored
 ```
 
-FFI 绑定当前为手写（缺 libclang，见 `ffigen.yaml`）；装好 LLVM 后在**仓库根**跑
-`dart run ffigen --config ffigen.yaml`（入口 `tool/ffigen.dart`）。注意 native assets
-要求 `@Native` 形式，若重新生成需把结果改回该形式。
+FFI 绑定（`lib/data/services/drama_core_bindings.dart`）**为手写并须保持手写**：
+项目走 native assets，要求 `@Native` 形式，而 ffigen 产出的是 `DynamicLibrary.lookup`
+风格，两者不兼容。`ffigen.yaml` 与 `tool/ffigen.dart` 仅作签名校对用——
+改 C ABI 后跑 `dart run ffigen --config ffigen.yaml`（需装 LLVM/libclang，在**仓库根**执行）
+比对结果，把改动落到手写文件，再 `git checkout` 丢弃生成结果。
 
 ## 状态
 

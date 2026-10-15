@@ -1,13 +1,18 @@
 # ffigen 配置：由 rust/core 的 C ABI 头文件生成 Dart FFI 绑定。
 #
-# 运行前提：本机安装 LLVM（提供 libclang）。
 # 在**仓库根**执行（本配置与 Dart 包根同目录）：
 #   dart run ffigen --config ffigen.yaml
 # 或走包装入口：dart run tool/ffigen.dart
 #
-# 注意：当前本机缺少 libclang，绑定暂为手写（lib/data/services/drama_core_bindings.dart）。
-# 因 native assets 需要 `@Native` 形式，若日后用 ffigen 重新生成，需将生成结果改回
-# `@Native` 外部函数形式（或改走 DynamicLibrary 加载并放弃 native assets）。
+# ⚠️ 生成结果**不能直接使用**：ffigen 产出的是 `DynamicLibrary.lookup` 风格
+# （pkg:DramaCoreBindings 类 + 构造函数注入 DynamicLibrary），而本项目走
+# **native assets**，要求 `@Native` 外部函数形式（资源名由 `hook/build.dart`
+# 的 assetName 决定）。两者不兼容。
+#
+# 因此 `lib/data/services/drama_core_bindings.dart` **保持手写**；
+# 本配置与 tool/ffigen.dart 仅作为「头文件签名」的校对手段：
+# 手改 C ABI 后跑一次 ffigen，比对其输出确认参数/返回类型与头文件一致，
+# 然后把改动落到手写文件上，最后 `git checkout` 丢弃生成结果。
 name: DramaCoreBindings
 description: drama_request / drama_free 的 Dart FFI 绑定
 output: 'lib/data/services/drama_core_bindings.dart'
