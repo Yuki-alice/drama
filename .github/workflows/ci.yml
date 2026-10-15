@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.5"
+          cache: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+
+      - name: No doc section anchors (AGENTS.md §6)
+        run: |
+          if grep -rniE "ARCH[[:space:]]*§|EVIDENCE[[:space:]]*§|SourceSpec[[:space:]]*§|PRD[[:space:]]*(§|F-|Q)|plan[[:space:]]*(§|W[0-9]+)|实施计划|W[0-9]+[[:space:]]*(任务[[:space:]]*[0-9]+|出口条件)|纪律一|纪律二|纪律三|纪律四|docs/(ARCH|EVIDENCE|PRD|SourceSpec|QUESTIONS)" lib rust hook tool test pubspec.yaml ffigen.yaml README.md --exclude-dir=target --exclude-dir=reference; then
+            echo "doc section anchors found (banned by AGENTS.md §6)"
+            exit 1
+          fi
+
+      - name: Dart static analysis
+        run: |
+          flutter pub get
+          dart analyze lib test tool hook
+
+      - name: Flutter tests
+        run: flutter test
+
+      - name: Rust tests
+        run: cargo test --manifest-path rust/core/Cargo.toml --locked
+
+      - name: Rust lints
+        run: |
+          cargo clippy --manifest-path rust/core/Cargo.toml --locked --all-targets -- -D warnings
+          cargo fmt --manifest-path rust/core/Cargo.toml --check

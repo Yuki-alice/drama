@@ -1,4 +1,4 @@
-//! 源能力契约（SourceSpec §11.1）。
+//! 源能力契约。
 //!
 //! **契约纪律**：`Caps` 未声明的能力必须返回 [`SourceError::Unsupported`]
 //! （错误码 `UNSUPPORTED`），**绝不返回空列表冒充"查过了"**（星果/河果教训）。
@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::http::{HttpError, HttpErrorKind};
 
 /// 能力位。P0 红果实现为 `catalog/search/suggest/recommend/ranking/detail` 全开、
-/// `playback` 关闭（EVIDENCE §21.4：轨① 明文直链已不可得）。
+/// `playback` 关闭（轨① 明文直链已不可得）。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Caps {
     pub catalog: bool,
@@ -41,10 +41,10 @@ pub enum SourceError {
     /// 未声明能力：绝不返回空列表冒充"查过了"。
     #[error("capability not supported")]
     Unsupported,
-    /// 在途读被取消（ARCH §3.2：`CANCELED`，`retry=false`）。
+    /// 在途读被取消（`CANCELED`，`retry=false`）。
     #[error("request canceled")]
     Canceled,
-    /// 内层分级超时（ARCH §3.2：`TIMEOUT`，`retry=true`）。
+    /// 内层分级超时（`TIMEOUT`，`retry=true`）。
     #[error("request timed out")]
     Timeout,
     /// 底层 HTTP 失败（`retryable` 由 [`HttpError`] 决定）。
@@ -100,7 +100,7 @@ impl SourceError {
     }
 }
 
-/// 唯一源抽象（SourceSpec §11.1）。P2 扩展源实现同一 trait，引擎调度与 Dart 侧零改动。
+/// 唯一源抽象。P2 扩展源实现同一 trait，引擎调度与 Dart 侧零改动。
 pub trait SourceProvider: Send + Sync {
     /// 源 id，如 `"hongguo"`。
     fn id(&self) -> &'static str;
@@ -118,6 +118,29 @@ pub trait SourceProvider: Send + Sync {
     fn suggest(&self, keyword: &str) -> Result<Value, SourceError>;
     /// 详情 + 选集。
     fn detail(&self, series_id: &str) -> Result<Value, SourceError>;
+    /// 取流：默认不支持；红果等源覆盖实现。`episode` 为 1-based 集号，
+    /// `vid` 直接给分集 id 时优先用它（免一次详情请求），
+    /// `quality` 为期望清晰度上限（0 表示要最高）。
+    fn play(
+        &self,
+        _series_id: &str,
+        _episode: u32,
+        _vid: Option<String>,
+        _quality: i64,
+    ) -> Result<Value, SourceError> {
+        Err(SourceError::Unsupported)
+    }
+    /// 预取下集：解析 + 注册会话 + 解密首窗口，播放器打开即播。
+    /// 失败是可选的（调用方忽略错误即可），默认不支持。
+    fn preload(
+        &self,
+        _series_id: &str,
+        _episode: u32,
+        _vid: Option<String>,
+        _quality: i64,
+    ) -> Result<Value, SourceError> {
+        Err(SourceError::Unsupported)
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-//! 取消协议（ARCH §3.2）：`session`/`sequence` 仲裁 + 在途注册表 + `cancelRead`。
+//! 取消协议：`session`/`sequence` 仲裁 + 在途注册表 + `cancelRead`。
 //!
 //! **契约纪律**：取消是**协作式**的——核心语义是"标记取消 + 丢弃迟到响应"；
 //! 若调用方另外持有取消令牌（见 [`CancellationToken`]），`cancelRead` 可**尽力**提前
@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use once_cell::sync::Lazy;
 use tokio_util::sync::CancellationToken;
 
-/// `session` 最大长度（ARCH §3.2：`[0-9a-zA-Z-_:.]`，≥1 且 ≤128）。
+/// `session` 最大长度（`[0-9a-zA-Z-_:.]`，≥1 且 ≤128）。
 const MAX_SESSION_LEN: usize = 128;
 
 /// 仲裁阶段。

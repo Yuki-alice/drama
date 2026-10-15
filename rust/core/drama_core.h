@@ -1,11 +1,11 @@
 /*
- * 红果短剧客户端 Rust 核心 —— C ABI 头文件（ARCH §3.1）。
+ * 红果短剧客户端 Rust 核心 —— C ABI 头文件。
  *
  * 仅两个符号，是 Dart 侧与 Rust 侧的唯一契约面：
  *   char* drama_request(const char* utf8_json);
  *   void  drama_free(char* ptr);
  *
- * 信封（ARCH §3.2）：
+ * 信封：
  *   入参：{"v":1,"op":"...","source":"...","params":{...}}
  *   出参：{"ok":true,"data":...}  或  {"ok":false,"error":{"code":"...","msg":"...","retry":false}}
  *

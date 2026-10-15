@@ -10,4 +10,12 @@ targets = [
   "x86_64-linux-android",
   # Windows（MVP：仅 x64；arm64 由 hook 守卫直接 FATAL）
   "x86_64-pc-windows-msvc",
+  # macOS 桌面（双架构；aarch64 为本机宿主，flutter test / macOS 构建必需）
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  # iOS（真机 + 模拟器；P1 末位但校验前置，避免 flutter test/host 构建被 validator 拦截）
+  "aarch64-apple-ios",
+  "aarch64-apple-ios-sim",
+  # x86_64 iOS 无真机，该 target 即 x86_64 模拟器
+  "x86_64-apple-ios",
 ]

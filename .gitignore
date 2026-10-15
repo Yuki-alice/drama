@@ -2,15 +2,47 @@
 /rust/core/target/
 **/target/
 
-# --- Flutter / Dart（apps/drama_app 内另有 flutter create 生成的 .gitignore） ---
+# --- Flutter / Dart（flutter create 模板规则上移至此，单包单仓） ---
 **/.dart_tool/
 **/build/
+/build/
 **/.flutter-plugins
 **/.flutter-plugins-dependencies
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+/coverage/
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# --- 构建符号 / 混淆映射 ---
+app.*.symbols
+app.*.map.json
+
+# --- IDE / OS 杂项 ---
+*.iml
+*.ipr
+*.iws
+.idea/
+.DS_Store
+*.swp
+*.pyc
+*.class
+.migrate_working_dir/
+.history
+.svn/
+.swiftpm/
 
 # --- 本地缓存 / 日志 ---
 *.log
 **/hooks_runner/
+
+# --- Rust 运行期数据 ---
+# 追剧/观看进度（store.rs 写入 dataDir）；仅当测试把 dataDir 指到仓库内时才会出现。
+/rust/core/progress.json
 
 # --- 第三方参照源码：仅本地行为比对，禁止照抄，不入仓 ---
 /reference/

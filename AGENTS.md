@@ -137,3 +137,9 @@
 - **WorkBuddy**：自动发现 `.workbuddy/skills/`（已就绪）
 - **Codex / Cursor / Windsurf / Gemini CLI 等**：直接读取 `.agents/skills/`（通用标准），本文件 `AGENTS.md` 会被自动或手动纳入规则
 - **Claude Code**：如需 `.claude/skills`，运行 `bash scripts/sync-skills.sh --link claude` 即可建立链接
+
+## 6. 写作约定（2026-10-15 起）
+
+- 契约文档已放弃旧版、待重写；在此之前**注释与文档中禁止出现章节锚点**（如 `ARCH §3.2`、`EVIDENCE §21`、`SourceSpec §11.1`、`PRD F-01`、`plan §8`、`实施计划 §4`、`纪律一/四` 等）。
+- 规则写进正文：需要引用的约束直接写清楚（超时数值、字符集、错误码），不要写"见某文档§x"。
+- CI 有 grep 门禁，提交前自查。

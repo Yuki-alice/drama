@@ -1,4 +1,4 @@
-//! HTTP 会话 / 限流 / 退避（ARCH §2.2）。
+//! HTTP 会话 / 限流 / 退避。
 //!
 //! **驱动方式**：C ABI 的 `drama_request` 是同步入口，由 Dart worker isolate 单线程消费，
 //! 因此这里用**异步 reqwest + 全局多线程 Tokio 运行时**，由 `RUNTIME.block_on(...)` 驱动。
@@ -8,7 +8,7 @@
 //! **限流纪律**：SSR/API 元数据请求走 [`fetch_text_throttled`]（并发上限 + 同域最小间隔）；
 //! **媒体直链不走限流器**——由 [`fetch_bytes_unthrottled`] 承担（W3/W4 接入）。
 //!
-//! **取消与分级超时（ARCH §3.2）**：每次读请求经 [`enter_read`] 登记"取消句柄 + 截止时刻"，
+//! **取消与分级超时**：每次读请求经 [`enter_read`] 登记"取消句柄 + 截止时刻"，
 //! 由 [`request_bytes`] 用 `tokio::select!` 同时等待「HTTP 结果」与「取消信号」，
 //! 用 `tokio::time::timeout_at` 施加内层超时；被取消 → `CANCELED`，超时 → `TIMEOUT`。
 //!
@@ -24,13 +24,14 @@ use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
 use reqwest::header::{ACCEPT_LANGUAGE, HeaderMap, HeaderValue};
+use serde_json::Value;
 use tokio::runtime::Runtime;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-/// 统一浏览器 UA。
-const USER_AGENT_VALUE: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                                (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
+/// 统一浏览器 UA（媒体回源也用它，CDN 兼容性最好）。
+pub const USER_AGENT_VALUE: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                                 (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
 
 /// 连接超时。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,12 +46,12 @@ const MAX_RETRIES: u32 = 3;
 /// 退避上限。
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// 默认内层超时预算（ARCH §3.2：目录/详情/搜索等默认档 60s，**内层先于 Dart 外层到期**）。
+/// 默认内层超时预算（目录/详情/搜索等默认档 60s，**内层先于 Dart 外层到期**）。
 pub const DEFAULT_INNER_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// 分级内层超时预算（ARCH §3.2）：默认 60s / `preload` 15s / `moveDownloads` 600s。
+/// 分级内层超时预算：默认 60s / `preload` 15s / `moveDownloads` 600s。
 ///
-/// 纯函数，便于离线单测。`preload`/`moveDownloads` 业务尚未实现，但档位先落位。
+/// 纯函数，便于离线单测。
 pub fn inner_timeout_for(op: &str) -> Duration {
     match op {
         "preload" => Duration::from_secs(15),
@@ -59,7 +60,7 @@ pub fn inner_timeout_for(op: &str) -> Duration {
     }
 }
 
-/// 代理支持（实施计划 §4 W2 任务 1）。
+/// 代理支持。
 ///
 /// 只读取**项目专用** `DRAMA_PROXY`：给了就显式接管（便于在构建钩子/桌面环境里
 /// 明确指定，且便于离线单测）；没给则返回 `None`，交给 `reqwest` 的**默认系统代理**
@@ -83,6 +84,12 @@ static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
         .build()
         .expect("build tokio runtime")
 });
+
+/// 主运行时句柄（测试等需要驱动 async 流程时用；生产路径经各模块封装函数进入，
+/// 不要在运行时工作线程上直接 `block_on`，否则死锁）。
+pub fn runtime_handle() -> tokio::runtime::Handle {
+    RUNTIME.handle().clone()
+}
 
 /// 全局并发闸门。
 static SEM: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(MAX_CONCURRENCY));
@@ -108,7 +115,7 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     builder.build().expect("build reqwest client")
 });
 
-/// HTTP 错误类别：决定映射到信封错误码（ARCH §3.2）。
+/// HTTP 错误类别：决定映射到信封错误码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpErrorKind {
     /// 传输层/状态码错误（映射 `HTTP`）。
@@ -201,6 +208,29 @@ pub fn fetch_text_throttled(url: &str) -> Result<String, HttpError> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// 自定义出站请求（签名 App 接口用）：方法 + 完整 URL + 逐请求头 + 可选 body。
+/// 复用同一 reqwest 客户端（连接池保留），逐请求头覆盖默认值。
+pub struct OutboundRequest {
+    pub post: bool,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
+}
+
+/// API 响应体上限（8 MiB；签名接口只返回小 JSON，超限即视为异常）。
+pub const MAX_API_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// 取 JSON 入口（签名 App 接口）：与 `fetch_text_throttled` 同一套
+/// 并发/间隔/重试/取消/超时 plumbing，外加响应体上限与 JSON 解析。
+pub fn fetch_json_custom(req: &OutboundRequest) -> Result<Value, HttpError> {
+    let bytes = RUNTIME.block_on(request_custom(req, true))?;
+    if bytes.len() > MAX_API_BODY_BYTES {
+        return Err(HttpError::new(None, false, "api response too large"));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|e| HttpError::new(None, false, format!("invalid json: {e}")))
+}
+
 /// 取字节入口（媒体直链）：**不限流**，供 W3/W4 取流使用。
 ///
 /// 说明：媒体请求不占限流额度——并发闸门与同域间隔只保护 SSR/API 元数据请求，
@@ -209,18 +239,37 @@ pub fn fetch_bytes_unthrottled(url: &str) -> Result<Vec<u8>, HttpError> {
     RUNTIME.block_on(request_bytes(url, false))
 }
 
-/// 一次请求（可选限流），**施加取消与内层超时**（ARCH §3.2）。
+/// 一次请求（可选限流），**施加取消与内层超时**。
 ///
 /// 用 `tokio::select!` 同时等待「HTTP 结果」与「取消信号」；用 `timeout_at` 施加截止点。
 /// 未被 [`enter_read`] 登记上下文时（例如直连调用）退化为纯 HTTP 读取。
 async fn request_bytes(url: &str, throttle: bool) -> Result<Vec<u8>, HttpError> {
+    request_with_ctx(
+        &OutboundRequest {
+            post: false,
+            url: url.to_owned(),
+            headers: Vec::new(),
+            body: None,
+        },
+        throttle,
+    )
+    .await
+}
+
+/// 一次自定义请求（可选限流），**施加取消与内层超时**（与 [`request_bytes`] 同语义）。
+async fn request_custom(req: &OutboundRequest, throttle: bool) -> Result<Vec<u8>, HttpError> {
+    request_with_ctx(req, throttle).await
+}
+
+/// 取消/超时包装的公共内核。
+async fn request_with_ctx(req: &OutboundRequest, throttle: bool) -> Result<Vec<u8>, HttpError> {
     let ctx = READ_CTX.with(|c| c.borrow().as_ref().map(|c| (c.cancel.clone(), c.deadline)));
     let Some((cancel, deadline)) = ctx else {
-        return request_bytes_inner(url, throttle).await;
+        return request_inner(req, throttle).await;
     };
     let timed = tokio::time::timeout_at(
         tokio::time::Instant::from_std(deadline),
-        request_bytes_inner(url, throttle),
+        request_inner(req, throttle),
     );
     match cancel {
         Some(token) => tokio::select! {
@@ -234,26 +283,43 @@ async fn request_bytes(url: &str, throttle: bool) -> Result<Vec<u8>, HttpError> 
 }
 
 /// 一次请求（可选限流），内部含退避重试。
-async fn request_bytes_inner(url: &str, throttle: bool) -> Result<Vec<u8>, HttpError> {
+async fn request_inner(req: &OutboundRequest, throttle: bool) -> Result<Vec<u8>, HttpError> {
     if !throttle {
-        return send_with_retry(url).await;
+        return send_with_retry(req).await;
     }
     let permit = SEM
         .acquire()
         .await
         .map_err(|_| HttpError::new(None, false, "semaphore closed"))?;
-    enforce_min_interval(&host_of(url)).await;
-    let out = send_with_retry(url).await;
+    enforce_min_interval(&host_of(&req.url)).await;
+    let out = send_with_retry(req).await;
     drop(permit);
     out
 }
 
 /// 发送并处理退避重试：403/429/5xx 可重试，尊重 `Retry-After`，最多 [`MAX_RETRIES`] 次。
-async fn send_with_retry(url: &str) -> Result<Vec<u8>, HttpError> {
+async fn send_with_retry(req: &OutboundRequest) -> Result<Vec<u8>, HttpError> {
     let mut attempt = 0u32;
     loop {
-        let resp = CLIENT
-            .get(url)
+        let mut builder = CLIENT.request(
+            if req.post {
+                reqwest::Method::POST
+            } else {
+                reqwest::Method::GET
+            },
+            &req.url,
+        );
+        for (name, value) in &req.headers {
+            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| HttpError::new(None, false, "invalid header name"))?;
+            let value = reqwest::header::HeaderValue::from_str(value)
+                .map_err(|_| HttpError::new(None, false, "invalid header value"))?;
+            builder = builder.header(name, value);
+        }
+        if let Some(body) = req.body.as_ref() {
+            builder = builder.body(body.clone());
+        }
+        let resp = builder
             .send()
             .await
             .map_err(|e| HttpError::new(None, true, e.to_string()))?;
@@ -434,8 +500,8 @@ mod tests {
     }
 
     #[test]
-    fn inner_timeout_tiers_match_arch() {
-        // ARCH §3.2 分级内层超时：默认 60s / preload 15s / moveDownloads 600s。
+    fn inner_timeout_tiers_follow_design() {
+        // 分级内层超时：默认 60s / preload 15s / moveDownloads 600s。
         assert_eq!(inner_timeout_for("preload"), Duration::from_secs(15));
         assert_eq!(inner_timeout_for("moveDownloads"), Duration::from_secs(600));
         assert_eq!(inner_timeout_for("catalog"), DEFAULT_INNER_TIMEOUT);

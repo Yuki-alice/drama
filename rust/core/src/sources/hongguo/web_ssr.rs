@@ -1,4 +1,4 @@
-//! 红果官网 SSR（`_ROUTER_DATA`）解析：轨① 免签元数据（EVIDENCE §21）。
+//! 红果官网 SSR（`_ROUTER_DATA`）解析：轨① 免签元数据。
 //!
 //! 关键纪律：
 //! - **不硬编码 loaderData 键名**（实测含 `category_$`、`search_(keyword)/page`、`rank_hot-drama/page`），
@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::source::traits::SourceError;
 
-/// `_ROUTER_DATA` 定位正则（EVIDENCE §17.5）。
+/// `_ROUTER_DATA` 定位正则。
 static ROUTER_DATA_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?s)(?:window\.)?_ROUTER_DATA\s*=\s*").expect("valid regex"));
 
@@ -158,7 +158,7 @@ fn category_of(v: &Value) -> (String, String) {
 
 /// 剧卡归一化（字段名为 Dart 契约，勿改）。
 ///
-/// ⚠️ `status`：`series_episode_info.series_status` 的整数字典**未实测确证**（EVIDENCE §21 未留字典）。
+/// ⚠️ `status`：`series_episode_info.series_status` 的整数字典**未实测确证**（未留字典）。
 /// 按常识取 `1 = 连载(ongoing)`，其余一律 `finished`——**该判定不确定，待 W3 联网校准**。
 fn normalize_drama(v: &Value) -> Value {
     let episode_info = v.get("series_episode_info");
@@ -340,7 +340,7 @@ pub fn parse_recommend(data: &Value) -> Result<Value, SourceError> {
 }
 
 /// 榜单降级 → `{items:[Drama]}`：首页 `homeSections[section_index]`（越界回退第 1 段）。
-/// 依据 EVIDENCE §21.3：榜单页 SSR 已无数据，改用官网首页分栏。
+/// 依据 ：榜单页 SSR 已无数据，改用官网首页分栏。
 pub fn parse_home_ranking(data: &Value, section_index: usize) -> Result<Value, SourceError> {
     let page = find_payload(data, "homeSections")
         .ok_or_else(|| SourceError::Parse("missing homeSections".to_owned()))?;
@@ -354,7 +354,7 @@ pub fn parse_home_ranking(data: &Value, section_index: usize) -> Result<Value, S
     Ok(json!({ "items": items }))
 }
 
-/// 榜单页 `content` 解析（EVIDENCE §21.3：当前 `content` 恒为空 `{}`）。
+/// 榜单页 `content` 解析（当前 `content` 恒为空 `{}`）。
 ///
 /// 站点结构未实测，故仅在 `content` 为**数组**时尝试归一化；否则返回空，
 /// 由调用方降级到首页分栏。保留站点修复后优先走榜单页的可能。

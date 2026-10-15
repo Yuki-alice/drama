@@ -1,13 +1,13 @@
 //! 红果短剧客户端 Rust 核心（MVP 骨架）。
 //!
-//! 对外仅暴露两个 C ABI 符号（ARCH §3.1）：
+//! 对外仅暴露两个 C ABI 符号：
 //! - `drama_request(const char* utf8_json) -> char*`
 //! - `drama_free(char* ptr)`
 //!
-//! JSON-RPC 信封遵循 ARCH §3.1/§3.2：入参 `{v:1, op, source?, session?, sequence?, params?}`，
+//! JSON-RPC 信封遵循 /：入参 `{v:1, op, source?, session?, sequence?, params?}`，
 //! 出参 `{ok:true, data}` 或 `{ok:false, error:{code, msg, retry}}`。
 //!
-//! **取消协议与分级超时（ARCH §3.2）**：见 [`cancel`] 与 [`http`]。读类 op 带 `session`/`sequence`
+//! **取消协议与分级超时**：见 [`cancel`] 与 [`http`]。读类 op 带 `session`/`sequence`
 //! 时参与仲裁——旧 `sequence` 直接丢弃（`CANCELED`）；内层分级超时映射为 `TIMEOUT`（`retry=true`）；
 //! `cancelRead` 取消同 session 中 `sequence` 更小的在途读请求并返回被取消数量。
 //!
@@ -15,10 +15,25 @@
 //! 故「一个 worker 阻塞在网络时，另一个 worker 仍能处理 `cancelRead`」——`cancelRead` 登记的
 //! 取消令牌会被在途读的 `tokio::select!` 观察到，**尽力**提前释放该请求。
 
+pub mod app_api;
 pub mod cancel;
+pub mod decrypt;
+
+/// 测试串行锁：`device` 与 `store` 测试共享进程级可变全局（`DATA_DIR`），
+/// 必须串行，否则持久化路径互相踩。需要全局隔离的测试先拿这把锁。
+#[cfg(test)]
+pub(crate) mod test_serial {
+    use once_cell::sync::Lazy;
+    use std::sync::Mutex;
+    pub static SERIAL: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+}
+pub mod device;
+pub mod gateway;
 pub mod http;
+pub mod sign;
 pub mod source;
 pub mod sources;
+pub mod store;
 
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -29,13 +44,13 @@ use tokio_util::sync::CancellationToken;
 
 use source::traits::{SourceError, SourceProvider};
 
-/// 入参上限 1 MiB（ARCH §3.1）。
+/// 入参上限 1 MiB。
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 
-/// 信封版本（ARCH §3.2）。
+/// 信封版本。
 const ENVELOPE_VERSION: u32 = 1;
 
-/// 请求信封：`{v:1, op, source?, session?, sequence?, params?}`（ARCH §3.1/§3.2）。
+/// 请求信封：`{v:1, op, source?, session?, sequence?, params?}`。
 #[derive(Debug, Deserialize)]
 struct Request {
     #[serde(default = "default_version")]
@@ -44,10 +59,10 @@ struct Request {
     /// 源 id：`None` 用默认源（hongguo）。W2 起使用。
     #[serde(default)]
     source: Option<String>,
-    /// 读请求会话标识（ARCH §3.2）：字符集 `[0-9a-zA-Z-_:.]`，长度 ≤128；不合法 → `BAD_REQUEST`。
+    /// 读请求会话标识：字符集 `[0-9a-zA-Z-_:.]`，长度 ≤128；不合法 → `BAD_REQUEST`。
     #[serde(default)]
     session: Option<String>,
-    /// 同 session 内单调递增的序号（ARCH §3.2）。缺失 → 不参与仲裁（兼容 `ping`/`version`）。
+    /// 同 session 内单调递增的序号。缺失 → 不参与仲裁（兼容 `ping`/`version`）。
     #[serde(default)]
     sequence: Option<u64>,
     /// 各 op 参数（W2 起使用）。
@@ -59,7 +74,7 @@ fn default_version() -> u32 {
     ENVELOPE_VERSION
 }
 
-/// 错误体：`{code, msg, retry}`（ARCH §3.2）。
+/// 错误体：`{code, msg, retry}`。
 #[derive(Debug, Serialize)]
 struct ErrorBody {
     code: &'static str,
@@ -83,6 +98,20 @@ fn err_with(code: &'static str, msg: impl Into<String>, retry: bool) -> Value {
         "ok": false,
         "error": ErrorBody { code, msg: msg.into(), retry },
     })
+}
+
+/// 存储错误映射为信封三元组（与 [`with_provider`] 的映射口径一致）。
+fn store_error(e: source::traits::SourceError) -> (&'static str, String, bool) {
+    use source::traits::SourceError as E;
+    match &e {
+        E::Unsupported => ("UNSUPPORTED", e.to_string(), false),
+        E::Canceled => ("CANCELED", e.to_string(), false),
+        E::Timeout => ("TIMEOUT", e.to_string(), true),
+        E::Http(h) => ("HTTP", e.to_string(), h.retryable),
+        E::Parse(_) => ("PARSE", e.to_string(), false),
+        E::NotFound => ("NOT_FOUND", e.to_string(), false),
+        E::Blocked { .. } => ("source_blocked", e.to_string(), true),
+    }
 }
 
 /// 取参数中的字符串（非字符串/缺失 → `None`）。
@@ -112,7 +141,7 @@ where
     }
 }
 
-/// 读类 op 的取消/超时包装（ARCH §3.2）。
+/// 读类 op 的取消/超时包装。
 ///
 /// - 带 `session`+`sequence`：进入时旧 `sequence` 直接 `CANCELED`（**不发网络请求**）；
 ///   收尾时若已被更新的 `sequence` 取代或本请求 `sequence ≤ cancel_before` → 结果替换为 `CANCELED`。
@@ -165,7 +194,7 @@ fn dispatch(input: &str) -> Value {
         );
     }
 
-    // session 信封级校验（ARCH §3.2）：非法即 `BAD_REQUEST`。
+    // session 信封级校验：非法即 `BAD_REQUEST`。
     if let Some(s) = req.session.as_deref()
         && !cancel::is_valid_session(s)
     {
@@ -233,7 +262,7 @@ fn dispatch(input: &str) -> Value {
             _ => err("BAD_REQUEST", "missing keyword"),
         },
 
-        // `detail` 轨① 直链不可得（EVIDENCE §21.4），但详情/选集元数据可免签取得。
+        // 详情：App 签名主链 + SSR 降级，返回同契约的 `{drama, episodes}`。
         "detail" => match param_str(&req.params, "id") {
             Some(id) if !id.is_empty() => {
                 arbitrated_read(req.session.as_deref(), req.sequence, "detail", || {
@@ -243,12 +272,90 @@ fn dispatch(input: &str) -> Value {
             _ => err("BAD_REQUEST", "missing id"),
         },
 
-        // 超时档位已落位（[`http::inner_timeout_for`] 的 `preload`/`moveDownloads` 档），
-        // 业务尚未实现 → `UNSUPPORTED`。
-        "preload" => err(
-            "UNSUPPORTED",
-            "preload not implemented (inner 15s / outer 20s reserved)",
-        ),
+        // 设备身份初始化：`{dataDir}` → 持久化 device.json，之后签名用稳定身份。
+        // 无状态幂等，不参与仲裁；失败不阻断（退化为进程内临时身份）。
+        "init" => match param_str(&req.params, "dataDir") {
+            Some(dir) if !dir.is_empty() => {
+                device::set_data_dir(std::path::PathBuf::from(&dir));
+                let id = device::identity();
+                ok(json!({ "initialized": true, "deviceIdLen": id.device_id.len() }))
+            }
+            _ => err("BAD_REQUEST", "missing dataDir"),
+        },
+
+        // 取流：`{id, episode?, vid?, quality?}` → `{proxyUrl, url, variants, ...}`。
+        // 播放器只打开 `proxyUrl`（Referer 鉴权 baked 进代理会话）。
+        "play" => match param_str(&req.params, "id") {
+            Some(id) if !id.is_empty() => {
+                arbitrated_read(req.session.as_deref(), req.sequence, "play", || {
+                    with_provider(req.source.as_deref(), |p| {
+                        p.play(
+                            &id,
+                            req.params
+                                .get("episode")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(1) as u32,
+                            param_str(&req.params, "vid"),
+                            req.params
+                                .get("quality")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0),
+                        )
+                    })
+                })
+            }
+            _ => err("BAD_REQUEST", "missing id"),
+        },
+
+        // 预取下集：同 `play` 参数，顺带解密首窗口；失败可忽略（可选能力）。
+        "preload" => match param_str(&req.params, "id") {
+            Some(id) if !id.is_empty() => {
+                arbitrated_read(req.session.as_deref(), req.sequence, "preload", || {
+                    with_provider(req.source.as_deref(), |p| {
+                        p.preload(
+                            &id,
+                            req.params
+                                .get("episode")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(1) as u32,
+                            param_str(&req.params, "vid"),
+                            req.params
+                                .get("quality")
+                                .and_then(Value::as_i64)
+                                .unwrap_or(0),
+                        )
+                    })
+                })
+            }
+            _ => err("BAD_REQUEST", "missing id"),
+        },
+
+        // 追剧与进度（Rust 持久化，Dart 只渲染；无状态，不参与仲裁）。
+        "followPut" => store::follow_put(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "followDel" => store::follow_del(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "followList" => store::follow_list().map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "historyPut" => store::history_put(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "historyGet" => store::history_get(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "historyClear" => store::history_clear().map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        // moveDownloads 超时档位已落位，业务尚未实现 → `UNSUPPORTED`。
         "moveDownloads" => err(
             "UNSUPPORTED",
             "moveDownloads not implemented (inner 600s / outer 620s reserved)",
@@ -341,19 +448,38 @@ mod tests {
         assert_eq!(out["ok"], json!(true));
         assert_eq!(out["data"]["sources"][0]["id"], json!("hongguo"));
         assert_eq!(out["data"]["sources"][0]["caps"]["detail"], json!(true));
-        assert_eq!(out["data"]["sources"][0]["caps"]["playback"], json!(false));
+        assert_eq!(out["data"]["sources"][0]["caps"]["playback"], json!(true));
     }
 
     #[test]
-    fn playback_op_is_unsupported() {
-        let out = dispatch(r#"{"v":1,"op":"play","params":{"id":"x"}}"#);
-        assert_eq!(out["error"]["code"], json!("UNSUPPORTED"));
+    fn play_without_id_is_bad_request() {
+        let out = dispatch(r#"{"v":1,"op":"play","params":{}}"#);
+        assert_eq!(out["error"]["code"], json!("BAD_REQUEST"));
     }
 
     #[test]
-    fn preload_and_move_downloads_are_unsupported_tiers_reserved() {
-        let out = dispatch(r#"{"v":1,"op":"preload"}"#);
-        assert_eq!(out["error"]["code"], json!("UNSUPPORTED"));
+    fn init_without_datadir_is_bad_request() {
+        let out = dispatch(r#"{"v":1,"op":"init","params":{}}"#);
+        assert_eq!(out["error"]["code"], json!("BAD_REQUEST"));
+    }
+
+    #[test]
+    fn init_with_datadir_reports_initialized() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("drama-init-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let input = format!(
+            r#"{{"v":1,"op":"init","params":{{"dataDir":{}}}}}"#,
+            serde_json::to_string(dir.to_str().unwrap()).unwrap()
+        );
+        let out = dispatch(&input);
+        assert_eq!(out["ok"], json!(true));
+        assert_eq!(out["data"]["initialized"], json!(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn move_downloads_is_unsupported_tier_reserved() {
         let out = dispatch(r#"{"v":1,"op":"moveDownloads"}"#);
         assert_eq!(out["error"]["code"], json!("UNSUPPORTED"));
         // 档位映射已落位（纯函数单测见 http::tests）。

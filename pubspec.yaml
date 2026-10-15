@@ -1,0 +1,51 @@
+name: drama_app
+description: "红果短剧客户端（Flutter 只做渲染，Rust 做引擎；Android / iOS / macOS / Windows）"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.3
+
+# 依赖版本（文档待重写）：A 类为已实证版本；本机 Flutter 3.41.5 / Dart 3.11.3，
+# 带 "降级" 注释的项因本机 SDK 约束无法使用基线的更高版本（原因见行内注释）。
+# 瘦身原则：零使用的包不进 pubspec（codegen 全家桶、crypto、后台任务已删；ffigen 留待装 libclang 后生成绑定）。
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # --- A 类：媒体栈 / 玻璃 UI / FFI / 平台能力（已实证） ---
+  media_kit: 1.2.6
+  media_kit_video: 2.0.1
+  media_kit_libs_video: ^1.0.7
+  liquid_glass_widgets: 1.13.0
+  ffi: ^2.2.0
+  window_manager: ^0.5.1
+  path: ^1.9.0
+  path_provider: ^2.1.6
+  shared_preferences: ^2.5.6
+
+  # --- B 类：状态管理（Riverpod 3）/ 路由 / 存储 ---
+  flutter_riverpod: 3.2.1
+  go_router: ^17.5.0
+
+  # --- 构建钩子（hook/build.dart 直接 import，故置于 dependencies） ---
+  hooks: ^2.0.2
+  # 降级：2.x 经 hooks→record_use 要求 meta ^1.19，与 Flutter 3.41.5 冲突
+  code_assets: ^1.2.1
+  # 降级：1.0.5+ 同上，与 meta 冲突
+  native_toolchain_rust: 1.0.4+0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+  # --- FFI 绑定生成 ---
+  ffigen: ^21.0.0
+
+flutter:
+  uses-material-design: true

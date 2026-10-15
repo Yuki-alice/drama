@@ -1,4 +1,4 @@
-# cargo-deny 依赖门禁（实施计划 §4 W0 任务 7 / §7 验证步骤 1）。
+# cargo-deny 依赖门禁。
 #
 # 运行：`cd rust/core && cargo deny check`
 # 说明：本仓库经 `.cargo/config.toml` 用 rsproxy 稀疏镜像**替代** crates.io
@@ -6,7 +6,7 @@
 # 因此源校验把未知 registry 记为警告而不是拒绝。
 
 [graph]
-# MVP 目标平台：Windows x64 + Android 四个 ABI（ARCH §2.4 / rust-toolchain.toml）。
+# MVP 目标平台：Windows x64 + Android 四个 ABI（rust-toolchain.toml）。
 targets = [
     { triple = "x86_64-pc-windows-msvc" },
     { triple = "x86_64-linux-android" },
