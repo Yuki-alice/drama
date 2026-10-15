@@ -7,9 +7,13 @@ version: 1.0.0+1
 environment:
   sdk: ^3.11.3
 
-# 依赖版本（文档待重写）：A 类为已实证版本；本机 Flutter 3.41.5 / Dart 3.11.3，
-# 带 "降级" 注释的项因本机 SDK 约束无法使用基线的更高版本（原因见行内注释）。
-# 瘦身原则：零使用的包不进 pubspec（codegen 全家桶、crypto、后台任务已删；ffigen 留待装 libclang 后生成绑定）。
+# 依赖版本（文档待重写）：A 类为已实证版本。
+# SDK 下界按实际用到的语言特性定：集合字面量的 null-aware 元素（`'k': ?v`）需要 Dart 3.11+。
+#   - 开发机实测：Flutter 3.47.7 / Dart 3.13.5
+#   - CI（.github/workflows/ci.yml）：Flutter 3.41.5（Dart 3.11.x）
+# 两者都满足 ^3.11.3；改依赖前请确认两边都能解析。
+# 带 "降级" 注释的项因 SDK 约束无法使用基线的更高版本（原因见行内注释）。
+# 瘦身原则：零使用的包不进 pubspec（codegen 全家桶、crypto、后台任务已删）。
 dependencies:
   flutter:
     sdk: flutter
