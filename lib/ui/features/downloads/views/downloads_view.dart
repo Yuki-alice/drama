@@ -140,14 +140,14 @@ class _DownloadGroupSection extends StatelessWidget {
 }
 
 /// 单条任务行（集号 + 状态 + 进度 + 操作，全部为普通控件）。
-class _TaskRow extends StatelessWidget {
+class _TaskRow extends ConsumerWidget {
   const _TaskRow({required this.task, required this.colors});
 
   final DownloadTask task;
   final AppColors colors;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final barColor = switch (task.status) {
       DownloadStatus.queued => colors.divider,
       DownloadStatus.paused => colors.textTertiary,
@@ -192,7 +192,7 @@ class _TaskRow extends StatelessWidget {
           ),
           const SizedBox(width: AppSpacing.sm),
           IconButton(
-            onPressed: () {},
+            onPressed: () => downloadAction(ref, task),
             tooltip: _actionLabel(task.status),
             visualDensity: VisualDensity.compact,
             icon: Icon(

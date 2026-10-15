@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
+import '../../../../data/repositories/catalog_providers.dart';
 import '../../../../data/repositories/catalog_repository.dart';
+import '../../../../data/repositories/download_repository.dart';
+import '../../../../data/repositories/playback_repository.dart';
 import '../../../../data/repositories/progress_repository.dart';
 import '../../../../data/services/rust_core.dart';
 import '../../../../domain/models/episode.dart';
@@ -172,7 +175,7 @@ class _DetailViewState extends ConsumerState<DetailView> {
                     label: '下载',
                     icon: Icons.download_outlined,
                     tint: colors.textPrimary,
-                    onTap: () => _notify(context, '下载能力将在 W4 落地（F-07）'),
+                    onTap: () => _downloadEpisode(context, detail, currentEpisode),
                   ),
                 ],
               ),
@@ -291,6 +294,36 @@ class _DetailViewState extends ConsumerState<DetailView> {
       );
     } finally {
       if (mounted) setState(() => _togglingFollow = false);
+    }
+  }
+
+  /// 下载当前集：经仓库调 Rust `downloadStart`，失败显式提示。
+  Future<void> _downloadEpisode(BuildContext context, DramaDetail detail, int episode) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final holder = ref.read(rustCoreProvider);
+    if (holder == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('Rust 核心不可用，无法下载')));
+      return;
+    }
+    final drama = detail.drama;
+    final repo = DownloadRepository(SeriesCoreShim(holder.core));
+    try {
+      final vid = detail.episodes
+          .where((e) => e.index == episode)
+          .map((e) => e.vid ?? '')
+          .firstWhere((v) => v.isNotEmpty, orElse: () => '');
+      await repo.start(
+        seriesId: widget.id,
+        episode: episode,
+        vid: vid,
+        title: drama.title,
+        cover: drama.cover,
+      );
+      messenger.showSnackBar(SnackBar(content: Text('已加入下载：第 $episode 集')));
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('下载失败：${_errorMessage(error)}')),
+      );
     }
   }
 

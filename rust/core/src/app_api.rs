@@ -144,10 +144,13 @@ fn app_request_once(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let mut params = params.to_vec();
-    params.push(("_rticket".to_owned(), now_ms.to_string()));
+    let khronos = (now_ms / 1000) as u32;
+    // 票据抖动：branch == 1 的签名变体会被服务端拒收，先本地算好再发。
+    let ticket = sign::pick_ticket(&params, body, khronos, now_ms);
+    params.push(("_rticket".to_owned(), ticket.to_string()));
     let raw_query = sign::encode_query_sorted(&mut params);
     let url = format!("{APP_BASE}{path}?{raw_query}");
-    let sig = sign::sign_request(&raw_query, body, (now_ms / 1000) as u32, now_ms);
+    let sig = sign::sign_request(&raw_query, body, khronos, ticket);
 
     let mut headers = vec![
         ("User-Agent".to_owned(), APP_UA.to_owned()),
@@ -318,17 +321,11 @@ fn app_status(detail: &Value) -> &'static str {
     if raw == "1" { "finished" } else { "ongoing" }
 }
 
-/// 取流主链：App 签名接口 → 网页**公开轨** → 网页 SSR。
+/// 取流主链：App 签名接口 → multi 签名接口 → 网页公开轨 → 网页 SSR。
 ///
-/// **三条轨的实测行为**（联网校准）：
-/// 1. `video_model/v1`（App 签名，正常时给 1080p 加密流）——当前上游对未授权
-///    客户端返回 `HTTP 200` + **空 body**（同一签名打 `video_detail` 却有 84KB，
-///    故不是签名/身份问题），因此实际取流靠下面两条；
-/// 2. 网页公开轨 `{WEB_BASE}/video/public/{vid}/360p.mp4`——**免签、明文、可直接播**。
-///    这是官网网页播放器自己用的地址；覆盖每部剧前 `accessible_episode_cnt` 集
-///    （多剧实测均为 3 集），其余集 404。见 [`resolve_public_media`]；
-/// 3. 网页 SSR `video_player_info`——站点已改为 `protectedPlayback` 且
-///    `videoList` 为空对象，该字段不再下发，保留仅为站点回退时可用。
+/// 降级顺序按“画质优先”排：App 与 multi 都是全清晰度签名链
+///（multi 用另一套端点与载荷，专治 App 链被降级为空时），
+/// 公开轨 360p 保底，SSR 最后兜底。
 ///
 /// `preferred` 为期望清晰度上限（0 表示要最高）；公开轨只有 360p，不受其影响。
 pub fn resolve_media(
@@ -346,6 +343,12 @@ pub fn resolve_media(
         // 取消/超时是「本次不该继续」的信号，不做降级。
         Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
         Err(e) => errors.push(format!("app: {e}")),
+    }
+
+    match resolve_multi_media(video_id, preferred) {
+        Ok(media) => return Ok(media),
+        Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
+        Err(e) => errors.push(format!("multi: {e}")),
     }
 
     match resolve_public_media(video_id) {
@@ -577,6 +580,288 @@ fn pick_scored(
         }
     }
     Ok(top)
+}
+
+/// multi 取流：`multi_video_model/v1` → `fallback_api` → `video_info`。
+/// 与 `video_model/v1` 是两套端点与载荷，互为备份；`main_url` 为
+/// spade 加密串，用 `key_seed` 解出真实地址。
+fn resolve_multi_media(video_id: &str, preferred: i64) -> Result<ResolvedMedia, SourceError> {
+    let result = app_request(
+        true,
+        "/novel/player/multi_video_model/v1/",
+        &[],
+        Some(json!({
+            "biz_param": {
+                "detail_page_version": 0,
+                "device_level": 3,
+                "disable_digg_stat": false,
+                "need_all_video_definition": true,
+                "need_mp4_align": false,
+                "use_os_player": false,
+                "use_server_dns": false,
+                "video_platform": 1024,
+            },
+            "mixed_video_id_map": { "1004": [video_id] },
+        })),
+    )?;
+    let data = result
+        .get("data")
+        .ok_or_else(|| SourceError::Parse("multi missing data".to_owned()))?;
+    let entry = data
+        .get(video_id)
+        .or_else(|| {
+            data.as_object()
+                .and_then(|m| m.values().find(|v| v.is_object()))
+        })
+        .ok_or_else(|| SourceError::Parse("multi missing entry".to_owned()))?;
+    let model: Value = match entry.get("video_model") {
+        Some(Value::Object(_)) => entry["video_model"].clone(),
+        Some(Value::String(s)) => serde_json::from_str(s)
+            .map_err(|_| SourceError::Parse("multi bad video_model".to_owned()))?,
+        _ => return Err(SourceError::Parse("multi missing video_model".to_owned())),
+    };
+    let fallback = model
+        .get("fallback_api")
+        .and_then(|v| match v {
+            Value::String(s) => serde_json::from_str::<Value>(s)
+                .ok()
+                .and_then(|p| {
+                    p.get("fallback_api")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .or_else(|| Some(s.clone())),
+            Value::Array(a) => a.first().and_then(Value::as_str).map(str::to_owned),
+            _ => v
+                .get("fallback_api")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| SourceError::Parse("multi missing fallback_api".to_owned()))?;
+    let outer: Value = {
+        let req = OutboundRequest {
+            post: false,
+            url: fallback,
+            headers: vec![("User-Agent".to_owned(), APP_UA.to_owned())],
+            body: None,
+        };
+        http::fetch_json_custom(&req).map_err(SourceError::from)?
+    };
+    let info = outer
+        .get("video_info")
+        .and_then(|v| v.get("data"))
+        .ok_or_else(|| SourceError::Parse("multi missing video_info".to_owned()))?;
+    let seed_b64 = info.get("key_seed").and_then(Value::as_str).unwrap_or("");
+    let seed = decode_b64(seed_b64).unwrap_or_default();
+    let list = info
+        .get("video_list")
+        .and_then(Value::as_object)
+        .ok_or_else(|| SourceError::Parse("multi missing video_list".to_owned()))?;
+    let duration = info
+        .get("duration")
+        .and_then(|v| {
+            v.as_f64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+        .unwrap_or(0.0);
+    // 行按清晰度数值降序。
+    let mut rows: Vec<(&String, &Value)> = list.iter().collect();
+    rows.sort_by_key(|(k, v)| {
+        let q = ["quality_desc", "height", "vheight", "quality"]
+            .iter()
+            .map(|f| quality_field(v, f))
+            .find(|q| *q > 0)
+            .unwrap_or_else(|| quality_number(k));
+        std::cmp::Reverse(q)
+    });
+    let mut all_variants: Vec<ResolvedVariant> = Vec::new();
+    let mut best: Option<(i64, ResolvedMedia)> = None;
+    let mut key_err: Option<SourceError> = None;
+    for (key, item) in rows {
+        let enc_url = item.get("main_url").and_then(Value::as_str).unwrap_or("");
+        if enc_url.is_empty() {
+            continue;
+        }
+        let url = match decrypt_spade_url(enc_url, &seed) {
+            Ok(u) if is_http_media_url(&u) => u,
+            _ => continue,
+        };
+        // 行键本身常带清晰度（如 720p/adapt），字段缺失时回退到行键。
+        // 字段可能是整数也可能是字符串，统一经 quality_field 读取。
+        let quality = ["quality_desc", "height", "vheight", "quality"]
+            .iter()
+            .map(|k| quality_field(item, k))
+            .find(|q| *q > 0)
+            .unwrap_or_else(|| quality_number(key));
+        let spade = item.get("spade_a").and_then(Value::as_str).unwrap_or("");
+        let (encrypted, key_hex) = if spade.is_empty() {
+            (false, String::new())
+        } else {
+            match content_key(spade).or_else(|_| content_key_fallback(spade)) {
+                Ok(k) => (true, hex_of(&k)),
+                Err(e) => {
+                    key_err = Some(e);
+                    continue;
+                }
+            }
+        };
+        let media = ResolvedMedia {
+            url: url.clone(),
+            referer: PLAYER_REFERER,
+            duration_secs: duration,
+            quality,
+            encrypted,
+            key_hex,
+            variants: vec![ResolvedVariant {
+                url: url.clone(),
+                quality,
+            }],
+        };
+        all_variants.push(ResolvedVariant { url, quality });
+        let score = quality * 10;
+        if best.as_ref().is_none_or(|(s, _)| score > *s) {
+            best = Some((score, media));
+        }
+    }
+    let top = pick_scored(best.map(|(_, m)| m), all_variants, preferred, key_err)?;
+    Ok(top)
+}
+
+/// 清晰度数值（2160/1440/1080/720/576/540/480/360，或 1920→1080 等映射）。
+fn quality_number(value: &str) -> i64 {
+    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+    for cand in ["2160", "1440", "1080", "720", "576", "540", "480", "360"] {
+        if digits.contains(cand) {
+            return cand.parse().unwrap_or(0);
+        }
+    }
+    match digits.as_str() {
+        "1920" => 1080,
+        "1280" => 720,
+        "1024" => 576,
+        "854" => 480,
+        "640" => 360,
+        s if s.len() >= 3 => s.parse().unwrap_or(0),
+        _ => quality_label(value),
+    }
+}
+
+/// 档位标签映射（无数字时的兜底口径）。
+fn quality_label(value: &str) -> i64 {
+    match value.to_lowercase().as_str() {
+        "low" | "smooth" | "流畅" => 360,
+        "medium" | "标清" => 540,
+        "normal" | "高清" => 720,
+        "high" | "超清" => 1080,
+        "original" | "uhd" | "super_high" | "原画" => 2160,
+        _ => 0,
+    }
+}
+
+/// 字段值转清晰度（整数与字符串统一走同一映射，保证宽高口径一致）。
+fn quality_field(item: &Value, key: &str) -> i64 {
+    match item.get(key) {
+        Some(Value::Number(n)) => quality_number(&n.to_string()),
+        Some(Value::String(s)) => quality_number(s),
+        _ => 0,
+    }
+}
+
+/// spade 加密地址 → 真实地址（AES-128-CBC，SHA512 派生）。
+fn decrypt_spade_url(value: &str, seed: &[u8]) -> Result<String, SourceError> {
+    use sha2::{Digest, Sha512};
+    let raw =
+        decode_b64(value).map_err(|_| SourceError::Parse("spade url bad encoding".to_owned()))?;
+    if raw.len() < 5 || raw[0] != 0xa8 || raw[2] != 0x01 || raw[3] != 0x00 {
+        return Err(SourceError::Parse("spade url bad header".to_owned()));
+    }
+    let cipher_len = (raw.len() - 4) / 16 * 16;
+    if cipher_len == 0 {
+        return Err(SourceError::Parse("spade url no block".to_owned()));
+    }
+    const CONSTANTS_HEX: &str = "4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58";
+    let constants = hex_decode(CONSTANTS_HEX).expect("checked 128 hex");
+    let h1 = Sha512::digest(seed).to_vec();
+    let mut h2 = Sha512::new();
+    h2.update(&h1);
+    h2.update(&constants);
+    let h2 = h2.finalize().to_vec();
+    let mut plain = raw[4..4 + cipher_len].to_vec();
+    decrypt_cbc(&h2[..16], &h2[16..32], &mut plain)
+        .map_err(|_| SourceError::Parse("spade url decrypt failed".to_owned()))?;
+    if let Some(&pad) = plain.last()
+        && (1..=16).contains(&pad)
+        && (pad as usize) <= plain.len()
+    {
+        plain.truncate(plain.len() - pad as usize);
+    }
+    while plain.last() == Some(&0) {
+        plain.pop();
+    }
+    String::from_utf8(plain).map_err(|_| SourceError::Parse("spade url not utf8".to_owned()))
+}
+
+/// AES-128-CBC 解密（无填充，整块）。
+fn decrypt_cbc(key: &[u8], iv: &[u8], data: &mut [u8]) -> Result<(), ()> {
+    use aes::Aes128;
+    use aes::cipher::{BlockCipherDecrypt, KeyInit};
+    if !data.len().is_multiple_of(16) {
+        return Err(());
+    }
+    let key: [u8; 16] = key.try_into().map_err(|_| ())?;
+    let mut prev: [u8; 16] = iv.try_into().map_err(|_| ())?;
+    let mut block = [0u8; 16];
+    let cipher = Aes128::new((&key).into());
+    for chunk in data.chunks_mut(16) {
+        block.copy_from_slice(chunk);
+        let mut b = block;
+        cipher.decrypt_block((&mut b).into());
+        for (i, byte) in chunk.iter_mut().enumerate() {
+            *byte = b[i] ^ prev[i];
+        }
+        prev.copy_from_slice(&block);
+    }
+    Ok(())
+}
+
+/// 备用密钥派生（另一代 spade_a 编码；主算法失败时兜底）。
+fn content_key_fallback(value: &str) -> Result<[u8; 16], SourceError> {
+    let fixed = value.replace('-', "+").replace('_', "/");
+    let raw =
+        decode_b64(&fixed).map_err(|_| SourceError::Parse("spade key bad encoding".to_owned()))?;
+    if raw.len() < 3 {
+        return Err(SourceError::Parse("spade key bad encoding".to_owned()));
+    }
+    let v8 = (raw.len() - (raw[0] ^ raw[1] ^ raw[2]) as usize + 47).min(raw.len() - 1);
+    if v8 < 33 {
+        return Err(SourceError::Parse("spade key bad content".to_owned()));
+    }
+    let mut work = raw[1..1 + v8].to_vec();
+    let (mut a, mut b) = (85u8, 246u8);
+    for (i, byte) in work.iter_mut().enumerate() {
+        let old = *byte;
+        let previous = if i & 1 == 1 { a } else { b };
+        if i & 1 == 1 {
+            a = old;
+        } else {
+            b = old;
+        }
+        let pop = (i as u32).count_ones() as i16;
+        *byte = ((-(21i16) - pop + (previous ^ old) as i16) & 255) as u8;
+    }
+    let hex_str = work
+        .get(1..33)
+        .and_then(|s| std::str::from_utf8(s).ok())
+        .ok_or_else(|| SourceError::Parse("spade key bad content".to_owned()))?;
+    let key =
+        hex_decode(hex_str).ok_or_else(|| SourceError::Parse("spade key not aes128".to_owned()))?;
+    if key.len() != 16 {
+        return Err(SourceError::Parse("spade key not aes128".to_owned()));
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&key);
+    Ok(out)
 }
 
 /// 网页取流降级：`/player/{sid}/{vid}` → `video_player_info` 明文地址。
@@ -871,6 +1156,25 @@ mod tests {
         assert_eq!(select_app_media(&model, 720).unwrap().quality, 720);
         // 上限低于全部门 → 回退最低不断流。
         assert_eq!(select_app_media(&model, 100).unwrap().quality, 480);
+    }
+
+    #[test]
+    fn quality_number_maps_labels() {
+        assert_eq!(quality_number("1080P"), 1080);
+        assert_eq!(quality_number("超清"), 1080);
+        assert_eq!(quality_number("流畅"), 360);
+        assert_eq!(quality_number("1920"), 1080);
+        assert_eq!(quality_number("1280"), 720);
+        assert_eq!(quality_number(""), 0);
+        assert_eq!(quality_field(&json!({"vheight": 720}), "vheight"), 720);
+        assert_eq!(quality_field(&json!({"vheight": "480"}), "vheight"), 480);
+    }
+
+    #[test]
+    fn spade_url_rejects_garbage() {
+        assert!(decrypt_spade_url("!!!", &[]).is_err());
+        assert!(decrypt_spade_url("aGVsbG8=", &[]).is_err());
+        assert!(content_key_fallback("!!!").is_err());
     }
 
     #[test]

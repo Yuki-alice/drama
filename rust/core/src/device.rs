@@ -16,6 +16,9 @@ use crate::sign;
 /// 数据目录（Dart 侧 `init` 传入；未初始化时为 `None`）。
 static DATA_DIR: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None));
 
+/// 下载目录（`init{downloadDir}` 可覆盖；缺省为数据目录下 `downloads`）。
+static DOWNLOAD_DIR: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None));
+
 /// 进程内缓存的身份（避免每次读文件）。
 static CACHED: Lazy<Mutex<Option<Identity>>> = Lazy::new(|| Mutex::new(None));
 
@@ -53,6 +56,29 @@ pub fn data_dir() -> Option<PathBuf> {
         .expect("data dir poisoned")
         .clone()
         .filter(|d| !d.as_os_str().is_empty())
+}
+
+/// 设置下载目录（`init{downloadDir}` 可覆盖；重复调用覆盖）。
+pub fn set_download_dir(dir: PathBuf) {
+    let normalized = if dir.as_os_str().is_empty() {
+        None
+    } else {
+        Some(dir)
+    };
+    *DOWNLOAD_DIR.lock().expect("download dir poisoned") = normalized;
+}
+
+/// 当前下载目录：显式设置优先，否则数据目录下 `downloads`，都没有则 `None`。
+pub fn download_dir() -> Option<PathBuf> {
+    if let Some(dir) = DOWNLOAD_DIR
+        .lock()
+        .expect("download dir poisoned")
+        .clone()
+        .filter(|d| !d.as_os_str().is_empty())
+    {
+        return Some(dir);
+    }
+    data_dir().map(|d| d.join("downloads"))
 }
 
 /// 取设备身份：缓存 → 文件 → 新生成（能写文件时写回）。

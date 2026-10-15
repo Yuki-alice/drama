@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../data/repositories/catalog_providers.dart';
+import '../../../../data/repositories/download_repository.dart';
+import '../../../../data/repositories/playback_repository.dart';
 import '../../../../domain/models/drama.dart';
 
 /// 下载任务状态（各带中文文案）。
@@ -26,6 +28,7 @@ class DownloadTask {
     required this.episode,
     required this.status,
     required this.progress,
+    this.id = '',
   });
 
   final String dramaId;
@@ -39,6 +42,9 @@ class DownloadTask {
 
   /// 0.0 ~ 1.0。
   final double progress;
+
+  /// Rust 侧任务 id（`seriesId:episode`），操作（暂停/重试/删除）用。
+  final String id;
 }
 
 /// 按剧分组的下载任务集合。
@@ -54,40 +60,68 @@ class DownloadGroup {
       tasks.where((task) => task.status == DownloadStatus.completed).length;
 }
 
-/// 下载分组数据（W2 mock：取推荐前 3 部，每部前 8 集）。
-final downloadGroupsProvider = FutureProvider<List<DownloadGroup>>((ref) async {
-  final repository = ref.watch(catalogRepositoryProvider);
-  final page = await repository.catalog(categoryId: 'recommend', page: 0);
-  final dramas = page.items.take(3).toList(growable: false);
-  final groups = <DownloadGroup>[];
-  for (final drama in dramas) {
-    final detail = await repository.detail(drama.id);
-    groups.add(
+/// 下载分组数据：Rust 真实任务按剧分组（`downloadListProvider` 轮询驱动）。
+final downloadGroupsProvider = StreamProvider<List<DownloadGroup>>((ref) {
+  final records = ref.watch(downloadListProvider).value ?? const [];
+  final groups = <String, List<DownloadRecord>>{};
+  for (final record in records) {
+    groups.putIfAbsent(record.seriesId, () => []).add(record);
+  }
+  return Stream.value(<DownloadGroup>[
+    for (final entry in groups.entries)
       DownloadGroup(
-        drama: drama,
+        drama: Drama(
+          id: entry.key,
+          title: entry.value.first.title.isNotEmpty
+              ? entry.value.first.title
+              : entry.key,
+          categoryId: '',
+          categoryName: '',
+          episodeCount: entry.value.fold<int>(
+              0, (max, r) => r.episode > max ? r.episode : max),
+        ),
         tasks: <DownloadTask>[
-          for (final episode in detail.episodes.take(8))
+          for (final record in entry.value)
             DownloadTask(
-              dramaId: drama.id,
-              dramaTitle: drama.title,
-              episode: episode.index,
-              status: _statusFor(episode.index),
-              progress: _progressFor(episode.index),
+              id: record.id,
+              dramaId: record.seriesId,
+              dramaTitle: record.title,
+              episode: record.episode,
+              status: _statusFrom(record.state),
+              progress: record.progress,
             ),
         ],
       ),
-    );
-  }
-  return groups;
+  ]);
 });
 
-/// 按集号循环取状态，保证 completed/downloading/paused/failed/queued 混合出现。
-DownloadStatus _statusFor(int episode) =>
-    DownloadStatus.values[(episode - 1) % DownloadStatus.values.length];
+/// Rust 状态串 → UI 状态（未知按排队处理，不抛异常）。
+DownloadStatus _statusFrom(String state) => switch (state) {
+      'downloading' => DownloadStatus.downloading,
+      'paused' => DownloadStatus.paused,
+      'completed' => DownloadStatus.completed,
+      'failed' => DownloadStatus.failed,
+      _ => DownloadStatus.queued,
+    };
 
-/// 确定性进度：已完成 = 1.0；排队 = 0.0；其余按「集号 / 8」估算。
-double _progressFor(int episode) => switch (_statusFor(episode)) {
-  DownloadStatus.completed => 1.0,
-  DownloadStatus.queued => 0.0,
-  _ => (episode / 8).clamp(0.1, 0.95).toDouble(),
-};
+/// 任务行操作：暂停/继续/重试/删除（经仓库调 Rust op，失败静默）。
+Future<void> downloadAction(WidgetRef ref, DownloadTask task) async {
+  final holder = ref.read(rustCoreProvider);
+  if (holder == null || task.id.isEmpty) return;
+  final repository = DownloadRepository(SeriesCoreShim(holder.core));
+  try {
+    switch (task.status) {
+      case DownloadStatus.downloading:
+      case DownloadStatus.queued:
+        await repository.pause(task.id);
+      case DownloadStatus.paused:
+      case DownloadStatus.failed:
+        await repository.retry(task.id);
+      case DownloadStatus.completed:
+        await repository.delete(task.id, files: true);
+    }
+  } catch (_) {
+    // 操作失败静默，下轮轮询自愈。
+  }
+  ref.invalidate(downloadListProvider);
+}

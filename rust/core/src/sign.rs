@@ -160,3 +160,97 @@ mod tests {
         assert!(id.chars().all(|c| c.is_ascii_digit()));
     }
 }
+
+/// 请求分支判定（服务端拒收 branch == 1 的签名变体）。
+/// `query` 为已编码的原始 query 串，`khronos` 为秒级时间戳。
+/// 算法与参照 JS 实现一致，向量由 Node 生成锁定。
+pub fn request_branch(query: &str, body: Option<&[u8]>, khronos: u32) -> i32 {
+    use sm3::{Digest, Sm3};
+    let body_md5 = body
+        .map(md5::compute)
+        .map(|d| d.0.to_vec())
+        .unwrap_or(vec![0u8; 16]);
+    let q = Sm3::digest(query.as_bytes());
+    let mut khronos_le = [0u8; 4];
+    khronos_le.copy_from_slice(&(khronos.to_le_bytes()));
+    let iv = get_iv(get_iv(get_iv(0x20230928, &q), &body_md5), &khronos_le);
+    let low = (iv & 15) as i32;
+    low - (((low * 171) >> 9) * 3)
+}
+
+fn get_iv(iv: u32, data: &[u8]) -> u32 {
+    let mut value = iv;
+    for (i, b) in data.iter().enumerate() {
+        let b = *b as u32;
+        if i % 2 == 0 {
+            value = (value >> 4) ^ value ^ value.wrapping_shl(6) ^ b;
+        } else {
+            value = !((value >> 7) ^ value ^ (b | value.wrapping_shl(12)));
+        }
+    }
+    value
+}
+
+/// 在 `ticket_base..ticket_base+128` 内抖动 `_rticket`，取第一个
+/// branch == 0 的值；128 个全不满足（概率可忽略）时返回原值。
+/// 只发 branch 0——服务端拒收 branch 1，对 branch 2 的成功率也无保证。
+pub fn pick_ticket(
+    query_without_ticket: &[(String, String)],
+    body: Option<&[u8]>,
+    khronos: u32,
+    ticket_base: i64,
+) -> i64 {
+    for offset in 0..128i64 {
+        let ticket = ticket_base + offset;
+        let mut params = query_without_ticket.to_vec();
+        params.push(("_rticket".to_owned(), ticket.to_string()));
+        let query = encode_query_sorted(&mut params);
+        if request_branch(&query, body, khronos) == 0 {
+            return ticket;
+        }
+    }
+    ticket_base
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+
+    #[test]
+    fn branch_matches_node_vectors() {
+        let body = br#"{"video_id":"7654321","content_type":1}"#;
+        let q = "aid=8662&device_id=1234567890123456789";
+        assert_eq!(request_branch(q, Some(body), 1700000000), 0);
+        // body 为空走全零 md5 路径。
+        assert_eq!(request_branch(q, None, 1700000000), 2);
+        // 构造出的 branch == 1 用例。
+        assert_eq!(
+            request_branch("aid=8662&x=3", Some(br#"{"a":1}"#), 1700000000),
+            1
+        );
+    }
+
+    #[test]
+    fn ticket_picker_avoids_branch_one() {
+        let base = vec![("aid".to_owned(), "8662".to_owned())];
+        // 暴力找一个 branch==1 的基准票据，再验证 picker 能绕开。
+        let mut found = None;
+        for t in 1700000000000i64..1700000001000 {
+            let mut params = base.clone();
+            params.push(("_rticket".to_owned(), t.to_string()));
+            let query = encode_query_sorted(&mut params);
+            if request_branch(&query, Some(b"x"), 1700000000) == 1 {
+                found = Some(t);
+                break;
+            }
+        }
+        if let Some(t0) = found {
+            let picked = pick_ticket(&base, Some(b"x"), 1700000000, t0);
+            let mut params = base.clone();
+            params.push(("_rticket".to_owned(), picked.to_string()));
+            let query = encode_query_sorted(&mut params);
+            assert_eq!(request_branch(&query, Some(b"x"), 1700000000), 0);
+            assert!(picked - t0 < 128);
+        }
+    }
+}

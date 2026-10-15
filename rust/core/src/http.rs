@@ -203,10 +203,17 @@ pub fn enter_read(cancel: Option<CancellationToken>, budget: Duration) -> ReadGu
 }
 
 /// 取文本入口（HTML/JSON）：受并发与同域间隔约束，带指数退避重试。
+/// 响应上限 16 MiB（SSR 页正常几百 KiB，超限说明源站返回了脏数据）。
 pub fn fetch_text_throttled(url: &str) -> Result<String, HttpError> {
     let bytes = RUNTIME.block_on(request_bytes(url, true))?;
+    if bytes.len() > MAX_TEXT_BODY_BYTES {
+        return Err(HttpError::new(None, false, "text response too large"));
+    }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
+
+/// 文本响应体上限（16 MiB）。
+pub const MAX_TEXT_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// 自定义出站请求（签名 App 接口用）：方法 + 完整 URL + 逐请求头 + 可选 body。
 /// 复用同一 reqwest 客户端（连接池保留），逐请求头覆盖默认值。

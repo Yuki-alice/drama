@@ -19,6 +19,9 @@ pub mod app_api;
 pub mod cancel;
 pub mod covers;
 pub mod decrypt;
+pub mod device;
+pub mod download;
+pub mod gateway;
 
 /// 测试串行锁：`device` 与 `store` 测试共享进程级可变全局（`DATA_DIR`），
 /// 必须串行，否则持久化路径互相踩。需要全局隔离的测试先拿这把锁。
@@ -28,8 +31,6 @@ pub(crate) mod test_serial {
     use std::sync::Mutex;
     pub static SERIAL: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 }
-pub mod device;
-pub mod gateway;
 pub mod http;
 pub mod sign;
 pub mod source;
@@ -282,11 +283,16 @@ fn dispatch(input: &str) -> Value {
             _ => err("BAD_REQUEST", "missing id"),
         },
 
-        // 设备身份初始化：`{dataDir}` → 持久化 device.json，之后签名用稳定身份。
+        // 设备身份初始化：`{dataDir, downloadDir?}` → 持久化 device.json。
         // 无状态幂等，不参与仲裁；失败不阻断（退化为进程内临时身份）。
         "init" => match param_str(&req.params, "dataDir") {
             Some(dir) if !dir.is_empty() => {
                 device::set_data_dir(std::path::PathBuf::from(&dir));
+                if let Some(download) = param_str(&req.params, "downloadDir")
+                    && !download.is_empty()
+                {
+                    device::set_download_dir(std::path::PathBuf::from(&download));
+                }
                 let id = device::identity();
                 ok(json!({ "initialized": true, "deviceIdLen": id.device_id.len() }))
             }
@@ -370,6 +376,39 @@ fn dispatch(input: &str) -> Value {
             "UNSUPPORTED",
             "moveDownloads not implemented (inner 600s / outer 620s reserved)",
         ),
+
+        // 下载管理（长任务跑独立运行时；Dart 轮询 `downloadList` 取进度）。
+        "downloadStart" => download::start(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "downloadList" => download::list().map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "downloadPause" => download::pause(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "downloadRetry" => download::retry(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "downloadCancel" => download::cancel(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "downloadDelete" => download::delete(&req.params).map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        // 离线播放：已完成下载注册文件会话，返回代理 URL（复用解密链）。
+        "playFile" => download::play_file(&req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
 
         other => err("UNSUPPORTED", format!("unknown op: {other}")),
     }

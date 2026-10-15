@@ -34,6 +34,20 @@ pub struct MoviePlan {
     pub samples: Vec<Sample>,
 }
 
+/// 未终定的改写中间态（stco 尚未偏移，avcC 尚未植入）。
+#[derive(Debug)]
+pub struct RawPlan {
+    pub moov_start: u64,
+    pub moov_end: u64,
+    pub old_moov_size: u64,
+    pub new_moov: Vec<u8>,
+    pub samples: Vec<Sample>,
+    /// 首个视频加密样本的原文件区间（用于取 SPS/PPS 合成 avcC）。
+    pub first_video: Option<(u64, u64)>,
+    /// 视频轨还原为 avc1 但缺少 avcC（需合成；已有 hvcC/avcC 时为 false）。
+    pub needs_avcc: bool,
+}
+
 #[derive(Debug)]
 pub enum DecryptError {
     Unsupported(String),
@@ -133,12 +147,13 @@ fn wrap_box(typ: [u8; 4], payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// 从 front（含 moov）构建改写计划。`front_base` 为 front 在文件中的起始偏移。
+/// 从 front（含 moov）构建改写中间态。`front_base` 为 front 在文件中的起始偏移。
+/// stco 偏移与 avcC 植入在 [`finalize_plan`] 做。
 pub fn analyze_moov(
     front: &[u8],
     front_base: u64,
     _key: &[u8; 16],
-) -> Result<MoviePlan, DecryptError> {
+) -> Result<RawPlan, DecryptError> {
     // 顶层宽容扫描：只找 moov（mdat 等大 box 可能延伸出缓冲，不报错）。
     let mut moov_box: Option<BoxInfo> = None;
     let mut off = 0usize;
@@ -179,12 +194,18 @@ pub fn analyze_moov(
 
     let mut new_moov_payload = Vec::new();
     let mut samples: Vec<Sample> = Vec::new();
+    let mut first_video: Option<(u64, u64)> = None;
+    let mut needs_avcc = false;
     for child in children(front, front_base, moov_payload)? {
         match &child.typ {
             b"pssh" => continue,
             b"trak" => {
                 let rebuilt = rebuild_trak(front, front_base, &child, &mut samples)?;
-                new_moov_payload.extend_from_slice(&rebuilt);
+                if first_video.is_none() {
+                    first_video = rebuilt.first_video;
+                }
+                needs_avcc |= rebuilt.needs_avcc;
+                new_moov_payload.extend_from_slice(&rebuilt.bytes);
             }
             _ => new_moov_payload.extend_from_slice(box_bytes(front, front_base, &child)?),
         }
@@ -194,17 +215,149 @@ pub fn analyze_moov(
     new_moov.extend_from_slice(&(new_size as u32).to_be_bytes());
     new_moov.extend_from_slice(b"moov");
     new_moov.extend_from_slice(&new_moov_payload);
-    let delta = new_size as i64 - moov.size as i64;
-
-    shift_chunk_offsets(&mut new_moov, moov_end, delta)?;
     samples.sort_by_key(|s| s.start);
-    Ok(MoviePlan {
+    Ok(RawPlan {
         moov_start,
         moov_end,
+        old_moov_size: moov.size,
         new_moov,
-        delta,
         samples,
+        first_video,
+        needs_avcc,
     })
+}
+
+/// 终定：植入 avcC（如有）→ 偏移 stco/co64 → 算 delta。
+pub fn finalize_plan(mut raw: RawPlan, avcc: Option<Vec<u8>>) -> Result<MoviePlan, DecryptError> {
+    if let Some(avcc) = avcc {
+        insert_avcc(&mut raw.new_moov, &avcc)?;
+    }
+    let delta = raw.new_moov.len() as i64 - raw.old_moov_size as i64;
+    shift_chunk_offsets(&mut raw.new_moov, raw.moov_end, delta)?;
+    Ok(MoviePlan {
+        moov_start: raw.moov_start,
+        moov_end: raw.moov_end,
+        new_moov: raw.new_moov,
+        delta,
+        samples: raw.samples,
+    })
+}
+
+/// 在首个 avc1 条目内植入 avcC（视频固定头 86 字节之后），并回填路径上各级尺寸。
+fn insert_avcc(new_moov: &mut Vec<u8>, avcc: &[u8]) -> Result<(), DecryptError> {
+    // 路径 moov/trak/mdia/minf/stbl/stsd/entry(avc1)，记录各级 box 起始。
+    let owned = new_moov.clone();
+    let top = children(&owned, 0, 0..owned.len())?;
+    let moov = find(&top, b"moov").ok_or(DecryptError::Truncated)?;
+    let mut path: Vec<u64> = vec![moov.start];
+    let mut cursor = payload_range(&owned, 0, moov)?;
+    let mut entry_start: Option<u64> = None;
+    'outer: for level in [b"trak", b"mdia", b"minf", b"stbl", b"stsd"] {
+        let mut found = None;
+        for b in children(&owned, 0, cursor)? {
+            if b.typ == *level {
+                found = Some(b);
+                break;
+            }
+        }
+        let found = found.ok_or(DecryptError::Truncated)?;
+        path.push(found.start);
+        cursor = payload_range(&owned, 0, &found)?;
+        if level == b"stsd" {
+            for e in children(&owned, 0, (cursor.start + 8)..cursor.end)? {
+                if e.typ == *b"avc1" {
+                    entry_start = Some(e.start);
+                    path.push(e.start);
+                    break 'outer;
+                }
+            }
+            return Err(DecryptError::Unsupported("no avc1 entry".to_owned()));
+        }
+    }
+    let entry_start = entry_start.ok_or(DecryptError::Truncated)?;
+    let at = (entry_start + 86) as usize;
+    let entry_len_off = entry_start as usize;
+    let entry_len = read_u32(&owned, entry_len_off).ok_or(DecryptError::Truncated)? as usize;
+    if entry_len < 86 + 8 || at > new_moov.len() {
+        return Err(DecryptError::Unsupported("avc1 entry too small".to_owned()));
+    }
+    new_moov.splice(at..at, avcc.iter().copied());
+    // 回填路径各级尺寸（均为 32 位；改写产物保证无 largesize）。
+    for start in path {
+        let off = start as usize;
+        if owned[off..off + 4] == [0, 0, 0, 1] {
+            return Err(DecryptError::Unsupported("largesize moov".to_owned()));
+        }
+        let size = read_u32(new_moov, off).ok_or(DecryptError::Truncated)? as usize;
+        let new_size = (size + avcc.len()) as u32;
+        new_moov[off..off + 4].copy_from_slice(&new_size.to_be_bytes());
+    }
+    Ok(())
+}
+
+/// 从解密后的首视频样本提取 SPS/PPS（AVCC 4 字节长度前缀）。
+pub fn extract_sps_pps(sample: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut sps = None;
+    let mut pps = None;
+    let mut off = 0usize;
+    let mut nal_count = 0;
+    while off + 4 <= sample.len() && nal_count < 16 {
+        let len = u32::from_be_bytes([
+            sample[off],
+            sample[off + 1],
+            sample[off + 2],
+            sample[off + 3],
+        ]) as usize;
+        if len == 0 || len > 4_000_000 || off + 4 + len > sample.len() {
+            break;
+        }
+        let nal_type = sample[off + 4] & 0x1f;
+        if nal_type == 7 && sps.is_none() {
+            sps = Some(sample[off + 4..off + 4 + len].to_vec());
+        } else if nal_type == 8 && pps.is_none() {
+            pps = Some(sample[off + 4..off + 4 + len].to_vec());
+        }
+        if sps.is_some() && pps.is_some() {
+            break;
+        }
+        off += 4 + len;
+        nal_count += 1;
+    }
+    match (sps, pps) {
+        (Some(s), Some(p)) if s.len() >= 4 => Some((s, p)),
+        _ => None,
+    }
+}
+
+/// 组装 avcC box（含头）。
+pub fn build_avcc(sps: &[u8], pps: &[u8]) -> Option<Vec<u8>> {
+    if sps.len() < 4 || sps.len() > 65535 || pps.is_empty() || pps.len() > 65535 {
+        return None;
+    }
+    let mut payload = Vec::with_capacity(sps.len() + pps.len() + 11);
+    payload.push(1);
+    payload.push(sps[1]);
+    payload.push(sps[2]);
+    payload.push(sps[3]);
+    payload.push(0xff);
+    payload.push(0xe1);
+    payload.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    payload.extend_from_slice(sps);
+    payload.push(1);
+    payload.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+    payload.extend_from_slice(pps);
+    Some(wrap_box(*b"avcC", &payload))
+}
+
+/// 保持兼容的老入口（无 avcC 合成；仅单测用）。
+#[cfg(test)]
+pub fn analyze_moov_test_only(
+    front: &[u8],
+    front_base: u64,
+    _key: &[u8; 16],
+) -> Result<MoviePlan, DecryptError> {
+    let raw = analyze_moov(front, front_base, _key)?;
+    finalize_plan(raw, None)
 }
 
 /// stco/co64 修正：指向 moov 之后内容的偏移跟随 delta。
@@ -277,68 +430,91 @@ fn shift_chunk_offsets(moov: &mut [u8], moov_end: u64, delta: i64) -> Result<(),
     Ok(())
 }
 
-/// 重建单个 trak：改写 stbl（去保护盒、`encv→avc1`），收集样本表。
-fn rebuild_trak(
-    data: &[u8],
-    base: u64,
-    trak: &BoxInfo,
-    samples: &mut Vec<Sample>,
-) -> Result<Vec<u8>, DecryptError> {
+/// 重建单个 trak：改写 stbl、收集样本表。
+/// 重建产物：改写字节 + 本轨首个加密样本区间。
+type RebuiltTrack = Result<TrackRebuild, DecryptError>;
+
+/// 单轨改写结果。
+struct TrackRebuild {
+    bytes: Vec<u8>,
+    first_video: Option<(u64, u64)>,
+    needs_avcc: bool,
+}
+
+fn rebuild_trak(data: &[u8], base: u64, trak: &BoxInfo, samples: &mut Vec<Sample>) -> RebuiltTrack {
     let trak_payload = payload_range(data, base, trak)?;
     let mut out = Vec::new();
+    let mut head = TrackRebuild {
+        bytes: Vec::new(),
+        first_video: None,
+        needs_avcc: false,
+    };
     for child in children(data, base, trak_payload)? {
         if child.typ == *b"mdia" {
-            out.extend_from_slice(&rebuild_mdia(data, base, &child, samples)?);
+            let rebuilt = rebuild_mdia(data, base, &child, samples)?;
+            out.extend_from_slice(&rebuilt.bytes);
+            if head.first_video.is_none() {
+                head.first_video = rebuilt.first_video;
+            }
+            head.needs_avcc |= rebuilt.needs_avcc;
         } else {
             out.extend_from_slice(box_bytes(data, base, &child)?);
         }
     }
-    Ok(wrap_box(*b"trak", &out))
+    head.bytes = wrap_box(*b"trak", &out);
+    Ok(head)
 }
 
-fn rebuild_mdia(
-    data: &[u8],
-    base: u64,
-    mdia: &BoxInfo,
-    samples: &mut Vec<Sample>,
-) -> Result<Vec<u8>, DecryptError> {
+fn rebuild_mdia(data: &[u8], base: u64, mdia: &BoxInfo, samples: &mut Vec<Sample>) -> RebuiltTrack {
     let mdia_payload = payload_range(data, base, mdia)?;
     let mut out = Vec::new();
+    let mut head = TrackRebuild {
+        bytes: Vec::new(),
+        first_video: None,
+        needs_avcc: false,
+    };
     for child in children(data, base, mdia_payload)? {
         if child.typ == *b"minf" {
-            out.extend_from_slice(&rebuild_minf(data, base, &child, samples)?);
+            let rebuilt = rebuild_minf(data, base, &child, samples)?;
+            out.extend_from_slice(&rebuilt.bytes);
+            if head.first_video.is_none() {
+                head.first_video = rebuilt.first_video;
+            }
+            head.needs_avcc |= rebuilt.needs_avcc;
         } else {
             out.extend_from_slice(box_bytes(data, base, &child)?);
         }
     }
-    Ok(wrap_box(*b"mdia", &out))
+    head.bytes = wrap_box(*b"mdia", &out);
+    Ok(head)
 }
 
-fn rebuild_minf(
-    data: &[u8],
-    base: u64,
-    minf: &BoxInfo,
-    samples: &mut Vec<Sample>,
-) -> Result<Vec<u8>, DecryptError> {
+fn rebuild_minf(data: &[u8], base: u64, minf: &BoxInfo, samples: &mut Vec<Sample>) -> RebuiltTrack {
     let minf_payload = payload_range(data, base, minf)?;
     let mut out = Vec::new();
+    let mut head = TrackRebuild {
+        bytes: Vec::new(),
+        first_video: None,
+        needs_avcc: false,
+    };
     for child in children(data, base, minf_payload)? {
         if child.typ == *b"stbl" {
-            out.extend_from_slice(&rebuild_stbl(data, base, &child, samples)?);
+            let rebuilt = rebuild_stbl(data, base, &child, samples)?;
+            out.extend_from_slice(&rebuilt.bytes);
+            if head.first_video.is_none() {
+                head.first_video = rebuilt.first_video;
+            }
+            head.needs_avcc |= rebuilt.needs_avcc;
         } else {
             out.extend_from_slice(box_bytes(data, base, &child)?);
         }
     }
-    Ok(wrap_box(*b"minf", &out))
+    head.bytes = wrap_box(*b"minf", &out);
+    Ok(head)
 }
 
-/// 重建 stbl 并收集该轨样本。
-fn rebuild_stbl(
-    data: &[u8],
-    base: u64,
-    stbl: &BoxInfo,
-    samples: &mut Vec<Sample>,
-) -> Result<Vec<u8>, DecryptError> {
+/// 重建 stbl 并收集该轨样本；返回改写结果（含首个视频加密样本与 avcC 需求）。
+fn rebuild_stbl(data: &[u8], base: u64, stbl: &BoxInfo, samples: &mut Vec<Sample>) -> RebuiltTrack {
     let stbl_payload = payload_range(data, base, stbl)?;
     let kids = children(data, base, stbl_payload)?;
     for b in &kids {
@@ -347,11 +523,18 @@ fn rebuild_stbl(
         }
     }
     let mut new_stsd: Option<Vec<u8>> = None;
+    let mut track_enc_video = false;
+    let mut track_needs_avcc = false;
     if let Some(stsd) = find(&kids, b"stsd") {
-        let (rebuilt, detected) = rebuild_stsd(data, base, stsd)?;
+        let (rebuilt, detected, infos) = rebuild_stsd(data, base, stsd)?;
         if detected == Scheme::Unsupported {
             return Err(DecryptError::Unsupported("non-cenc scheme".to_owned()));
         }
+        // 视频加密轨首样本 + avcC 缺失标记（合成用）。
+        track_enc_video = infos.iter().any(|i| i.enc_video);
+        track_needs_avcc = infos
+            .iter()
+            .any(|i| i.enc_video && i.restored == *b"avc1" && !i.has_config);
         new_stsd = Some(rebuilt);
     }
     let stsz = find(&kids, b"stsz")
@@ -366,6 +549,7 @@ fn rebuild_stbl(
     let co_box = find(&kids, b"stco").or(find(&kids, b"co64"));
     let track_samples = build_samples(data, base, stsz.as_deref(), stsc.as_deref(), co_box, wide)?;
     let ivs = read_ivs(data, base, &kids)?;
+    let mut first_sample: Option<(u64, u64)> = None;
     if track_samples.is_empty() {
         // 空轨：直接放行。
     } else if ivs.is_empty() {
@@ -383,12 +567,17 @@ fn rebuild_stbl(
                 track_samples.len()
             )));
         }
+        let before = samples.len();
         for (i, (start, end)) in track_samples.iter().enumerate() {
             samples.push(Sample {
                 start: *start,
                 end: *end,
                 iv: ivs[i],
             });
+        }
+        // 记录本轨首个加密样本（视频轨用于取 SPS/PPS）。
+        if track_enc_video && samples.len() > before {
+            first_sample = Some((samples[before].start, samples[before].end));
         }
     }
     let mut out = Vec::new();
@@ -403,7 +592,11 @@ fn rebuild_stbl(
             _ => out.extend_from_slice(box_bytes(data, base, b)?),
         }
     }
-    Ok(wrap_box(*b"stbl", &out))
+    Ok(TrackRebuild {
+        bytes: wrap_box(*b"stbl", &out),
+        first_video: first_sample,
+        needs_avcc: track_needs_avcc,
+    })
 }
 
 fn stsd_is_encrypted(data: &[u8], base: u64, stsd: Option<&BoxInfo>) -> Result<bool, DecryptError> {
@@ -422,8 +615,44 @@ pub enum Scheme {
     Unsupported,
 }
 
-/// 重建 stsd：`encv→avc1`、`enca→mp4a`，去 `sinf`；返回改写字节 + 方案。
-fn rebuild_stsd(data: &[u8], base: u64, stsd: &BoxInfo) -> Result<(Vec<u8>, Scheme), DecryptError> {
+/// 样本条目固定头长度（box 头 8 字节之外）：视频 78，音频 28，其他未知按 0
+/// 处理（把整个 payload 当子盒区——调用方只对 encv/enca 使用此函数）。
+fn entry_fixed_len(typ: &[u8; 4]) -> usize {
+    match typ {
+        b"encv" | b"avc1" | b"hev1" | b"hvc1" | b"avc3" | b"hvcC" => 78,
+        b"enca" | b"mp4a" | b"ac-3" | b"ec-3" => 28,
+        _ => 0,
+    }
+}
+
+/// 条目子盒区（跳过固定头），坐标相对返回切片。
+fn entry_children<'a>(
+    entry_payload: &'a [u8],
+    typ: &[u8; 4],
+) -> Result<(&'a [u8], Vec<BoxInfo>), DecryptError> {
+    let skip = entry_fixed_len(typ);
+    if skip > entry_payload.len() {
+        return Err(DecryptError::Truncated);
+    }
+    let region = &entry_payload[skip..];
+    let kids = children(region, 0, 0..region.len())?;
+    Ok((region, kids))
+}
+
+/// 单条目改写信息。
+struct EntryInfo {
+    enc_video: bool,
+    restored: [u8; 4],
+    has_config: bool,
+}
+
+/// 重建 stsd：`encv/enca` 去 `sinf` 并按 `frma` 还原编码；返回改写字节 +
+/// 方案 + 逐条目信息。
+fn rebuild_stsd(
+    data: &[u8],
+    base: u64,
+    stsd: &BoxInfo,
+) -> Result<(Vec<u8>, Scheme, Vec<EntryInfo>), DecryptError> {
     let payload = payload_range(data, base, stsd)?;
     let head = data
         .get(payload.start..payload.start + 8)
@@ -431,33 +660,51 @@ fn rebuild_stsd(data: &[u8], base: u64, stsd: &BoxInfo) -> Result<(Vec<u8>, Sche
         .to_vec();
     let entries = children(data, base, (payload.start + 8)..payload.end)?;
     let mut body = Vec::new();
+    let mut infos = Vec::new();
     for e in &entries {
         let raw = box_bytes(data, base, e)?;
-        let (new_typ, mut entry_payload) = match &e.typ {
-            b"encv" => (*b"avc1", raw[8..].to_vec()),
-            b"enca" => (*b"mp4a", raw[8..].to_vec()),
-            _ => (e.typ, raw[8..].to_vec()),
+        let is_enc = e.typ == *b"encv" || e.typ == *b"enca";
+        let mut entry_payload = raw[8..].to_vec();
+        // 默认还原目标；sinf/frma 给出原始编码时优先用它（不硬编码 avc1）。
+        let mut restore = match &e.typ {
+            b"encv" => *b"avc1",
+            b"enca" => *b"mp4a",
+            _ => e.typ,
         };
-        if e.typ == *b"encv" || e.typ == *b"enca" {
-            let kids = children(&entry_payload, 0, 0..entry_payload.len())?;
+        let mut has_config = false;
+        if is_enc {
+            let (region, kids) = entry_children(&entry_payload, &e.typ)?;
             let mut kept = Vec::new();
+            let skip = entry_fixed_len(&e.typ);
             for k in &kids {
                 if k.typ == *b"sinf" {
-                    if let Some(s) = read_scheme(&entry_payload, k)?
+                    if let Some(s) = read_scheme(region, k)?
                         && s != Scheme::Cenc
                     {
-                        return Ok((Vec::new(), Scheme::Unsupported));
+                        return Ok((Vec::new(), Scheme::Unsupported, Vec::new()));
+                    }
+                    if let Some(original) = read_frma(region, k)
+                        && is_sane_fourcc(&original)
+                    {
+                        restore = original;
                     }
                     continue;
                 }
-                kept.extend_from_slice(
-                    &entry_payload[k.start as usize..(k.start + k.size) as usize],
-                );
+                if k.typ == *b"avcC" || k.typ == *b"hvcC" || k.typ == *b"esds" {
+                    has_config = true;
+                }
+                kept.extend_from_slice(&region[k.start as usize..(k.start + k.size) as usize]);
             }
-            entry_payload = kept;
+            entry_payload = entry_payload[..skip].to_vec();
+            entry_payload.extend_from_slice(&kept);
         }
+        infos.push(EntryInfo {
+            enc_video: e.typ == *b"encv",
+            restored: restore,
+            has_config,
+        });
         body.extend_from_slice(&((entry_payload.len() + 8) as u32).to_be_bytes());
-        body.extend_from_slice(&new_typ);
+        body.extend_from_slice(&restore);
         body.extend_from_slice(&entry_payload);
     }
     let total = head.len() + body.len() + 8;
@@ -466,7 +713,24 @@ fn rebuild_stsd(data: &[u8], base: u64, stsd: &BoxInfo) -> Result<(Vec<u8>, Sche
     out.extend_from_slice(b"stsd");
     out.extend_from_slice(&head);
     out.extend_from_slice(&body);
-    Ok((out, Scheme::Cenc))
+    Ok((out, Scheme::Cenc, infos))
+}
+
+/// 读 `sinf/frma` 原始编码（4 字节）；缺失返回 `None`。
+fn read_frma(entry_payload: &[u8], sinf: &BoxInfo) -> Option<[u8; 4]> {
+    let s = sinf.start as usize;
+    let e = (sinf.start + sinf.size) as usize;
+    let kids = children(entry_payload, 0, s + 8..e.min(entry_payload.len())).ok()?;
+    let frma = find(&kids, b"frma")?;
+    let off = frma.start as usize + 8;
+    entry_payload
+        .get(off..off + 4)
+        .and_then(|b| b.try_into().ok())
+}
+
+/// fourcc 合法性：4 字节可打印 ASCII（防脏数据写坏 stsd）。
+fn is_sane_fourcc(f: &[u8; 4]) -> bool {
+    f.iter().all(|b| b.is_ascii_graphic() || *b == b' ')
 }
 
 /// 读 `sinf/schm/scheme_type`；缺失视为 cenc（与取流侧“有 spade 即解”一致）。

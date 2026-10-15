@@ -45,6 +45,8 @@ struct Session {
     referer: &'static str,
     user_agent: String,
     key: Option<[u8; 16]>,
+    /// 本地文件源（离线播放）；`Some` 时忽略 url 回源，读磁盘。
+    file: Option<std::path::PathBuf>,
     plan: Mutex<Option<Arc<CachedPlan>>>,
     expires: Instant,
     last_used: Instant,
@@ -148,6 +150,38 @@ pub fn register(
         referer,
         user_agent,
         key,
+        file: None,
+        plan: Mutex::new(None),
+        expires: now + SESSION_TTL,
+        last_used: now,
+    };
+    SESSIONS
+        .lock()
+        .expect("sessions poisoned")
+        .insert(token.clone(), session);
+    Ok(format!("http://127.0.0.1:{port}/play/{token}/video.mp4"))
+}
+
+/// 注册文件会话（离线播放）：`key` 为空表示明文直通，否则走同一套
+/// moov 改写 + 样本解密（与在线链路共用计划缓存逻辑）。
+pub fn register_file(
+    path: &std::path::Path,
+    user_agent: String,
+    key: Option<[u8; 16]>,
+) -> Result<String, String> {
+    if !path.is_file() {
+        return Err("file not found".to_owned());
+    }
+    let port = ensure_port_blocking()?;
+    sweep_and_evict();
+    let token = new_token();
+    let now = Instant::now();
+    let session = Session {
+        url: String::new(),
+        referer: "file",
+        user_agent,
+        key,
+        file: Some(path.to_owned()),
         plan: Mutex::new(None),
         expires: now + SESSION_TTL,
         last_used: now,
@@ -210,6 +244,7 @@ struct SessionView {
     referer: &'static str,
     user_agent: String,
     key: Option<[u8; 16]>,
+    file: Option<std::path::PathBuf>,
 }
 
 fn lookup(token: &str) -> Option<SessionView> {
@@ -225,7 +260,43 @@ fn lookup(token: &str) -> Option<SessionView> {
         referer: session.referer,
         user_agent: session.user_agent.clone(),
         key: session.key,
+        file: session.file.clone(),
     })
+}
+
+/// 数据源大小：文件读元数据，回源发 HEAD（失败回退首字节探测）。
+async fn source_size(view: &SessionView) -> Result<u64, String> {
+    if let Some(path) = view.file.as_deref() {
+        return std::fs::metadata(path)
+            .map(|m| m.len())
+            .map_err(|e| format!("local file: {e}"));
+    }
+    upstream_size(&view.url, view.referer, &view.user_agent).await
+}
+
+/// 数据源区间读：文件直接读磁盘，回源走 Range。
+async fn source_range(view: &SessionView, start: u64, end: u64) -> Result<Vec<u8>, String> {
+    if start > end {
+        return Err("bad range".to_owned());
+    }
+    if let Some(path) = view.file.as_deref() {
+        return read_file_range(path, start, end).map_err(|e| format!("local file: {e}"));
+    }
+    upstream_range(&view.url, view.referer, &view.user_agent, start, end).await
+}
+
+fn read_file_range(path: &std::path::Path, start: u64, end: u64) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = end - start + 1;
+    if len > MAX_DECRYPT_SPAN * 4 {
+        return Err("range too large".to_owned());
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; len as usize];
+    file.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    Ok(buf)
 }
 
 /// 预热：对 `proxyUrl` 建改写计划并解密首个 64KiB（结果丢弃）。
@@ -233,41 +304,31 @@ fn lookup(token: &str) -> Option<SessionView> {
 /// 同步函数（内部经网关运行时 block_on，与 `register` 同约束）。
 pub fn warm_first_window(proxy_url: &str, window: u64) -> Result<u64, String> {
     let token = proxy_url
-        .split('?')
+        .split("?")
         .next()
         .unwrap_or("")
         .strip_prefix("http://127.0.0.1:")
         .and_then(|rest| rest.split("/play/").nth(1))
-        .and_then(|rest| rest.split('/').next())
+        .and_then(|rest| rest.split("/").next())
         .unwrap_or("");
     let view = lookup(token).ok_or_else(|| "session expired".to_owned())?;
     crate::http::runtime_handle().block_on(async {
         if view.key.is_none() {
-            let bytes =
-                upstream_range(&view.url, view.referer, &view.user_agent, 0, window - 1).await?;
+            let bytes = source_range(&view, 0, window - 1).await?;
             return Ok(bytes.len() as u64);
         }
         let key = view.key.ok_or_else(|| "no key".to_owned())?;
         let cached = match cached_plan(token) {
             Some(p) => p,
             None => {
-                let built = build_plan(&view.url, view.referer, &view.user_agent).await?;
+                let built = build_plan(&view, &key).await?;
                 let cached = Arc::new(built);
                 store_plan(token, cached.clone());
                 cached
             }
         };
         let end = window.min(cached.total_virtual).saturating_sub(1);
-        let body = render_virtual(
-            &cached.plan,
-            &view.url,
-            view.referer,
-            &view.user_agent,
-            &key,
-            0,
-            end,
-        )
-        .await?;
+        let body = render_virtual(&cached.plan, &view, &key, 0, end).await?;
         Ok(body.len() as u64)
     })
 }
@@ -312,7 +373,7 @@ async fn serve_connection(mut stream: tokio::net::TcpStream) -> Result<(), Strin
         return respond_simple(&mut stream, 405, "method not allowed").await;
     }
     let is_head = method == "HEAD";
-    let path = target.split('?').next().unwrap_or("");
+    let path = target.split("?").next().unwrap_or("");
 
     // 封面代理：与媒体走同一端口，路径前缀区分（`/img/{token}`）。
     // token 形如 `{base64url(cdnUrl)}.{sig}`，由 covers 模块自行校验签名；
@@ -331,7 +392,7 @@ async fn serve_connection(mut stream: tokio::net::TcpStream) -> Result<(), Strin
 
     let token = path
         .strip_prefix("/play/")
-        .and_then(|rest| rest.split('/').next())
+        .and_then(|rest| rest.split("/").next())
         .unwrap_or("");
     if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
         return respond_simple(&mut stream, 404, "not found").await;
@@ -353,6 +414,8 @@ async fn serve_connection(mut stream: tokio::net::TcpStream) -> Result<(), Strin
     }
     if view.key.is_some() {
         serve_decrypted(&mut stream, token, &view, range.as_deref(), is_head).await
+    } else if view.file.is_some() {
+        serve_file_direct(&mut stream, &view, range.as_deref(), is_head).await
     } else {
         forward(
             &mut stream,
@@ -363,6 +426,61 @@ async fn serve_connection(mut stream: tokio::net::TcpStream) -> Result<(), Strin
             is_head,
         )
         .await
+    }
+}
+
+/// 明文文件直通（离线）：读磁盘区间下发，无解密无改写。
+async fn serve_file_direct(
+    stream: &mut tokio::net::TcpStream,
+    view: &SessionView,
+    range: Option<&str>,
+    is_head: bool,
+) -> Result<(), String> {
+    let total = source_size(view).await?;
+    if is_head {
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(head.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    match range {
+        Some(spec) => {
+            let Some((start, end)) = parse_range(spec, total) else {
+                return respond_simple(stream, 416, "range not satisfiable").await;
+            };
+            let body = source_range(view, start, end).await?;
+            let head = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(head.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            stream.write_all(&body).await.map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None => {
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+            );
+            stream
+                .write_all(head.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut cursor = 0u64;
+            while cursor < total {
+                let chunk_end = (cursor + STREAM_WINDOW - 1).min(total - 1);
+                let bytes = source_range(view, cursor, chunk_end).await?;
+                stream.write_all(&bytes).await.map_err(|e| e.to_string())?;
+                cursor = chunk_end + 1;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -491,7 +609,7 @@ async fn serve_decrypted(
     let cached = match cached_plan(token) {
         Some(p) => p,
         None => {
-            let built = build_plan(&view.url, view.referer, &view.user_agent).await?;
+            let built = build_plan(view, &key).await?;
             let cached = Arc::new(built);
             store_plan(token, cached.clone());
             cached
@@ -516,16 +634,7 @@ async fn serve_decrypted(
             if end - start + 1 > MAX_DECRYPT_SPAN {
                 return respond_simple(stream, 416, "range too large").await;
             }
-            let body = render_virtual(
-                &cached.plan,
-                &view.url,
-                view.referer,
-                &view.user_agent,
-                &key,
-                start,
-                end,
-            )
-            .await?;
+            let body = render_virtual(&cached.plan, view, &key, start, end).await?;
             let head = format!(
                 "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{total}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
                 body.len()
@@ -545,48 +654,63 @@ async fn serve_decrypted(
                 .write_all(head.as_bytes())
                 .await
                 .map_err(|e| e.to_string())?;
-            stream_virtual(
-                &cached.plan,
-                &view.url,
-                view.referer,
-                &view.user_agent,
-                &key,
-                total,
-                stream,
-            )
-            .await
+            stream_virtual(&cached.plan, view, &key, total, stream).await
         }
     }
 }
 
-/// 建改写计划：HEAD 取大小 → 前部取 moov → 不足取尾。
-async fn build_plan(
-    url: &str,
-    referer: &'static str,
-    user_agent: &str,
-) -> Result<CachedPlan, String> {
-    let file_size = upstream_size(url, referer, user_agent).await?;
+/// 建改写计划：取大小 → 前部取 moov → 不足取尾。
+async fn build_plan(view: &SessionView, key: &[u8; 16]) -> Result<CachedPlan, String> {
+    let file_size = source_size(view).await?;
     let front_len = PROBE_LEN.min(file_size);
-    let front = upstream_range(url, referer, user_agent, 0, front_len - 1).await?;
-    let key = [0u8; 16];
-    match decrypt::analyze_moov(&front, 0, &key) {
-        Ok(plan) => Ok(finish_plan(plan, file_size)),
+    let front = source_range(view, 0, front_len - 1).await?;
+    match decrypt::analyze_moov(&front, 0, key) {
+        Ok(raw) => finish_with_avcc(raw, view, key, &front, file_size).await,
         Err(_) if file_size > front_len => {
             let tail_len = PROBE_LEN.min(file_size);
-            let tail = upstream_range(
-                url,
-                referer,
-                user_agent,
-                file_size - tail_len,
-                file_size - 1,
-            )
-            .await?;
-            let plan = decrypt::analyze_moov(&tail, file_size - tail_len, &key)
+            let tail = source_range(view, file_size - tail_len, file_size - 1).await?;
+            let raw = decrypt::analyze_moov(&tail, file_size - tail_len, key)
                 .map_err(|e| format!("moov analyze: {e}"))?;
-            Ok(finish_plan(plan, file_size))
+            finish_with_avcc(raw, view, key, &front, file_size).await
         }
         Err(e) => Err(format!("moov analyze: {e}")),
     }
+}
+
+/// 取首视频样本解密出 SPS/PPS 后终定（取不到则按无 avcC 终定）。
+async fn finish_with_avcc(
+    raw: decrypt::RawPlan,
+    view: &SessionView,
+    key: &[u8; 16],
+    front: &[u8],
+    file_size: u64,
+) -> Result<CachedPlan, String> {
+    let mut avcc = None;
+    // 仅当视频轨还原为 avc1 且缺少 avcC 时合成；自带 hvcC/avcC 的直接终定。
+    if raw.needs_avcc
+        && let Some((start, end)) = raw.first_video
+        && end > start
+        && end - start <= 4 * 1024 * 1024
+    {
+        let bytes = if (end as usize) <= front.len() {
+            front[start as usize..end as usize].to_vec()
+        } else {
+            source_range(view, start, end - 1).await?
+        };
+        let mut decrypted = bytes;
+        let iv = raw
+            .samples
+            .iter()
+            .find(|s| s.start == start)
+            .map(|s| s.iv)
+            .ok_or_else(|| "first video sample not in table".to_owned())?;
+        crate::decrypt::decrypt_sample(key, &iv, &mut decrypted);
+        if let Some((sps, pps)) = decrypt::extract_sps_pps(&decrypted) {
+            avcc = decrypt::build_avcc(&sps, &pps);
+        }
+    }
+    let plan = decrypt::finalize_plan(raw, avcc).map_err(|e| format!("finalize: {e}"))?;
+    Ok(finish_plan(plan, file_size))
 }
 
 fn finish_plan(plan: decrypt::MoviePlan, file_size: u64) -> CachedPlan {
@@ -653,9 +777,7 @@ async fn upstream_range(
 /// 渲染虚拟区间 `[start, end]`：前缀直取 + 新 moov + 后缀取回解密。
 async fn render_virtual(
     plan: &decrypt::MoviePlan,
-    url: &str,
-    referer: &'static str,
-    user_agent: &str,
+    view: &SessionView,
     key: &[u8; 16],
     start: u64,
     end: u64,
@@ -666,7 +788,7 @@ async fn render_virtual(
     // 前缀（moov 之前，原样）。
     if start < moov_v_start {
         let take_end = end.min(moov_v_start - 1);
-        let bytes = upstream_range(url, referer, user_agent, start, take_end).await?;
+        let bytes = source_range(view, start, take_end).await?;
         out.extend_from_slice(&bytes);
     }
     // 新 moov。
@@ -681,7 +803,7 @@ async fn render_virtual(
         // 虚拟偏移 → 原偏移：减去 moov 长度差。
         let orig_s = (s as i64 - plan.delta) as u64;
         let orig_e = (end as i64 - plan.delta) as u64;
-        let mut bytes = upstream_range(url, referer, user_agent, orig_s, orig_e).await?;
+        let mut bytes = source_range(view, orig_s, orig_e).await?;
         for sample in &plan.samples {
             if sample.end <= orig_s || sample.start > orig_e {
                 continue;
@@ -740,15 +862,13 @@ fn counter_block(iv: &[u8; 16], index: u64) -> [u8; 16] {
 /// 全量下发（无 Range）：前缀 + moov + 后缀窗口流式。
 async fn stream_virtual(
     plan: &decrypt::MoviePlan,
-    url: &str,
-    referer: &'static str,
-    user_agent: &str,
+    view: &SessionView,
     key: &[u8; 16],
     total_virtual: u64,
     stream: &mut tokio::net::TcpStream,
 ) -> Result<(), String> {
     if plan.moov_start > 0 {
-        let bytes = upstream_range(url, referer, user_agent, 0, plan.moov_start - 1).await?;
+        let bytes = source_range(view, 0, plan.moov_start - 1).await?;
         stream.write_all(&bytes).await.map_err(|e| e.to_string())?;
     }
     stream
@@ -758,7 +878,7 @@ async fn stream_virtual(
     let mut cursor = plan.moov_start + plan.new_moov.len() as u64;
     while cursor < total_virtual {
         let chunk_end = (cursor + STREAM_WINDOW - 1).min(total_virtual - 1);
-        let bytes = render_suffix(plan, url, referer, user_agent, key, cursor, chunk_end).await?;
+        let bytes = render_suffix(plan, view, key, cursor, chunk_end).await?;
         stream.write_all(&bytes).await.map_err(|e| e.to_string())?;
         cursor = chunk_end + 1;
     }
@@ -768,16 +888,14 @@ async fn stream_virtual(
 /// 后缀虚拟区间渲染（供全量下发复用）。
 async fn render_suffix(
     plan: &decrypt::MoviePlan,
-    url: &str,
-    referer: &'static str,
-    user_agent: &str,
+    view: &SessionView,
     key: &[u8; 16],
     start: u64,
     end: u64,
 ) -> Result<Vec<u8>, String> {
     let orig_s = (start as i64 - plan.delta) as u64;
     let orig_e = (end as i64 - plan.delta) as u64;
-    let mut bytes = upstream_range(url, referer, user_agent, orig_s, orig_e).await?;
+    let mut bytes = source_range(view, orig_s, orig_e).await?;
     for sample in &plan.samples {
         if sample.end <= orig_s || sample.start > orig_e {
             continue;
@@ -806,6 +924,178 @@ mod tests {
         assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
         assert_eq!(parse_range("bytes=1000-", 1000), None);
         assert_eq!(parse_range("bytes=-0", 1000), None);
+    }
+
+    /// 诊断：App/SSR 集数与清晰度对照 + 全集取流成功率。
+    /// 打印每集 App 取流结果（成功/失败码/清晰度/加密），定位掉链点。
+    #[test]
+    #[ignore = "联网诊断"]
+    fn diag_episode_coverage() {
+        let provider = crate::source::provider(Some("hongguo")).unwrap();
+        let cat = provider.catalog(Some("real-drama"), 1).unwrap();
+        let id = cat["items"][0]["id"].as_str().unwrap().to_owned();
+        eprintln!("series={id}");
+        let app = crate::app_api::app_detail(&id);
+        let ssr = provider.detail(&id);
+        match (&app, &ssr) {
+            (Ok(a), Ok(s)) => {
+                let an = a["episodes"].as_array().map(|v| v.len()).unwrap_or(0);
+                let sn = s["episodes"].as_array().map(|v| v.len()).unwrap_or(0);
+                eprintln!("episodes app={an} ssr={sn}");
+            }
+            _ => eprintln!("detail app_err={} ssr_err={}", app.is_err(), ssr.is_err()),
+        }
+        let detail = app.or(ssr).unwrap();
+        let episodes = detail["episodes"].as_array().unwrap().clone();
+        eprintln!("total={}", episodes.len());
+        let mut ok = 0;
+        let mut qualities = std::collections::BTreeSet::new();
+        for ep in episodes.iter().take(30) {
+            let vid = ep["vid"].as_str().unwrap_or("");
+            let index = ep["index"].as_u64().unwrap_or(0);
+            match crate::app_api::resolve_media(&id, vid, 0) {
+                Ok(m) => {
+                    ok += 1;
+                    for v in &m.variants {
+                        qualities.insert(v.quality);
+                    }
+                    eprintln!(
+                        "ep{index} OK q={} enc={} variants={}",
+                        m.quality,
+                        m.encrypted,
+                        m.variants.len()
+                    );
+                }
+                Err(e) => eprintln!("ep{index} FAIL {e}"),
+            }
+        }
+        eprintln!("ok={ok} qualities={qualities:?}");
+    }
+
+    /// 诊断5：存完整代理文件（供 ffmpeg 解码验证播放器视角）。
+    #[test]
+    #[ignore = "联网诊断"]
+    fn diag_dump_proxy_full() {
+        let provider = crate::source::provider(Some("hongguo")).unwrap();
+        let cat = provider.catalog(Some("real-drama"), 1).unwrap();
+        let id = cat["items"][0]["id"].as_str().unwrap().to_owned();
+        let out = provider.play(&id, 1, None, 0).unwrap();
+        let proxy = out["proxyUrl"].as_str().unwrap().to_owned();
+        let bytes: Vec<u8> = crate::http::runtime_handle().block_on(async {
+            reqwest::Client::new()
+                .get(&proxy)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .to_vec()
+        });
+        let path = "/tmp/drama_proxy_full.mp4";
+        std::fs::write(path, &bytes).unwrap();
+        eprintln!("wrote {path} {} bytes", bytes.len());
+    }
+
+    /// 诊断4：把代理输出存文件，供 ffprobe 验证（确认播放器视角可见流）。
+    #[test]
+    #[ignore = "联网诊断"]
+    fn diag_dump_proxy_head() {
+        let provider = crate::source::provider(Some("hongguo")).unwrap();
+        let cat = provider.catalog(Some("real-drama"), 1).unwrap();
+        let id = cat["items"][0]["id"].as_str().unwrap().to_owned();
+        let out = provider.play(&id, 1, None, 0).unwrap();
+        let proxy = out["proxyUrl"].as_str().unwrap().to_owned();
+        let bytes: Vec<u8> = crate::http::runtime_handle().block_on(async {
+            reqwest::Client::new()
+                .get(&proxy)
+                .header("Range", "bytes=0-5242879")
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .to_vec()
+        });
+        let path = "/tmp/drama_proxy_head.mp4";
+        std::fs::write(path, &bytes).unwrap();
+        eprintln!("wrote {path} {} bytes", bytes.len());
+        // 深部区间同样经代理解密：本地解密定基准，代理输出逐字节对拍。
+        // （直接找 AVC 形状可能抽到音频样本，故先本地解密识别视频样本。）
+        let token = proxy
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .strip_prefix("http://127.0.0.1:")
+            .and_then(|rest| rest.split("/play/").nth(1))
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or("");
+        let cached = cached_plan(token).expect("plan should be cached after head fetch");
+        let delta = cached.plan.delta;
+        let key_hex = out["keyHex"].as_str().unwrap().to_owned();
+        let mut key = [0u8; 16];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&key_hex[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        let url = out["url"].as_str().unwrap().to_owned();
+        let mut target = None;
+        for sample in cached
+            .plan
+            .samples
+            .iter()
+            .filter(|s| s.start > 8_000_000 && s.end - s.start < 500_000)
+            .take(12)
+        {
+            let raw: Vec<u8> = crate::http::runtime_handle().block_on(async {
+                reqwest::Client::new()
+                    .get(&url)
+                    .header("Referer", "https://novel.snssdk.com/")
+                    .header(
+                        "Range",
+                        &format!("bytes={}-{}", sample.start, sample.end - 1),
+                    )
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap()
+                    .to_vec()
+            });
+            if raw.len() as u64 != sample.end - sample.start {
+                continue;
+            }
+            let mut buf = raw;
+            crate::decrypt::decrypt_sample(&key, &sample.iv, &mut buf);
+            let nal_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            if nal_len + 4 == buf.len() && (1..=9).contains(&(buf[4] & 0x1f)) {
+                target = Some((sample.clone(), buf));
+                break;
+            }
+        }
+        let (sample, expected) = target.expect("no deep AVC sample found");
+        let vstart = (sample.start as i64 + delta) as u64;
+        let vend = vstart + expected.len() as u64 - 1;
+        let got: Vec<u8> = crate::http::runtime_handle().block_on(async {
+            reqwest::Client::new()
+                .get(&proxy)
+                .header("Range", &format!("bytes={vstart}-{vend}"))
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .to_vec()
+        });
+        assert_eq!(got.len(), expected.len(), "proxy range length mismatch");
+        assert_eq!(got, expected, "proxy bytes differ from local decrypt");
+        eprintln!(
+            "deep sample @{} ({} bytes) proxy == local decrypt",
+            sample.start,
+            expected.len()
+        );
     }
 
     /// 联网测试（默认跳过）：端到端解密验证。
@@ -900,7 +1190,8 @@ mod tests {
         }
         let url = out["url"].as_str().unwrap().to_owned();
         let front = get(&url, "https://novel.snssdk.com/", "bytes=0-2097151");
-        let plan = crate::decrypt::analyze_moov(&front, 0, &key).unwrap();
+        let raw = crate::decrypt::analyze_moov(&front, 0, &key).unwrap();
+        let plan = crate::decrypt::finalize_plan(raw, None).unwrap();
         eprintln!("samples={} delta={}", plan.samples.len(), plan.delta);
         assert!(plan.samples.len() > 100);
         let mut hits = 0;
