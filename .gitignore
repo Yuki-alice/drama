@@ -41,7 +41,8 @@ app.*.map.json
 **/hooks_runner/
 
 # --- Rust 运行期数据 ---
-# 追剧/观看进度（store.rs 写入 dataDir）；仅当测试把 dataDir 指到仓库内时才会出现。
+# 追剧/观看进度由 store.rs 写入 dataDir。正常路径落在用户数据目录，
+# 此条仅为兜底（`set_data_dir("")` 已修为按未初始化处理，不再落到 CWD）。
 /rust/core/progress.json
 
 # --- 第三方参照源码：仅本地行为比对，禁止照抄，不入仓 ---

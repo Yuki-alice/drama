@@ -16,7 +16,9 @@ class ProfileView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = AppColors.of(context);
-    final stats = ref.watch(profileStatsProvider);
+    // 核心不可用/加载中/出错都回落全零占位，不阻断入口页导航。
+    final stats =
+        ref.watch(profileStatsProvider).value ?? ProfileStats.empty;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(

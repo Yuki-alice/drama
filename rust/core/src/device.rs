@@ -27,14 +27,32 @@ pub struct Identity {
 }
 
 /// 设置数据目录（`init` op 调用；重复调用以最后一次为准并清空内存缓存）。
+///
+/// 空路径视为「未初始化」（`None`）：否则 `""` 会让 `progress.json` /
+/// `device.json` 相对于进程 CWD 落盘（测试会污染仓库目录）。
 pub fn set_data_dir(dir: PathBuf) {
-    *DATA_DIR.lock().expect("data dir poisoned") = Some(dir);
+    let normalized = if dir.as_os_str().is_empty() {
+        None
+    } else {
+        Some(dir)
+    };
+    *DATA_DIR.lock().expect("data dir poisoned") = normalized;
+    *CACHED.lock().expect("identity cache poisoned") = None;
+}
+
+/// 清除数据目录（回到未初始化的内存模式）；供测试与生命周期收尾使用。
+pub fn clear_data_dir() {
+    *DATA_DIR.lock().expect("data dir poisoned") = None;
     *CACHED.lock().expect("identity cache poisoned") = None;
 }
 
 /// 当前数据目录（未初始化为 `None`，调用方退化为内存模式）。
 pub fn data_dir() -> Option<PathBuf> {
-    DATA_DIR.lock().expect("data dir poisoned").clone()
+    DATA_DIR
+        .lock()
+        .expect("data dir poisoned")
+        .clone()
+        .filter(|d| !d.as_os_str().is_empty())
 }
 
 /// 取设备身份：缓存 → 文件 → 新生成（能写文件时写回）。
@@ -119,7 +137,25 @@ mod tests {
         assert_eq!(first.device_id, second.device_id);
         assert_eq!(first.install_id, second.install_id);
         let _ = std::fs::remove_dir_all(&dir);
-        *CACHED.lock().unwrap() = None;
+        clear_data_dir();
+    }
+
+    #[test]
+    fn empty_data_dir_is_treated_as_uninitialized() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        // 空路径不得变成「CWD 相对路径」——否则进度/身份文件会写进仓库目录。
         set_data_dir(PathBuf::new());
+        assert_eq!(data_dir(), None);
+        clear_data_dir();
+        assert_eq!(data_dir(), None);
+    }
+
+    #[test]
+    fn non_empty_data_dir_roundtrips() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        let dir = std::env::temp_dir().join("drama-device-dir-roundtrip");
+        set_data_dir(dir.clone());
+        assert_eq!(data_dir(), Some(dir));
+        clear_data_dir();
     }
 }

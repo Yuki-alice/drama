@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../../../../data/repositories/catalog_repository.dart';
+import '../../../../data/repositories/progress_repository.dart';
 import '../../../../data/services/rust_core.dart';
 import '../../../../domain/models/episode.dart';
 import '../../../../router/routes.dart';
@@ -32,8 +33,8 @@ class _DetailViewState extends ConsumerState<DetailView> {
 
   int _groupIndex = 0;
 
-  /// 当前集（W1 mock：固定第 1 集；W3 由播放进度接管）。
-  final int _currentEpisode = 1;
+  /// 追剧写入进行中（忽略重复点击）。
+  bool _togglingFollow = false;
 
   @override
   Widget build(BuildContext context) {
@@ -71,6 +72,13 @@ class _DetailViewState extends ConsumerState<DetailView> {
         .take(_groupSize)
         .toList(growable: false);
     final colors = AppColors.of(context);
+    // 已追剧态与续播位置均来自 Rust 持久化；核心不可用/无记录时回落默认。
+    final isFollowing = ref.watch(isFollowingProvider(widget.id)).value ?? false;
+    final resume = ref.watch(resumeProvider(widget.id)).value;
+    final currentEpisode = resume?.episode ?? 1;
+    // 仅当「确实看过一部分」才叫续播：位置为 0 的记录只是刚打开过。
+    final hasResumeProgress =
+        resume != null && resume.position > Duration.zero;
 
     return AppGlassScaffold(
       title: drama.title,
@@ -137,17 +145,23 @@ class _DetailViewState extends ConsumerState<DetailView> {
                 runSpacing: AppSpacing.md,
                 children: <Widget>[
                   GlassActionButton(
-                    label: '播放',
+                    label: hasResumeProgress ? '续播 第$currentEpisode集' : '播放',
                     icon: Icons.play_arrow,
                     onTap: () => context.push(
-                      AppRoutes.player(widget.id, episode: _currentEpisode),
+                      AppRoutes.player(widget.id, episode: currentEpisode),
                     ),
                   ),
                   GlassActionButton(
-                    label: '追剧',
-                    icon: Icons.bookmark_add_outlined,
-                    tint: colors.textPrimary,
-                    onTap: () => _notify(context, '追剧能力将在 W4 落地（F-06）'),
+                    label: isFollowing ? '已追剧' : '追剧',
+                    icon: isFollowing
+                        ? Icons.bookmark_added
+                        : Icons.bookmark_add_outlined,
+                    tint: isFollowing ? colors.accent : colors.textPrimary,
+                    // 写入中忽略重复点击（GlassActionButton 的 onTap 非空，
+                    // 故以空闭包表达「禁用」）。
+                    onTap: _togglingFollow
+                        ? () {}
+                        : () => _toggleFollow(detail),
                   ),
                   GlassActionButton(
                     label: '下载',
@@ -206,7 +220,7 @@ class _DetailViewState extends ConsumerState<DetailView> {
                 final episode = visibleEpisodes[index];
                 return _EpisodeTile(
                   episode: episode,
-                  current: episode.index == _currentEpisode,
+                  current: episode.index == currentEpisode,
                   onTap: () => episode.locked
                       ? _notify(context, '该集需 App 授权（轨①仅覆盖可试看集）')
                       : context.push(
@@ -238,6 +252,41 @@ class _DetailViewState extends ConsumerState<DetailView> {
     semanticLabel: '返回',
     onPressed: () => context.pop(),
   );
+
+  /// 切换追剧态：写入 Rust 持久化，成功后由 provider 失效驱动 UI 刷新。
+  ///
+  /// 写入失败**显式提示**（不静默吞掉）；核心不可用时仓库构造抛
+  /// `StateError`，同样走此提示分支。
+  Future<void> _toggleFollow(DramaDetail detail) async {
+    final drama = detail.drama;
+    final wasFollowing =
+        ref.read(isFollowingProvider(widget.id)).value ?? false;
+    // 先取 messenger：避免 await 之后再用 BuildContext（跨异步间隙）。
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _togglingFollow = true);
+    try {
+      final actions = ref.read(progressActionsProvider);
+      if (wasFollowing) {
+        await actions.unfollow(ref, widget.id);
+      } else {
+        await actions.follow(
+          ref,
+          id: widget.id,
+          title: drama.title,
+          totalEpisode: drama.episodeCount,
+        );
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text(wasFollowing ? '已取消追剧' : '已加入追剧')),
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('操作失败：${_errorMessage(error)}')),
+      );
+    } finally {
+      if (mounted) setState(() => _togglingFollow = false);
+    }
+  }
 
   void _notify(BuildContext context, String message) {
     ScaffoldMessenger.of(

@@ -18,11 +18,19 @@ class LibraryView extends ConsumerWidget {
 
   static const List<String> _tabs = <String>['想看', '在看', '已看', '有更新'];
 
+  /// 各档位的空态文案（分档后为空的含义不同，不共用一句话）。
+  static const List<String> _emptyMessages = <String>[
+    '还没有加入追剧的剧集',
+    '没有正在观看的剧集',
+    '还没有看完的剧集',
+    '没有未看完的剧集',
+  ];
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = AppColors.of(context);
     final selectedTab = ref.watch(libraryTabProvider);
-    final itemsAsync = ref.watch(libraryItemsProvider);
+    final itemsAsync = ref.watch(visibleLibraryItemsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -57,7 +65,12 @@ class LibraryView extends ConsumerWidget {
         Expanded(
           child: itemsAsync.when(
             data: (items) => items.isEmpty
-                ? const EmptyView(message: '这里还没有内容')
+                ? EmptyView(
+                    message: _emptyMessages[selectedTab.clamp(
+                      0,
+                      _emptyMessages.length - 1,
+                    )],
+                  )
                 : ListView.builder(
                     padding: const EdgeInsets.only(
                       top: AppSpacing.sm,
@@ -66,8 +79,7 @@ class LibraryView extends ConsumerWidget {
                     itemCount: items.length,
                     itemBuilder: (context, index) => _LibraryRow(
                       item: items[index],
-                      onTap: () =>
-                          context.push(AppRoutes.detail(items[index].drama.id)),
+                      onTap: () => context.push(AppRoutes.detail(items[index].id)),
                     ),
                   ),
             loading: () => const LoadingView(),
@@ -109,8 +121,8 @@ class _LibraryRow extends StatelessWidget {
             SizedBox(
               width: 56,
               child: PosterArtwork(
-                seed: item.drama.coverSeed,
-                title: item.drama.title,
+                seed: item.id,
+                title: item.title,
                 aspectRatio: 0.75,
                 radius: 10,
               ),
@@ -122,7 +134,7 @@ class _LibraryRow extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
                   Text(
-                    item.drama.title,
+                    item.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppText.body.copyWith(
@@ -132,21 +144,26 @@ class _LibraryRow extends StatelessWidget {
                   ),
                   const SizedBox(height: AppSpacing.xs),
                   Text(
-                    '看到第 ${item.watchedEpisode} 集 / 共 ${item.totalEpisode} 集',
+                    item.totalEpisode > 0
+                        ? '看到第 ${item.watchedEpisode} 集 / 共 ${item.totalEpisode} 集'
+                        : '看到第 ${item.watchedEpisode} 集',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppText.caption.copyWith(color: colors.textTertiary),
                   ),
-                  const SizedBox(height: AppSpacing.sm),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(AppRadii.capsule),
-                    child: LinearProgressIndicator(
-                      value: item.progress,
-                      minHeight: 4,
-                      backgroundColor: colors.divider,
-                      color: colors.accent,
+                  // 总集数未知时不画进度条：分母不明，画出来是假精度。
+                  if (item.totalEpisode > 0) ...<Widget>[
+                    const SizedBox(height: AppSpacing.sm),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(AppRadii.capsule),
+                      child: LinearProgressIndicator(
+                        value: item.progress,
+                        minHeight: 4,
+                        backgroundColor: colors.divider,
+                        color: colors.accent,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),

@@ -25,6 +25,9 @@ struct Follow {
     position_secs: u64,
     duration_secs: u64,
     updated_at_ms: i64,
+    /// 总集数（`0` = 未知）。`serde(default)` 保证旧 progress.json 仍可读。
+    #[serde(default)]
+    total_episode: u32,
 }
 
 /// 历史条目。
@@ -114,6 +117,7 @@ pub fn follow_put(params: &Value) -> Result<Value, SourceError> {
         position_secs: 0,
         duration_secs: 0,
         updated_at_ms: 0,
+        total_episode: 0,
     });
     if let Some(title) = params.get("title").and_then(Value::as_str)
         && !title.is_empty()
@@ -131,6 +135,9 @@ pub fn follow_put(params: &Value) -> Result<Value, SourceError> {
     }
     if let Some(duration) = params.get("durationSecs").and_then(Value::as_u64) {
         entry.duration_secs = duration.min(1_000_000);
+    }
+    if let Some(total) = params.get("totalEpisode").and_then(Value::as_u64) {
+        entry.total_episode = total.min(100_000) as u32;
     }
     entry.updated_at_ms = now_ms();
     drop(store);
@@ -164,6 +171,7 @@ pub fn follow_list() -> Result<Value, SourceError> {
             "episode": f.episode,
             "positionSecs": f.position_secs,
             "durationSecs": f.duration_secs,
+            "totalEpisode": f.total_episode,
             "updatedAtMs": f.updated_at_ms,
         })).collect::<Vec<_>>(),
     }))
@@ -307,5 +315,50 @@ mod tests {
         );
         assert!(follow_put(&json!({})).is_err());
         reset();
+    }
+
+    #[test]
+    fn follow_put_roundtrips_total_episode_and_defaults_to_zero() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        reset();
+        // 显式给总集数 → 原样回读（追剧页据此算进度与「还有未看」）。
+        follow_put(&json!({"id": "a", "title": "A", "totalEpisode": 80})).unwrap();
+        let list = follow_list().unwrap();
+        assert_eq!(list["items"][0]["totalEpisode"], json!(80));
+
+        // 未给总集数 → 0（未知），不臆造。
+        follow_put(&json!({"id": "b", "title": "B"})).unwrap();
+        let list = follow_list().unwrap();
+        let b = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == json!("b"))
+            .unwrap();
+        assert_eq!(b["totalEpisode"], json!(0));
+
+        // 后续更新未携带该字段时保留旧值（不被重置为 0）。
+        follow_put(&json!({"id": "a", "episode": 5})).unwrap();
+        let list = follow_list().unwrap();
+        let a = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == json!("a"))
+            .unwrap();
+        assert_eq!(a["totalEpisode"], json!(80));
+        assert_eq!(a["episode"], json!(5));
+        reset();
+    }
+
+    #[test]
+    fn total_episode_missing_in_legacy_json_still_loads() {
+        // 旧 progress.json 无 totalEpisode 字段：serde(default) 必须兜住，
+        // 否则用户升级后追剧表整体反序列化失败。
+        let legacy = r#"{"follows":{"a":{"title":"A","cover":"","episode":2,
+            "position_secs":5,"duration_secs":0,"updated_at_ms":1}},"history":[]}"#;
+        let parsed: Store = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.follows["a"].total_episode, 0);
+        assert_eq!(parsed.follows["a"].episode, 2);
     }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -5,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../../data/repositories/playback_repository.dart';
+import '../../../../data/repositories/progress_repository.dart';
 import '../../../../data/services/rust_core.dart';
 import '../../../../domain/models/episode.dart';
 import '../../../core/tokens/app_tokens.dart';
@@ -34,10 +37,107 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
   late final Player _player = Player();
   late final VideoController _controller = VideoController(_player);
 
+  /// 进度上报订阅（播放中定期把位置写入 Rust 持久化）。
+  StreamSubscription<Duration>? _positionSub;
+
+  /// 播放结束订阅（用于自动连播）。
+  StreamSubscription<bool>? _completedSub;
+
+  /// 是否已按续播记录定位过（每集只跳一次，避免与用户拖动打架）。
+  bool _resumeApplied = false;
+
+  /// 当前已真正打开（有媒体在播放器里）的集号；`null` = 尚未打开。
+  ///
+  /// 切集后到新媒体打开前，位置流仍会推旧视频的位置——据 [episode] 上报
+  /// 会把「旧集的位置」记成「新集的进度」。故只在集号一致时上报。
+  int? _openedEpisode;
+
+  @override
+  void initState() {
+    super.initState();
+    _positionSub = _player.stream.position.listen(_onPosition);
+    // 播放自然结束 → 自动连播下一集（若无下一集则停在当前集）。
+    _completedSub = _player.stream.completed.listen((completed) {
+      if (completed && mounted) _playNextIfAny();
+    });
+  }
+
   @override
   void dispose() {
+    _positionSub?.cancel();
+    _completedSub?.cancel();
     _player.dispose();
     super.dispose();
+  }
+
+  /// 播放位置回调：节流后上报进度（`historyPut` 同时刷新追剧条目与历史）。
+  ///
+  /// 上报失败**静默忽略**——播放不应因持久化失败而中断；下次回调会重试。
+  void _onPosition(Duration position) {
+    if (!mounted) return;
+    // 仅上报「与当前播放器媒体同一集」的位置，避免切集瞬间写错集号。
+    if (_openedEpisode != _episode) return;
+    final actions = ref.read(progressActionsProvider);
+    final now = DateTime.now();
+    if (actions.shouldThrottle(widget.id, now)) return;
+    final duration = _player.state.duration;
+    actions.markReported(widget.id, now);
+    unawaited(
+      actions
+          .reportProgress(
+            ref,
+            id: widget.id,
+            episode: _episode,
+            position: position,
+            duration: duration,
+          )
+          .catchError((Object _) {}),
+    );
+  }
+
+  /// 自动连播：仅当当前集不是最后一集时前进。
+  void _playNextIfAny() {
+    final episodes =
+        ref.read(detailProvider(widget.id)).value?.episodes.length ?? 0;
+    if (episodes == 0 || _episode >= episodes) return;
+    _goToEpisode(_episode + 1);
+  }
+
+  /// 切集：重置续播标记（新集需按该集记录重新定位）。
+  void _goToEpisode(int episode) {
+    setState(() {
+      _episode = episode;
+      _resumeApplied = false;
+    });
+  }
+
+  /// 打开该集媒体；若本集正是上次观看到的那一集，则跳到上次位置续播。
+  ///
+  /// 续播只在「记录集号 == 当前集」时生效——历史记录只存最后观看的一集，
+  /// 用户手动切到别的集时不该套用旧偏移。
+  Future<void> _openAndMaybeResume(PlaybackPlan plan) async {
+    final episodeAtOpen = _episode;
+    await _player.open(Media(plan.proxyUrl));
+    if (!mounted) return;
+    // 打开过程中用户可能已切集：此时这次 open 的结果已过期，
+    // 记下集号也无意义（下一次 plan 会重新 open）。
+    if (episodeAtOpen != _episode) return;
+    _openedEpisode = episodeAtOpen;
+
+    if (_resumeApplied) return;
+    final resume = await ref.read(resumeProvider(widget.id).future);
+    if (!mounted || _resumeApplied) return;
+    if (resume == null || resume.episode != _episode) return;
+    final target = resume.position;
+    // 只对「看了一部分」的记录续播：过短（刚点开）或已近片尾则不跳。
+    if (target < const Duration(seconds: 5)) return;
+    final duration = _player.state.duration;
+    if (duration > Duration.zero &&
+        target >= duration - const Duration(seconds: 10)) {
+      return;
+    }
+    _resumeApplied = true;
+    await _player.seek(target);
   }
 
   @override
@@ -46,7 +146,7 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
     // 取流就绪即打开；切集（key 变化）自动重解重开。
     ref.listen(playPlanProvider((id: widget.id, episode: _episode)), (_, next) {
       next.whenData((plan) {
-        _player.open(Media(plan.proxyUrl));
+        unawaited(_openAndMaybeResume(plan));
       });
     });
 
@@ -203,7 +303,7 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
                   size: 44,
                   iconSize: 20,
                   onPressed: hasPrevious
-                      ? () => setState(() => _episode -= 1)
+                      ? () => _goToEpisode(_episode - 1)
                       : () {},
                 ),
                 const SizedBox(width: AppSpacing.lg),
@@ -229,7 +329,7 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
                   size: 44,
                   iconSize: 20,
                   onPressed: hasNext
-                      ? () => setState(() => _episode += 1)
+                      ? () => _goToEpisode(_episode + 1)
                       : () {},
                 ),
               ],
@@ -247,7 +347,7 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
                   _MiniEpisodeChip(
                     label: '${episode.index}',
                     selected: episode.index == _episode,
-                    onTap: () => setState(() => _episode = episode.index),
+                    onTap: () => _goToEpisode(episode.index),
                   ),
               ],
             ),
