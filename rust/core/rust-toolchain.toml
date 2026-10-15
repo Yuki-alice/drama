@@ -18,4 +18,8 @@ targets = [
   "aarch64-apple-ios-sim",
   # x86_64 iOS 无真机，该 target 即 x86_64 模拟器
   "x86_64-apple-ios",
+  # Linux 桌面宿主：CI 跑在 ubuntu-latest，其 targetTriple 是
+  # x86_64-unknown-linux-gnu；缺失会让 hook 的 crate_info_validator 直接抛错。
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
 ]
