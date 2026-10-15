@@ -1,0 +1,107 @@
+{
+  "generatedAt": "2026-10-14T13:35:15.886Z",
+  "layout": {
+    "skills": ".agents/skills/  (通用标准位置，跨 agent 可用)",
+    "workbuddy": ".workbuddy/skills/  (junction → .agents/skills，WorkBuddy 自动发现)",
+    "guide": "AGENTS.md  (技能路由表与调用规范)"
+  },
+  "audit": {
+    "date": "2026-10-14",
+    "method": "skills-security-check 静态审计流程（危险命令/网络/敏感路径/依赖/提示注入扫描）",
+    "result": "P2 安全：0 个 P0 / 0 个 P1"
+  },
+  "totalSkills": 56,
+  "sources": [
+    {
+      "repo": "dart-lang/skills",
+      "commit": "b046fa14cf8c2cbc203c6ccd08354653e41d17d1",
+      "license": "BSD-3-Clause",
+      "skills": [
+        "dart-add-unit-test",
+        "dart-build-cli-app",
+        "dart-collect-coverage",
+        "dart-fix-runtime-errors",
+        "dart-generate-test-mocks",
+        "dart-migrate-to-checks-package",
+        "dart-resolve-package-conflicts",
+        "dart-run-static-analysis",
+        "dart-setup-ffi-assets",
+        "dart-use-doc-examples",
+        "dart-use-ffigen",
+        "dart-use-path-package",
+        "dart-use-pattern-matching",
+        "dart-use-primary-constructors",
+        "dart-write-documentation"
+      ]
+    },
+    {
+      "repo": "flutter/agent-plugins",
+      "commit": "0ef3972f93e2baa4156ba1cbb1e515cd53079c68",
+      "license": "BSD-3-Clause",
+      "skills": [
+        "flutter-add-integration-test",
+        "flutter-add-widget-preview",
+        "flutter-add-widget-test",
+        "flutter-apply-architecture-best-practices",
+        "flutter-build-responsive-layout",
+        "flutter-fix-layout-issues",
+        "flutter-implement-json-serialization",
+        "flutter-setup-declarative-routing",
+        "flutter-setup-localization",
+        "flutter-use-http-package"
+      ]
+    },
+    {
+      "repo": "full-stack-skills/rust-skills",
+      "commit": "b8a6af74af28ee86b8cbbbc3075cde0b31a5155e",
+      "license": "Apache-2.0",
+      "skills": [
+        "rust-api-design",
+        "rust-by-example",
+        "rust-cargo-build",
+        "rust-cli",
+        "rust-code-review",
+        "rust-concurrency",
+        "rust-crate-discovery",
+        "rust-database",
+        "rust-dependencies",
+        "rust-documentation",
+        "rust-embedded",
+        "rust-http-client",
+        "rust-java-migration",
+        "rust-java-migration-testing",
+        "rust-lombok-macros",
+        "rust-macros",
+        "rust-module-layout",
+        "rust-observability",
+        "rust-performance",
+        "rust-semver",
+        "rust-stable",
+        "rust-stdlib",
+        "rust-style-clippy",
+        "rust-testing",
+        "rust-uniffi-building",
+        "rust-unsafe-ffi",
+        "rust-web",
+        "rust-web-security",
+        "rust-workspace"
+      ]
+    },
+    {
+      "repo": "ariaramin/flutter-skills",
+      "commit": "33586d6e67912a7fbaf731d3b3e1fc018b625154",
+      "license": "MIT",
+      "skills": [
+        "dart-flutter-ffi-systems-engineering"
+      ]
+    },
+    {
+      "repo": "dickwu/apple-design-skill",
+      "commit": "904b0eedc7cc778152f545506075d5bb5219ce77",
+      "license": "未标注",
+      "skills": [
+        "apple-design"
+      ]
+    }
+  ]
+}

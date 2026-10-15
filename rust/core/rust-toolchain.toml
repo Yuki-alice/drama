@@ -1,0 +1,13 @@
+# 由 native_toolchain_rust 读取：channel 必须为精确版本（禁止 stable/beta/nightly），
+# targets 必须覆盖构建目标（校验见 native_toolchain_rust crate_info_validator）。
+[toolchain]
+channel = "1.96.0"
+targets = [
+  # Android：覆盖 Flutter 默认 APK 的 ABI 集合（避免 hook 校验在 armv7/x86 上报错）
+  "armv7-linux-androideabi",
+  "aarch64-linux-android",
+  "i686-linux-android",
+  "x86_64-linux-android",
+  # Windows（MVP：仅 x64；arm64 由 hook 守卫直接 FATAL）
+  "x86_64-pc-windows-msvc",
+]

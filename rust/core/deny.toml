@@ -1,0 +1,55 @@
+# cargo-deny 依赖门禁（实施计划 §4 W0 任务 7 / §7 验证步骤 1）。
+#
+# 运行：`cd rust/core && cargo deny check`
+# 说明：本仓库经 `.cargo/config.toml` 用 rsproxy 稀疏镜像**替代** crates.io
+# （镜像内容与校验和与 crates.io 一致，不影响 Cargo.lock 可复现性），
+# 因此源校验把未知 registry 记为警告而不是拒绝。
+
+[graph]
+# MVP 目标平台：Windows x64 + Android 四个 ABI（ARCH §2.4 / rust-toolchain.toml）。
+targets = [
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "x86_64-linux-android" },
+    { triple = "aarch64-linux-android" },
+    { triple = "i686-linux-android" },
+    { triple = "armv7-linux-androideabi" },
+]
+all-features = false
+
+[advisories]
+version = 2
+# 未修复的已知漏洞一律拒绝；`unmaintained` 只警告（依赖可能仍在正常工作）。
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# 允许的许可证：覆盖本工程当前依赖图实际出现的宽松许可证。
+# 出现新许可证时**显式加入**并在 PR 里说明，不要放宽成 "allow-osi" 之外的模糊规则。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "BSL-1.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.9
+
+[bans]
+# 同一 crate 出现多版本只警告（Rust 允许并存）；但禁止通配符版本要求。
+multiple-versions = "warn"
+wildcards = "deny"
+deny = []
+
+[sources]
+# 见文件头说明：用镜像替代 crates.io，故不拒绝未知 registry。
+unknown-registry = "warn"
+unknown-git = "deny"

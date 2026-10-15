@@ -1,0 +1,17 @@
+# 项目级 Cargo 配置（cargo 会从当前目录向上查找 .cargo/config.toml）。
+#
+# 背景：本机 crates.io 稀疏索引访问不稳定，且 Dart 构建钩子进程的环境被裁剪
+# （不继承用户的 CARGO_HOME/RUSTUP_HOME），cargo 会回落到空的 %USERPROFILE%\.cargo。
+# 因此在此固定国内镜像源，保证 `hook/build.dart` 里的 cargo 与手动 `cargo build` 一致可用。
+#
+# 说明：rsproxy 是 crates.io 的稀疏索引镜像，.crate 文件与校验和一致，
+# 不影响 Cargo.lock 的可复现性。
+
+[source.crates-io]
+replace-with = 'rsproxy-sparse'
+
+[source.rsproxy-sparse]
+registry = 'sparse+https://rsproxy.cn/index/'
+
+[net]
+retry = 5

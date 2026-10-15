@@ -1,0 +1,19 @@
+# --- Rust ---
+/rust/core/target/
+**/target/
+
+# --- Flutter / Dart（apps/drama_app 内另有 flutter create 生成的 .gitignore） ---
+**/.dart_tool/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+
+# --- 本地缓存 / 日志 ---
+*.log
+**/hooks_runner/
+
+# --- 第三方参照源码：仅本地行为比对，禁止照抄，不入仓 ---
+/reference/
+
+# --- workbuddy 技能链接（指向 .agents/skills 的 junction） ---
+/.workbuddy/
