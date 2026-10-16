@@ -63,6 +63,55 @@ const MAX_EPISODE_GROUP_SIZE: u32 = 200;
 /// 信封版本。
 const ENVELOPE_VERSION: u32 = 1;
 
+/// **契约守卫表**：全部 op 及其是否参与 `session`/`sequence` 仲裁。
+///
+/// 这份表是 `docs/RUST_CONTRACT.md` 的机器可校验副本。新增/删除 op 时必须同步两处，
+/// 否则 `contract_table_matches_dispatch` 会失败——目的是防止「代码加了 op 但文档没写」
+/// （前端按文档开发，漏一个 op 就会盲写）。
+///
+/// 第二列 `true` = 走 `arbitrated_read`（受内层超时约束、可被 `cancelRead` 打断）。
+#[cfg(test)]
+const CONTRACT_OPS: &[(&str, bool)] = &[
+    ("ping", false),
+    ("version", false),
+    ("cancelRead", false),
+    ("catalog", true),
+    ("catalogPages", true),
+    ("recommend", true),
+    ("ranking", true),
+    ("search", true),
+    ("suggest", true),
+    ("detail", true),
+    ("episodeGroups", true),
+    ("init", false),
+    ("play", true),
+    ("preload", true),
+    ("playQuality", true),
+    ("playLocal", false),
+    ("playFile", false),
+    ("followPut", false),
+    ("followDel", false),
+    ("followList", false),
+    ("historyPut", false),
+    ("historyGet", false),
+    ("historyClear", false),
+    ("searchHistoryPut", false),
+    ("searchHistoryList", false),
+    ("searchHistoryDel", false),
+    ("searchHistoryClear", false),
+    ("downloadStart", false),
+    ("downloadList", false),
+    ("downloadPause", false),
+    ("downloadRetry", false),
+    ("downloadCancel", false),
+    ("downloadDelete", false),
+    ("moveDownloads", true),
+    ("downloadSetConcurrency", false),
+    ("cacheClear", false),
+    ("cacheFlush", false),
+    ("cacheStats", false),
+];
+
 /// 请求信封：`{v:1, op, source?, session?, sequence?, params?}`。
 #[derive(Debug, Deserialize)]
 struct Request {
@@ -803,6 +852,116 @@ mod tests {
         let big = "a".repeat(MAX_INPUT_BYTES + 1);
         let out = dispatch(&big);
         assert_eq!(out["error"]["code"], json!("TOO_LARGE"));
+    }
+
+    /// 契约守卫：`CONTRACT_OPS` 必须与 `dispatch` 实际处理的 op **完全一致**。
+    ///
+    /// 做法：对表里每个 op 发一次最小信封，断言**不是** `UNSUPPORTED`
+    /// （即 dispatch 认得它）；再断言表里没有重复项。
+    /// 这样「加了 op 忘了进表」与「删了 op 没清表」都会被抓到。
+    #[test]
+    fn contract_table_matches_dispatch() {
+        // 1) 表内无重复
+        let mut names: Vec<&str> = CONTRACT_OPS.iter().map(|(n, _)| *n).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "CONTRACT_OPS 有重复 op");
+
+        // 2) 每个 op 都被 dispatch 认得（不返回 UNSUPPORTED）
+        for (op, _) in CONTRACT_OPS {
+            let out = dispatch(&format!(r#"{{"v":1,"op":"{op}"}}"#));
+            let code = out["error"]["code"].as_str().unwrap_or("");
+            assert_ne!(
+                code, "UNSUPPORTED",
+                "op `{op}` 在 CONTRACT_OPS 里但 dispatch 不认（文档与代码不一致）"
+            );
+        }
+
+        // 3) 表外不应有 dispatch 认得的 op：抽查几个已删除/未登记的名字必须是 UNSUPPORTED
+        for unknown in ["nope", "catalogPage", "playUrl", "downloadMove"] {
+            let out = dispatch(&format!(r#"{{"v":1,"op":"{unknown}"}}"#));
+            assert_eq!(
+                out["error"]["code"],
+                json!("UNSUPPORTED"),
+                "`{unknown}` 不是已登记 op，却未被拒绝"
+            );
+        }
+    }
+
+    /// 契约守卫：仲裁标记必须与实际实现一致。
+    ///
+    /// 做法：带 `session`+`sequence` 调一次，用**已存在的更大 sequence** 制造
+    /// 「进入即被取代」的场景。只有真正走 `arbitrated_read` 的 op 才会返回
+    /// `CANCELED`。
+    ///
+    /// 注意：部分 op 在进入仲裁**之前**先校验必填参数（如 `search` 缺 `keyword`
+    /// 会先返回 `BAD_REQUEST`）。因此这些 op 需要带上最小合法参数，
+    /// 否则测不到仲裁这一层——表里第三列即为此而设。
+    #[test]
+    fn contract_arbitration_flags_match_implementation() {
+        /// 让 op 能通过「参数校验」这一关的最小参数。
+        fn minimal_params(op: &str) -> &'static str {
+            match op {
+                "search" | "suggest" => r#","params":{"keyword":"x"}"#,
+                "detail" | "episodeGroups" | "playLocal" | "playFile" => r#","params":{"id":"1"}"#,
+                "play" | "preload" => r#","params":{"id":"1"}"#,
+                "playQuality" => r#","params":{"id":"1","vid":"2"}"#,
+                "moveDownloads" => r#","params":{"dir":"/tmp/x"}"#,
+                _ => "",
+            }
+        }
+
+        for (op, arbitrated) in CONTRACT_OPS {
+            let session = format!("contract-arb-{op}");
+            // 占位一个更大的 sequence，让该 op 的进入检查必然判定「被取代」。
+            assert_eq!(
+                cancel::begin(&session, 9_999, CancellationToken::new()),
+                cancel::Decision::Continue
+            );
+            let out = dispatch(&format!(
+                r#"{{"v":1,"op":"{op}","session":"{session}","sequence":1{}}}"#,
+                minimal_params(op)
+            ));
+            let code = out["error"]["code"].as_str().unwrap_or("");
+            if *arbitrated {
+                assert_eq!(
+                    code, "CANCELED",
+                    "`{op}` 标记为参与仲裁，但未被 sequence 取代（实际 code={code}）"
+                );
+            } else {
+                assert_ne!(
+                    code, "CANCELED",
+                    "`{op}` 标记为不参与仲裁，却返回了 CANCELED"
+                );
+            }
+            let _ = cancel::complete(&session, 9_999);
+        }
+    }
+
+    /// 契约守卫：`docs/RUST_CONTRACT.md` 必须列出 `CONTRACT_OPS` 的**每一个** op。
+    ///
+    /// 前端按文档开发，文档漏一个 op 就会导致盲写。这里直接读 markdown 比对。
+    /// 路径相对 crate 根（`CARGO_MANIFEST_DIR`）。
+    #[test]
+    fn contract_doc_lists_every_op() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("docs/RUST_CONTRACT.md");
+        let Ok(doc) = std::fs::read_to_string(&path) else {
+            // 文档不在（例如只打包了 crate）时跳过，不让它成为构建阻塞。
+            eprintln!("skip: {} not found", path.display());
+            return;
+        };
+        let missing: Vec<&str> = CONTRACT_OPS
+            .iter()
+            .map(|(op, _)| *op)
+            .filter(|op| !doc.contains(&format!("| `{op}` |")) && !doc.contains(&format!("`{op}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "docs/RUST_CONTRACT.md 未记录这些 op：{missing:?}（新增 op 必须同步文档）"
+        );
     }
 
     #[test]
