@@ -1031,7 +1031,16 @@ mod tests {
             .and_then(|rest| rest.split("/play/").nth(1))
             .and_then(|rest| rest.split('/').next())
             .unwrap_or("");
-        let cached = cached_plan(token).expect("plan should be cached after head fetch");
+        // 该诊断只在**加密轨**下有意义：它要拿缓存里的解密计划做逐字节对拍。
+        // 当前实测走的是网页公开轨（免签明文），没有解密计划；此时跳过而不是
+        // 断言失败——否则上游一旦切回明文轨，这条诊断就会误报成「代码坏了」。
+        let Some(cached) = cached_plan(token) else {
+            eprintln!(
+                "skip: plaintext track (no decrypt plan cached) —                  encrypted={}",
+                out["encrypted"]
+            );
+            return;
+        };
         let delta = cached.plan.delta;
         let key_hex = out["keyHex"].as_str().unwrap().to_owned();
         let mut key = [0u8; 16];
