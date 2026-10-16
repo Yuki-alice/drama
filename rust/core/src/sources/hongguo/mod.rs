@@ -149,6 +149,27 @@ impl SourceProvider for HongguoProvider {
         Ok(out)
     }
 
+    fn play_variant(
+        &self,
+        series_id: &str,
+        video_id: &str,
+        quality: i64,
+    ) -> Result<Value, SourceError> {
+        // 换档的快路径：`switch_quality` 只在**已解析出的候选**里重挑，
+        // 不走签名链（用户在播放中点「1080P」应当是瞬时的）。
+        // 旁路没有这一集（首次取流前换档 / TTL 已过）才回落到完整解析。
+        let media = match app_api::switch_quality(video_id, quality) {
+            Some(m) => m,
+            None => app_api::resolve_media(series_id, video_id, quality)?,
+        };
+        // 换档不预热：预热要解密首 64KiB，换档追求的是「立刻接着播」。
+        let (proxy_url, _) = register_and_warm(&media, false)?;
+        let mut out = media.to_json();
+        out["proxyUrl"] = json!(proxy_url);
+        out["vid"] = json!(video_id);
+        Ok(out)
+    }
+
     fn preload(
         &self,
         series_id: &str,

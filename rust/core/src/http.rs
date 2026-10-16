@@ -49,13 +49,20 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// 默认内层超时预算（目录/详情/搜索等默认档 60s，**内层先于 Dart 外层到期**）。
 pub const DEFAULT_INNER_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// 分级内层超时预算：默认 60s / `preload` 15s / `moveDownloads` 600s。
+/// 分级内层超时预算：默认 60s / `preload` 15s / `moveDownloads` 600s / `catalogPages` 120s。
+///
+/// `catalogPages` 一次最多串行取 [MAX_PAGES_PER_REQUEST] 页（缓存命中的页是瞬时的，
+/// 只有未命中的才打网络），故比默认档宽。
 ///
 /// 纯函数，便于离线单测。
 pub fn inner_timeout_for(op: &str) -> Duration {
     match op {
         "preload" => Duration::from_secs(15),
         "moveDownloads" => Duration::from_secs(600),
+        "catalogPages" => Duration::from_secs(120),
+        // 换档快路径是瞬时的；回落完整解析时才是常规取流耗时。
+        // 给 15s（同 preload）：换档失败用户会直接看到错误，不该久等。
+        "playQuality" => Duration::from_secs(15),
         _ => DEFAULT_INNER_TIMEOUT,
     }
 }
@@ -114,6 +121,32 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     }
     builder.build().expect("build reqwest client")
 });
+
+/// 下载专用客户端：与 [`CLIENT`] 分池，**不设整请求超时**。
+///
+/// 为什么不用 [`CLIENT`]：它有 [`TOTAL_TIMEOUT`]（20s）整请求超时，
+/// 而 `reqwest` 的 `timeout` 覆盖**含 body 读取**的全过程——大文件必然超时。
+/// 下载改用「无整请求超时 + 单 chunk 超时（见 `download.rs`）」的组合：
+/// 既能长时间传输，又能识别 CDN 停顿。同时放宽连接池上限，
+/// 供同任务多连接并发取不同 Range 分片复用 TCP/TLS。
+static DOWNLOAD_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(USER_AGENT_VALUE)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .pool_max_idle_per_host(8)
+        .tcp_keepalive(Duration::from_secs(30));
+    if let Some(url) = explicit_proxy_from(&|key| std::env::var(key).ok())
+        && let Ok(proxy) = reqwest::Proxy::all(&url)
+    {
+        builder = builder.proxy(proxy);
+    }
+    builder.build().expect("build download client")
+});
+
+/// 下载客户端句柄（全局单例，连接池跨请求复用）。
+pub fn download_client() -> &'static reqwest::Client {
+    &DOWNLOAD_CLIENT
+}
 
 /// HTTP 错误类别：决定映射到信封错误码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

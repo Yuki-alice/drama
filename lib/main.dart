@@ -10,7 +10,6 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app/app.dart';
 import 'data/repositories/catalog_providers.dart';
-import 'data/services/cache_store.dart';
 import 'data/services/rust_core.dart';
 import 'ui/core/theme/appearance_controller.dart';
 
@@ -32,12 +31,11 @@ Future<void> main() async {
 
   final preferences = await SharedPreferences.getInstance();
 
-  // W2：启动缓存存储（先 load() 一次性载入磁盘快照，之后读路径同步可用）。
-  final cacheStore = FileCacheStore();
-  await cacheStore.load();
-
   // W2：启动 Rust 核心（免签轨①的数据来源）。启动失败不阻断启动——
   // `rustCoreProvider` 保持 null，目录仓库自动回退到 mock（见 catalog_providers.dart）。
+  //
+  // 缓存存储不再在 Dart 侧初始化：目录缓存（TTL / 回退 / 熔断 / 分页水位 /
+  // 封面端口自愈）已下沉到 Rust `cache.rs`，由 `init` 的 `dataDir` 落盘。
   RustCoreHolder? rustCoreHolder;
   try {
     final core = await RustCore.spawn();
@@ -51,21 +49,7 @@ Future<void> main() async {
     } catch (error) {
       debugPrint('Rust 核心 init 失败，将用临时设备身份：$error');
     }
-    // 取本机代理端口（封面/媒体）：缓存里的封面 URL 需按当前端口改写，
-    // 否则重启后旧端口失效，海报墙会退化成渐变占位。
-    int? mediaPort;
-    try {
-      final version = await core.call('version');
-      if (version['ok'] == true) {
-        final data = version['data'];
-        if (data is Map) {
-          mediaPort = (data['mediaPort'] as num?)?.toInt();
-        }
-      }
-    } catch (error) {
-      debugPrint('取 mediaPort 失败，封面将不做端口改写：$error');
-    }
-    rustCoreHolder = RustCoreHolder(core, mediaPort: mediaPort);
+    rustCoreHolder = RustCoreHolder(core);
   } catch (error) {
     debugPrint('[W2] Rust 核心启动失败，将回退 mock 数据：$error');
   }
@@ -74,7 +58,6 @@ Future<void> main() async {
     ProviderScope(
       overrides: [
         sharedPreferencesProvider.overrideWithValue(preferences),
-        cacheStoreProvider.overrideWithValue(cacheStore),
         if (rustCoreHolder != null)
           rustCoreProvider.overrideWithValue(rustCoreHolder),
       ],

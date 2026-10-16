@@ -29,6 +29,10 @@ class DownloadTask {
     required this.status,
     required this.progress,
     this.id = '',
+    this.total = 0,
+    this.done = 0,
+    this.speed = 0,
+    this.error = '',
   });
 
   final String dramaId;
@@ -45,6 +49,18 @@ class DownloadTask {
 
   /// Rust 侧任务 id（`seriesId:episode`），操作（暂停/重试/删除）用。
   final String id;
+
+  /// 资源总字节数（未知为 0）。
+  final int total;
+
+  /// 已下载字节数。
+  final int done;
+
+  /// 实时吞吐（字节/秒），仅 [DownloadStatus.downloading] 有意义。
+  final int speed;
+
+  /// 失败原因（`failed` 时的 Rust 原文）。
+  final String error;
 }
 
 /// 按剧分组的下载任务集合。
@@ -89,6 +105,10 @@ final downloadGroupsProvider = StreamProvider<List<DownloadGroup>>((ref) {
               episode: record.episode,
               status: _statusFrom(record.state),
               progress: record.progress,
+              total: record.total,
+              done: record.done,
+              speed: record.speed,
+              error: record.error,
             ),
         ],
       ),

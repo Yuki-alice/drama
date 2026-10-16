@@ -86,6 +86,22 @@ pub fn media_port() -> Option<u16> {
     crate::gateway::ensure_port().ok()
 }
 
+/// 把本机代理封面地址改写到**当前**端口；非本机代理地址返回 `None`。
+///
+/// 端口是实现细节（47800-47899 取首个可用），跨会话会变。封面地址却会
+/// 被持久化（追剧表 `progress.json`、目录缓存），因此**读出时**统一在此
+/// 改写，使旧数据自愈。Dart 侧因此不必在渲染时逐条解析 URI 改写端口。
+pub fn rewrite_to_current_port(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("http://127.0.0.1:")?;
+    let (_, tail) = rest.split_once('/')?;
+    let token = tail.strip_prefix("img/")?;
+    if token.is_empty() {
+        return None;
+    }
+    let port = media_port()?;
+    Some(format!("http://127.0.0.1:{port}/img/{token}"))
+}
+
 /// 由 CDN 地址生成本机代理 URL；不可代理或端口不可用时返回空串。
 pub fn proxy_url(raw: &str, _referer: &'static str) -> String {
     let raw = raw.trim();

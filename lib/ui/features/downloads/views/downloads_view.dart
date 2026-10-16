@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../../data/services/rust_core.dart';
 import '../../../../router/routes.dart';
+import '../../../core/format.dart';
 import '../../../core/layout/breakpoints.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/app_glass_scaffold.dart';
@@ -139,7 +140,10 @@ class _DownloadGroupSection extends StatelessWidget {
   );
 }
 
-/// 单条任务行（集号 + 状态 + 进度 + 操作，全部为普通控件）。
+/// 单条任务行（集号 + 状态 + 进度 + 大小/速度 + 操作，全部为普通控件）。
+///
+/// 已完成的行整行可点 → 直接进播放页离线播放（`playPlanProvider` 会走
+/// `playLocal` 命中本地文件）。
 class _TaskRow extends ConsumerWidget {
   const _TaskRow({required this.task, required this.colors});
 
@@ -153,59 +157,107 @@ class _TaskRow extends ConsumerWidget {
       DownloadStatus.paused => colors.textTertiary,
       _ => colors.accent,
     };
+    final detail = _detailLine(task);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.gutter,
-        vertical: AppSpacing.sm,
-      ),
-      child: Row(
-        children: <Widget>[
-          SizedBox(
-            width: 52,
-            child: Text(
-              '第 ${task.episode} 集',
-              style: AppText.callout.copyWith(color: colors.textSecondary),
+    return InkWell(
+      // 只有已完成才整行可点：未完成的整行点击没有合理目标，
+      // 误触会被当成「什么都点不动」。
+      onTap: task.status == DownloadStatus.completed
+          ? () => context.push(AppRoutes.player(task.dramaId, episode: task.episode))
+          : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.gutter,
+          vertical: AppSpacing.sm,
+        ),
+        child: Row(
+          children: <Widget>[
+            SizedBox(
+              width: 52,
+              child: Text(
+                '第 ${task.episode} 集',
+                style: AppText.callout.copyWith(color: colors.textSecondary),
+              ),
             ),
-          ),
-          const SizedBox(width: AppSpacing.md),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  task.status.label,
-                  style: AppText.callout.copyWith(color: colors.textPrimary),
-                ),
-                const SizedBox(height: AppSpacing.xs),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(AppRadii.capsule),
-                  child: LinearProgressIndicator(
-                    value: task.progress,
-                    minHeight: 4,
-                    backgroundColor: colors.divider,
-                    valueColor: AlwaysStoppedAnimation<Color>(barColor),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    _statusLine(task),
+                    style: AppText.callout.copyWith(color: colors.textPrimary),
                   ),
-                ),
-              ],
+                  const SizedBox(height: AppSpacing.xs),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(AppRadii.capsule),
+                    child: LinearProgressIndicator(
+                      value: task.progress,
+                      minHeight: 4,
+                      backgroundColor: colors.divider,
+                      valueColor: AlwaysStoppedAnimation<Color>(barColor),
+                    ),
+                  ),
+                  if (detail.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      detail,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.caption.copyWith(
+                        color: task.status == DownloadStatus.failed
+                            ? colors.textSecondary
+                            : colors.textTertiary,
+                        fontFeatures: const <FontFeature>[
+                          FontFeature.tabularFigures(),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: AppSpacing.sm),
-          IconButton(
-            onPressed: () => downloadAction(ref, task),
-            tooltip: _actionLabel(task.status),
-            visualDensity: VisualDensity.compact,
-            icon: Icon(
-              _actionIcon(task.status),
-              size: 18,
-              color: colors.textSecondary,
+            const SizedBox(width: AppSpacing.sm),
+            IconButton(
+              onPressed: () => downloadAction(ref, task),
+              tooltip: _actionLabel(task.status),
+              visualDensity: VisualDensity.compact,
+              icon: Icon(
+                _actionIcon(task.status),
+                size: 18,
+                color: colors.textSecondary,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
+
+/// 首行文案：状态 + 进度百分比（已完成不显示百分比，改由副行给体积）。
+String _statusLine(DownloadTask task) => switch (task.status) {
+  DownloadStatus.downloading ||
+  DownloadStatus.paused ||
+  DownloadStatus.queued =>
+    '${task.status.label} · ${(task.progress * 100).round()}%',
+  _ => task.status.label,
+};
+
+/// 副行：下载中给「已下/总量 · 速率」，失败给原因，已完成给体积。
+///
+/// 失败原因一律显示——Rust 的错误串（如“解析/网络”）是用户唯一能拿到的线索，
+/// 隐藏它只会得到「点了下载没反应」的观感。
+String _detailLine(DownloadTask task) => switch (task.status) {
+  DownloadStatus.downloading => <String>[
+    '${formatBytes(task.done)} / ${formatBytes(task.total)}',
+    formatSpeed(task.speed),
+  ].where((part) => part.isNotEmpty).join(' · '),
+  DownloadStatus.completed => formatBytes(task.total),
+  DownloadStatus.failed =>
+    task.error.isEmpty ? '下载失败，点右侧重试' : task.error,
+  _ => task.total > 0 ? formatBytes(task.total) : '',
+};
 
 /// 任务行右侧操作的图标（按状态切换语义）。
 IconData _actionIcon(DownloadStatus status) => switch (status) {

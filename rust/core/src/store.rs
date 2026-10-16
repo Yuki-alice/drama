@@ -167,7 +167,11 @@ pub fn follow_list() -> Result<Value, SourceError> {
         "items": items.iter().map(|(id, f)| json!({
             "id": id,
             "title": f.title,
-            "cover": f.cover,
+            // 封面地址是**持久化**的，里面记的是上次会话的代理端口；
+            // 端口跨会话会变，故读出时改写，让旧记录自愈
+            // （Dart 侧因此不必在渲染时逐条解析 URI 改写端口）。
+            "cover": crate::covers::rewrite_to_current_port(&f.cover)
+                .unwrap_or_else(|| f.cover.clone()),
             "episode": f.episode,
             "positionSecs": f.position_secs,
             "durationSecs": f.duration_secs,
@@ -262,14 +266,140 @@ pub fn history_clear() -> Result<Value, SourceError> {
     Ok(json!({ "cleared": true }))
 }
 
+// ── 搜索历史 ─────────────────────────────────────────────────────────────
+//
+// 独立文件 `search_history.json`（与 `progress.json` 分开：两者生命周期与
+// 容量模型都不同，混在一起会让上限互相挤占）。Dart 侧不再用内存列表——
+// 重启后最近搜索不该消失。
+
+/// 搜索历史上限（LRU：超出淘汰最旧）。
+const MAX_SEARCH_HISTORY: usize = 20;
+/// 单词最大长度（防御：超长输入不该进持久化）。
+const MAX_KEYWORD_LEN: usize = 64;
+/// 搜索历史文件上限。
+const MAX_SEARCH_FILE_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SearchTerm {
+    keyword: String,
+    updated_at_ms: i64,
+}
+
+static SEARCH_HISTORY: Lazy<Mutex<Vec<SearchTerm>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static SEARCH_LOADED: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+
+fn search_path() -> Option<std::path::PathBuf> {
+    crate::device::data_dir().map(|d| d.join("search_history.json"))
+}
+
+/// 延迟载入（损坏即用空表）。
+fn search_ensure_loaded() {
+    if *SEARCH_LOADED.lock().expect("search flag poisoned") {
+        return;
+    }
+    *SEARCH_LOADED.lock().expect("search flag poisoned") = true;
+    let Some(path) = search_path() else { return };
+    let Ok(raw) = std::fs::read(&path) else {
+        return;
+    };
+    if raw.len() > MAX_SEARCH_FILE_BYTES {
+        return;
+    }
+    if let Ok(terms) = serde_json::from_slice::<Vec<SearchTerm>>(&raw) {
+        *SEARCH_HISTORY.lock().expect("search poisoned") = terms;
+    }
+}
+
+fn search_persist() -> Result<(), SourceError> {
+    let Some(path) = search_path() else {
+        return Ok(());
+    };
+    let raw = serde_json::to_vec(&*SEARCH_HISTORY.lock().expect("search poisoned"))
+        .map_err(|e| SourceError::Parse(format!("encode search history: {e}")))?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&path, raw)
+        .map_err(|e| SourceError::Parse(format!("write search history: {e}")))?;
+    Ok(())
+}
+
+/// 取参数里的搜索词（trim + 长度裁剪）；空词返回 `None`。
+fn search_keyword(params: &Value) -> Option<String> {
+    let raw = params.get("keyword").and_then(Value::as_str)?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(MAX_KEYWORD_LEN).collect())
+}
+
+/// 记录一次搜索：置顶 + 去重 + 截断（LRU）。
+pub fn search_history_put(params: &Value) -> Result<Value, SourceError> {
+    let Some(keyword) = search_keyword(params) else {
+        return Err(SourceError::Parse("missing keyword".to_owned()));
+    };
+    search_ensure_loaded();
+    {
+        let mut terms = SEARCH_HISTORY.lock().expect("search poisoned");
+        terms.retain(|t| t.keyword != keyword);
+        terms.insert(
+            0,
+            SearchTerm {
+                keyword: keyword.clone(),
+                updated_at_ms: now_ms(),
+            },
+        );
+        terms.truncate(MAX_SEARCH_HISTORY);
+    }
+    search_persist()?;
+    Ok(json!({ "keyword": keyword }))
+}
+
+/// 搜索历史列表（最近的在前）。
+pub fn search_history_list() -> Result<Value, SourceError> {
+    search_ensure_loaded();
+    let terms = SEARCH_HISTORY.lock().expect("search poisoned");
+    Ok(json!({
+        "items": terms.iter().map(|t| json!({
+            "keyword": t.keyword,
+            "updatedAtMs": t.updated_at_ms,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+/// 删除单个搜索词（不存在也算成功，幂等）。
+pub fn search_history_del(params: &Value) -> Result<Value, SourceError> {
+    let Some(keyword) = search_keyword(params) else {
+        return Err(SourceError::Parse("missing keyword".to_owned()));
+    };
+    search_ensure_loaded();
+    SEARCH_HISTORY
+        .lock()
+        .expect("search poisoned")
+        .retain(|t| t.keyword != keyword);
+    search_persist()?;
+    Ok(json!({ "keyword": keyword }))
+}
+
+/// 清空搜索历史。
+pub fn search_history_clear() -> Result<Value, SourceError> {
+    search_ensure_loaded();
+    SEARCH_HISTORY.lock().expect("search poisoned").clear();
+    search_persist()?;
+    Ok(json!({ "cleared": true }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// store 测试串行化：STORE/LOADED 为进程静态，并行跑会互踩。
+    /// store 测试串行化：STORE/LOADED/SEARCH_* 为进程静态，并行跑会互踩。
     fn reset() {
         *STORE.lock().unwrap() = Store::default();
         *LOADED.lock().unwrap() = true;
+        *SEARCH_HISTORY.lock().unwrap() = Vec::new();
+        *SEARCH_LOADED.lock().unwrap() = true;
     }
 
     #[test]
@@ -348,6 +478,51 @@ mod tests {
             .unwrap();
         assert_eq!(a["totalEpisode"], json!(80));
         assert_eq!(a["episode"], json!(5));
+        reset();
+    }
+
+    #[test]
+    fn search_history_is_lru_deduped_and_bounded() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        reset();
+        search_history_put(&json!({"keyword": "  a  "})).unwrap();
+        search_history_put(&json!({"keyword": "b"})).unwrap();
+        // 重复搜索置顶（去重），且 trim 后的词才入库。
+        search_history_put(&json!({"keyword": "a"})).unwrap();
+        let items = search_history_list().unwrap()["items"].clone();
+        let words: Vec<&str> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["keyword"].as_str().unwrap())
+            .collect();
+        assert_eq!(words, vec!["a", "b"], "最近搜索的应置顶且去重：{words:?}");
+
+        // 上限：超出淘汰最旧，只留最新的 MAX_SEARCH_HISTORY 条。
+        for i in 0..MAX_SEARCH_HISTORY + 5 {
+            search_history_put(&json!({"keyword": format!("k{i}")})).unwrap();
+        }
+        let count = search_history_list().unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(count, MAX_SEARCH_HISTORY, "必须截断到上限，实际 {count}");
+
+        // 删除单个（幂等）。
+        search_history_del(&json!({"keyword": "k0"})).unwrap();
+        assert!(search_history_del(&json!({"keyword": "nope"})).is_ok());
+
+        // 空词拒绝入库（否则搜索页会出现空白条目）。
+        assert!(search_history_put(&json!({"keyword": "   "})).is_err());
+
+        search_history_clear().unwrap();
+        assert_eq!(
+            search_history_list().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         reset();
     }
 

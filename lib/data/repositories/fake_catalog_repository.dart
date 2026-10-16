@@ -110,6 +110,21 @@ class FakeCatalogRepository implements CatalogRepository {
   }
 
   @override
+  Future<List<CatalogPage>> catalogPages({
+    required String categoryId,
+    int depth = 0,
+  }) async {
+    // mock 无水位概念：`depth` 为 0 时按单页处理。
+    if (depth <= 0) return <CatalogPage>[await catalog(categoryId: categoryId)];
+    // mock 数据无网络，逐页取即可（真实实现由 Rust 一次往返聚合）。
+    final pages = <CatalogPage>[];
+    for (var page = 0; page < depth; page++) {
+      pages.add(await catalog(categoryId: categoryId, page: page));
+    }
+    return pages;
+  }
+
+  @override
   Future<List<Drama>> ranking({required String boardId}) async {
     final base = switch (boardId) {
       'rising' => _all.reversed.toList(),
@@ -151,6 +166,36 @@ class FakeCatalogRepository implements CatalogRepository {
       throw StateError('未找到剧集 $seriesId');
     }
     return DramaDetail(drama: drama, episodes: _episodesOf(drama));
+  }
+
+  @override
+  Future<EpisodeGroups> episodeGroups({
+    required String seriesId,
+    int groupSize = 0,
+  }) async {
+    // mock 也走同一口径：组大小默认 50（与 Rust `EPISODE_GROUP_SIZE` 一致），
+    // 分组在这里算，调用方不必区分真源/mock。
+    final size = groupSize <= 0 ? 50 : groupSize;
+    final drama = _all.where((item) => item.id == seriesId).firstOrNull;
+    if (drama == null) {
+      return EpisodeGroups(groupSize: size, total: 0, groups: const <EpisodeGroup>[]);
+    }
+    final episodes = _episodesOf(drama);
+    final groups = <EpisodeGroup>[];
+    for (var i = 0; i < episodes.length; i += size) {
+      final end = (i + size).clamp(0, episodes.length);
+      final chunk = episodes.sublist(i, end);
+      groups.add(
+        EpisodeGroup(
+          index: groups.length,
+          start: i + 1,
+          end: end,
+          label: '${i + 1}-$end',
+          episodes: chunk,
+        ),
+      );
+    }
+    return EpisodeGroups(groupSize: size, total: episodes.length, groups: groups);
   }
 
   List<Episode> _episodesOf(Drama drama) => <Episode>[

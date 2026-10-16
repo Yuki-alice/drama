@@ -4,7 +4,10 @@ import 'package:go_router/go_router.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../../../../data/repositories/catalog_providers.dart';
+import '../../../../data/repositories/download_repository.dart';
+import '../../../../data/services/rust_core.dart';
 import '../../../../router/routes.dart';
+import '../../../core/format.dart';
 import '../../../core/playback/playback_settings.dart';
 import '../../../core/theme/appearance_controller.dart';
 import '../../../core/tokens/app_tokens.dart';
@@ -27,6 +30,8 @@ class SettingsView extends ConsumerWidget {
     final controller = ref.read(appearanceProvider.notifier);
     final playback = ref.watch(playbackSettingsProvider);
     final colors = AppColors.of(context);
+    // 下载设置来自 Rust（`downloadSetConcurrency` 持久化在下载目录）。
+    final downloads = ref.watch(downloadSettingsProvider).value;
 
     return AppGlassScaffold(
       title: '设置',
@@ -98,15 +103,13 @@ class SettingsView extends ConsumerWidget {
                 .setAutoPlayOnOpen,
           ),
 
-          // ── 下载（能力未实现；此处如实标注，不让用户误以为已生效） ──
+          // ── 下载（并发数接到 Rust 真实设置；目录可搬迁） ───────────
           const SectionHeader(title: '下载'),
           _ChipField(
             label: '同时下载任务数',
-            options: const <String>['1', '2', '3', '4', '5', '6'],
-            selectedIndex: ref.watch(_downloadConcurrencyProvider) - 1,
-            onSelected: (index) => ref
-                .read(_downloadConcurrencyProvider.notifier)
-                .update(index + 1),
+            options: _concurrencyOptions,
+            selectedIndex: _concurrencySelectedIndex(downloads),
+            onSelected: (index) => _setConcurrency(context, ref, index + 1),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -116,9 +119,17 @@ class SettingsView extends ConsumerWidget {
               AppSpacing.sm,
             ),
             child: Text(
-              '下载能力尚未实现，此项暂不生效。',
+              '每任务 ${downloads?.connections ?? DownloadSettings.fallbackConnections} '
+              '条连接并发（总连接预算 ${DownloadSettings.maxParallel}×'
+              '${DownloadSettings.fallbackConnections} 由 Rust 按任务数分摊）；'
+              '总带宽受源站与网络限制，并非并发越高越快。',
               style: AppText.caption.copyWith(color: colors.textTertiary),
             ),
+          ),
+          _TappableRow(
+            label: '下载目录',
+            value: _shortDir(downloads?.dir ?? ''),
+            onTap: () => _editDownloadDir(context, ref, downloads?.dir ?? ''),
           ),
 
           // ── 存储 ───────────────────────────────────────────────
@@ -140,44 +151,134 @@ class SettingsView extends ConsumerWidget {
     );
   }
 
-  /// 清除目录缓存（的 `CacheStore.clear()`），并重建仓库以清掉内存态
-  /// （熔断计数与 in-flight 去重）。缓存只是加速手段，清除后下次进入页面会重新拉取。
+  /// 清除目录缓存（走 Rust `cacheClear`）。
+  ///
+  /// 缓存现在完全由 Rust 持有（`rust/core/src/cache.rs`），清缓存就是让 Rust
+  /// 清掉内存快照与落盘文件、并重置榜单熔断计数；Dart 侧只需失效受影响的
+  /// provider。缓存只是加速手段，清除后下次进入页面会重新拉取。
   Future<void> _clearCache(BuildContext context, WidgetRef ref) async {
-    final store = ref.read(cacheStoreProvider);
-    if (store == null) {
-      // 未注入缓存（widget 测试路径）：如实说明未启用，不假装清除成功。
+    final holder = ref.read(rustCoreProvider);
+    if (holder == null) {
+      // 核心不可用：如实说明未启用，不假装清除成功。
       await _showPlaceholderDialog(context, '清除缓存');
       return;
     }
-    await store.clear();
+    final envelope = await holder.core.call('cacheClear');
     ref.invalidate(catalogRepositoryProvider);
     if (!context.mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('目录缓存已清除，再进入页面会重新拉取')));
+    final cleared = envelope['ok'] == true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          cleared
+              ? '目录缓存已清除，再进入页面会重新拉取'
+              : '清除缓存失败：${RustCoreException.fromEnvelope(envelope).code}',
+        ),
+      ),
+    );
   }
 }
 
-// ── 本地 mock 状态（W1 外壳，不持久化；仅用小型 Notifier，保持页面为
-//    ConsumerWidget） ─────────────────────────────────────────────────────
+// ── 下载设置（并发数 / 目录搬迁：均为 Rust 真实能力） ──────────────────
 
-/// 下载并发数。
+/// 并发数 chip 选项（1~6，与 Rust `MAX_PARALLEL_LIMIT` 一致）。
+final List<String> _concurrencyOptions = <String>[
+  for (var i = 1; i <= DownloadSettings.maxParallel; i++) '$i',
+];
+
+/// 当前生效的并发数落在哪个 chip 上（未取到设置时用保守默认值）。
+int _concurrencySelectedIndex(DownloadSettings? settings) {
+  final parallel = settings?.parallel ?? DownloadSettings.fallbackParallel;
+  final index = parallel - 1;
+  return index.clamp(0, DownloadSettings.maxParallel - 1);
+}
+
+/// 调整并发数（走 Rust `downloadSetConcurrency`；失败显式告知）。
+Future<void> _setConcurrency(
+  BuildContext context,
+  WidgetRef ref,
+  int parallel,
+) async {
+  final applied = await applyDownloadConcurrency(ref, parallel);
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(
+        applied == null
+            ? '并发数未生效（可选范围 1~${DownloadSettings.maxParallel}）'
+            : '同时下载 ${applied.parallel} 个任务，每任务 ${applied.connections} 条连接',
+      ),
+    ),
+  );
+}
+
+/// 搬迁下载目录：弹出输入框让用户填目标路径 → 调 Rust `moveDownloads`。
 ///
-/// **刻意保留为纯内存**：下载能力整体未实现（`moveDownloads` 仍是
-/// `UNSUPPORTED`），把它持久化会让用户以为设置已生效。等下载落地后再接。
-final _downloadConcurrencyProvider = NotifierProvider<_IntNotifier, int>(
-  () => _IntNotifier(2),
-);
+/// 没有引入目录选择器插件（依赖越少越好），因此这里**由用户输入绝对路径**；
+/// 搬迁是先停机再复制，可能耗时，故先把「正在搬迁」如实告诉用户。
+Future<void> _editDownloadDir(
+  BuildContext context,
+  WidgetRef ref,
+  String current,
+) async {
+  final controller = TextEditingController(text: current);
+  final target = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('搬迁下载目录'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Text('填入目标目录的绝对路径；已下载的分集会一并搬迁，'
+              '目标下若已有同名文件则中止（不会覆盖已有数据）。'),
+          const SizedBox(height: AppSpacing.md),
+          TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+              labelText: '目标目录',
+              hintText: '例如：D:\\drama\\downloads',
+            ),
+          ),
+        ],
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('取消'),
+        ),
+        TextButton(
+          onPressed: () =>
+              Navigator.of(dialogContext).pop(controller.text.trim()),
+          child: const Text('搬迁'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  if (target == null || target.isEmpty || !context.mounted) return;
 
-class _IntNotifier extends Notifier<int> {
-  _IntNotifier(this._initial);
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(const SnackBar(content: Text('正在搬迁下载目录…')));
+  final result = await moveDownloadDir(ref, target);
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(
+        result == null
+            ? '搬迁失败：目标不可创建或已存在同名文件'
+            : '已搬迁 ${result.moved} 项（${formatBytes(result.bytes)}）到 ${result.dir}',
+      ),
+    ),
+  );
+}
 
-  final int _initial;
-
-  @override
-  int build() => _initial;
-
-  void update(int value) => state = value;
+/// 目录串过长时取尾部（用户关心的是「在哪」，不是完整前缀）。
+String _shortDir(String dir) {
+  if (dir.isEmpty) return '未初始化';
+  if (dir.length <= 24) return dir;
+  return '…${dir.substring(dir.length - 24)}';
 }
 
 const List<ThemeMode> _themeModes = <ThemeMode>[

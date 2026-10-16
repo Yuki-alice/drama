@@ -16,6 +16,7 @@
 //! 取消令牌会被在途读的 `tokio::select!` 观察到，**尽力**提前释放该请求。
 
 pub mod app_api;
+pub mod cache;
 pub mod cancel;
 pub mod covers;
 pub mod decrypt;
@@ -48,6 +49,16 @@ use source::traits::{SourceError, SourceProvider};
 
 /// 入参上限 1 MiB。
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
+
+/// `catalogPages` 一次最多取几页（上限保护：误传巨大 depth 不该拖成超长串行拉取）。
+const MAX_PAGES_PER_REQUEST: u32 = 8;
+
+/// 选集分组默认每组几集（播放页 chip 一屏放得下、又不至于组太多）。
+const EPISODE_GROUP_SIZE: u32 = 50;
+
+/// 单个选集分组的上下限（防误传 1 或 10000）。
+const MIN_EPISODE_GROUP_SIZE: u32 = 10;
+const MAX_EPISODE_GROUP_SIZE: u32 = 200;
 
 /// 信封版本。
 const ENVELOPE_VERSION: u32 = 1;
@@ -85,8 +96,16 @@ struct ErrorBody {
 }
 
 /// 成功响应。
+/// 成功响应。
+///
+/// **不要用 `json!` 宏**：宏对已有的 `Value` 会走 `to_value` 深拷贝整个
+/// `data`（一页目录 5.6KB、一次多页聚合 28KB，实测每次响应 ~20-175µs）。
+/// 这里用 `Map` 直接插入 —— `data` 是 move，零拷贝。
 fn ok(data: Value) -> Value {
-    json!({ "ok": true, "data": data })
+    let mut map = serde_json::Map::with_capacity(2);
+    map.insert("ok".to_owned(), Value::Bool(true));
+    map.insert("data".to_owned(), data);
+    Value::Object(map)
 }
 
 /// 失败响应（`retry` 默认 false）。
@@ -129,16 +148,80 @@ fn param_u32(params: &Value, key: &str, default: u32) -> u32 {
         .map_or(default, |n| n as u32)
 }
 
+/// 取源实现并执行 `f`，返回**原始** [`Result`]。
+///
+/// 缓存层需要区分"成功/失败"才能决定写缓存还是回退旧值，故先有本函数；
+/// 直接要信封时用 [`with_provider`]。
+fn with_provider_result<F>(source: Option<&str>, f: F) -> Result<Value, SourceError>
+where
+    F: FnOnce(&dyn SourceProvider) -> Result<Value, SourceError>,
+{
+    match source::provider(source) {
+        Ok(p) => f(p.as_ref()),
+        Err(e) => Err(e),
+    }
+}
+
 /// 取源实现并执行 `f`，把 [`SourceError`] 映射成信封 `error{code,msg,retry}`。
 fn with_provider<F>(source: Option<&str>, f: F) -> Value
 where
     F: FnOnce(&dyn SourceProvider) -> Result<Value, SourceError>,
 {
-    match source::provider(source) {
-        Ok(p) => match f(p.as_ref()) {
-            Ok(v) => ok(v),
-            Err(e) => err_with(e.code(), e.to_string(), e.retry()),
+    match with_provider_result(source, f) {
+        Ok(v) => ok(v),
+        Err(e) => err_with(e.code(), e.to_string(), e.retry()),
+    }
+}
+
+/// 选集分组：`groupSize` 集一组，产出 `{groupSize,total,groups:[{index,start,end,label,episodes}]}`。
+///
+/// **分组规则归 Rust**：组大小、起止、标签（"1-50"）都是业务口径，Dart 只按组渲染。
+/// `episodes` 用 `drain` 搬出来（move），不做整表深拷贝——100 集规模下这是
+/// 几十 KB 的差别。
+fn episode_groups(episodes: Vec<Value>, group_size: u32) -> Value {
+    let size = group_size.clamp(MIN_EPISODE_GROUP_SIZE, MAX_EPISODE_GROUP_SIZE) as usize;
+    let total = episodes.len();
+    let mut rest = episodes;
+    let mut groups: Vec<Value> = Vec::with_capacity(total.div_ceil(size));
+    let mut index = 0usize;
+    while !rest.is_empty() {
+        let take = size.min(rest.len());
+        // `drain` 把这一段 `Value` **搬**进新 Vec，不深拷贝。
+        let chunk: Vec<Value> = rest.drain(..take).collect();
+        let start = index * size + 1;
+        let end = start + chunk.len() - 1;
+        let mut group = serde_json::Map::with_capacity(5);
+        group.insert("index".to_owned(), json!(index));
+        group.insert("start".to_owned(), json!(start));
+        group.insert("end".to_owned(), json!(end));
+        group.insert("label".to_owned(), Value::String(format!("{start}-{end}")));
+        group.insert("episodes".to_owned(), Value::Array(chunk));
+        groups.push(Value::Object(group));
+        index += 1;
+    }
+    let mut data = serde_json::Map::with_capacity(4);
+    data.insert("groupSize".to_owned(), json!(size));
+    data.insert("total".to_owned(), json!(total));
+    data.insert("groupCount".to_owned(), json!(groups.len()));
+    data.insert("groups".to_owned(), Value::Array(groups));
+    Value::Object(data)
+}
+
+/// 从详情响应里**取出**（move）`episodes` 数组，避免后续深拷贝。
+fn take_episodes(detail: Value) -> Vec<Value> {
+    match detail {
+        Value::Object(mut map) => match map.remove("episodes") {
+            Some(Value::Array(a)) => a,
+            _ => Vec::new(),
         },
+        _ => Vec::new(),
+    }
+}
+
+/// 缓存层结果 → 信封：成功并入 `stale` / `ageSecs`，失败**原样**映射错误码。
+fn cached_to_value(result: Result<cache::Cached, SourceError>) -> Value {
+    match result {
+        Ok(cached) => ok(cache::into_data(cached)),
         Err(e) => err_with(e.code(), e.to_string(), e.retry()),
     }
 }
@@ -236,29 +319,61 @@ fn dispatch(input: &str) -> Value {
             _ => err("BAD_REQUEST", "cancelRead requires {session, sequence}"),
         },
 
-        "catalog" => arbitrated_read(req.session.as_deref(), req.sequence, "catalog", || {
-            with_provider(req.source.as_deref(), |p| {
-                p.catalog(
-                    param_str(&req.params, "category").as_deref(),
-                    param_u32(&req.params, "page", 1),
-                )
+        // ── 读类 op（走 Rust 缓存引擎）─────────────────────────────────
+        //
+        // 缓存策略（TTL / 回退 / 熔断 / 并发去重 / 分页水位）全部在 [`cache`]，
+        // Dart 侧不再持有任何缓存逻辑：命中直接返回，失败回退旧值并在 `data`
+        // 里带上 `stale=true`（UI 据此提示"当前是缓存数据"）。
+        "catalog" => {
+            let category = param_str(&req.params, "category");
+            let page = param_u32(&req.params, "page", 1);
+            let key = cache::key_catalog(category.as_deref().unwrap_or(""), page);
+            let depth_key = cache::key_catalog_depth(category.as_deref().unwrap_or(""));
+            arbitrated_read(req.session.as_deref(), req.sequence, "catalog", || {
+                let source = req.source.as_deref();
+                let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
+                    with_provider_result(source, |p| p.catalog(category.as_deref(), page))
+                });
+                // 分页水位：只增不减，供重启后续载不丢页。
+                if result.is_ok() {
+                    cache::write_depth(&depth_key, page + 1);
+                }
+                cached_to_value(result)
             })
-        }),
+        }
 
         "recommend" => arbitrated_read(req.session.as_deref(), req.sequence, "recommend", || {
-            with_provider(req.source.as_deref(), |p| p.recommend())
+            let source = req.source.as_deref();
+            let result = cache::cached(cache::KEY_RECOMMEND, cache::TTL_CATALOG_MS, None, || {
+                with_provider_result(source, |p| p.recommend())
+            });
+            cached_to_value(result)
         }),
 
-        "ranking" => arbitrated_read(req.session.as_deref(), req.sequence, "ranking", || {
-            with_provider(req.source.as_deref(), |p| {
-                p.ranking(param_str(&req.params, "board").as_deref())
+        "ranking" => {
+            let board_opt = param_str(&req.params, "board");
+            let board_key = board_opt.clone().unwrap_or_else(|| "hot".to_owned());
+            let key = cache::key_ranking(&board_key);
+            arbitrated_read(req.session.as_deref(), req.sequence, "ranking", || {
+                let source = req.source.as_deref();
+                let board = board_opt.clone();
+                // 榜单按板独立熔断：一个坏榜不拖垮其他榜。
+                let result = cache::cached(&key, cache::TTL_RANKING_MS, Some(&board_key), || {
+                    with_provider_result(source, |p| p.ranking(board.as_deref()))
+                });
+                cached_to_value(result)
             })
-        }),
+        }
 
         "search" => match param_str(&req.params, "keyword") {
             Some(kw) if !kw.is_empty() => {
+                let key = cache::key_search(&kw);
                 arbitrated_read(req.session.as_deref(), req.sequence, "search", || {
-                    with_provider(req.source.as_deref(), |p| p.search(&kw))
+                    let source = req.source.as_deref();
+                    let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
+                        with_provider_result(source, |p| p.search(&kw))
+                    });
+                    cached_to_value(result)
                 })
             }
             _ => err("BAD_REQUEST", "missing keyword"),
@@ -266,8 +381,13 @@ fn dispatch(input: &str) -> Value {
 
         "suggest" => match param_str(&req.params, "keyword") {
             Some(kw) if !kw.is_empty() => {
+                let key = cache::key_suggest(&kw);
                 arbitrated_read(req.session.as_deref(), req.sequence, "suggest", || {
-                    with_provider(req.source.as_deref(), |p| p.suggest(&kw))
+                    let source = req.source.as_deref();
+                    let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
+                        with_provider_result(source, |p| p.suggest(&kw))
+                    });
+                    cached_to_value(result)
                 })
             }
             _ => err("BAD_REQUEST", "missing keyword"),
@@ -276,12 +396,115 @@ fn dispatch(input: &str) -> Value {
         // 详情：App 签名主链 + SSR 降级，返回同契约的 `{drama, episodes}`。
         "detail" => match param_str(&req.params, "id") {
             Some(id) if !id.is_empty() => {
+                let key = cache::key_detail(&id);
                 arbitrated_read(req.session.as_deref(), req.sequence, "detail", || {
-                    with_provider(req.source.as_deref(), |p| p.detail(&id))
+                    let source = req.source.as_deref();
+                    let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
+                        with_provider_result(source, |p| p.detail(&id))
+                    });
+                    cached_to_value(result)
                 })
             }
             _ => err("BAD_REQUEST", "missing id"),
         },
+
+        // 选集分页：`{id, groupSize?}` → `{groupSize, total, groupCount, groups:[...]}`。
+        //
+        // 之前播放页只 `take(60)` 硬截（60 集以上的剧根本点不到），详情页则各自
+        // 在 Dart 侧维护一套切片常量。现在分组由 Rust 一次算好、每组自带本组剧集，
+        // Dart 只渲染——两处口径统一，且复用详情缓存（命中即零网络）。
+        "episodeGroups" => match param_str(&req.params, "id") {
+            Some(id) if !id.is_empty() => {
+                let group_size = param_u32(&req.params, "groupSize", EPISODE_GROUP_SIZE);
+                let key = cache::key_detail(&id);
+                arbitrated_read(
+                    req.session.as_deref(),
+                    req.sequence,
+                    "episodeGroups",
+                    || {
+                        let source = req.source.as_deref();
+                        let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
+                            with_provider_result(source, |p| p.detail(&id))
+                        });
+                        match result {
+                            Ok(cached) => {
+                                let mut data =
+                                    match episode_groups(take_episodes(cached.value), group_size) {
+                                        Value::Object(m) => m,
+                                        other => {
+                                            let mut m = serde_json::Map::new();
+                                            m.insert("groups".to_owned(), other);
+                                            m
+                                        }
+                                    };
+                                data.insert("stale".to_owned(), Value::Bool(cached.stale));
+                                data.insert("ageSecs".to_owned(), json!(cached.age_secs));
+                                ok(Value::Object(data))
+                            }
+                            Err(e) => err_with(e.code(), e.to_string(), e.retry()),
+                        }
+                    },
+                )
+            }
+            _ => err("BAD_REQUEST", "missing id"),
+        },
+
+        // 首页「重启续载」：一次往返取回 `0..depth-1` 页。
+        //
+        // 之前 Dart 侧是循环 N 次 `catalog()`——N 次 FFI 往返 + N 次 JSON 编解码，
+        // 而缓存命中的页本应是瞬时的。改由 Rust 一次聚合，往返数从 N 降到 1。
+        // `depth` 上限 [MAX_PAGES_PER_REQUEST]，防止误用导致超长串行拉取。
+        "catalogPages" => {
+            let category = param_str(&req.params, "category");
+            let category_key = category.clone().unwrap_or_default();
+            let depth_key = cache::key_catalog_depth(&category_key);
+            // `depth` 省略 / 0 = 跟随**已记录的分页水位**（首页重启续载：
+            // 上次看到第几页就取回几页，Dart 侧零循环、也无需先查水位）。
+            let requested = param_u32(&req.params, "depth", 0);
+            let depth = if requested == 0 {
+                cache::read_depth(&depth_key).unwrap_or(1)
+            } else {
+                i64::from(requested)
+            }
+            .clamp(1, i64::from(MAX_PAGES_PER_REQUEST)) as u32;
+            arbitrated_read(req.session.as_deref(), req.sequence, "catalogPages", || {
+                let source = req.source.as_deref();
+                let mut pages = Vec::with_capacity(depth as usize);
+                let mut has_more = false;
+                let mut stale = false;
+                let mut age_secs = 0i64;
+                for page in 0..depth {
+                    let key = cache::key_catalog(&category_key, page);
+                    let category_now = category.clone();
+                    match cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
+                        with_provider_result(source, |p| p.catalog(category_now.as_deref(), page))
+                    }) {
+                        Ok(cached) => {
+                            stale |= cached.stale;
+                            age_secs = age_secs.max(cached.age_secs);
+                            has_more = cached
+                                .value
+                                .get("hasMore")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+                            pages.push(cached.value);
+                        }
+                        Err(e) => return err_with(e.code(), e.to_string(), e.retry()),
+                    }
+                }
+                cache::write_depth(&depth_key, depth);
+                // 用 `Map` 直接构造而不用 `json!`：`json!` 对已有的
+                // `Vec<Value>` 会走 `to_value` **深拷贝**整批数据（实测
+                // 5 页约 240µs），这里 `Value::Array(pages)` 是 move，零拷贝。
+                let mut data = serde_json::Map::new();
+                data.insert("pages".to_owned(), Value::Array(pages));
+                data.insert("hasMore".to_owned(), Value::Bool(has_more));
+                data.insert("depth".to_owned(), json!(depth));
+                data.insert("stale".to_owned(), Value::Bool(stale));
+                data.insert("ageSecs".to_owned(), json!(age_secs));
+                ok(Value::Object(data))
+            })
+        }
 
         // 设备身份初始化：`{dataDir, downloadDir?}` → 持久化 device.json。
         // 无状态幂等，不参与仲裁；失败不阻断（退化为进程内临时身份）。
@@ -346,6 +569,27 @@ fn dispatch(input: &str) -> Value {
             _ => err("BAD_REQUEST", "missing id"),
         },
 
+        // 换档：`{id, vid, quality}` → 同 `play` 的响应结构（含新的 `proxyUrl`）。
+        //
+        // 快路径在 `app_api::switch_quality`：上一次取流已经把这一集的**全部候选
+        // 清晰度**解析回来了，换档只是在里面重挑一个并重新注册代理会话——
+        // 零签名、零网络（`play` 换 quality 则会因缓存键不同而整条链重跑）。
+        // 旁路缓存未命中（首次取流前换档 / 已过 TTL）才回落到完整解析。
+        "playQuality" => match (param_str(&req.params, "id"), param_str(&req.params, "vid")) {
+            (Some(id), Some(vid)) if !id.is_empty() && !vid.is_empty() => {
+                let quality = req
+                    .params
+                    .get("quality")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                arbitrated_read(req.session.as_deref(), req.sequence, "playQuality", || {
+                    let source = req.source.as_deref();
+                    with_provider(source, |p| p.play_variant(&id, &vid, quality))
+                })
+            }
+            _ => err("BAD_REQUEST", "playQuality requires {id, vid}"),
+        },
+
         // 追剧与进度（Rust 持久化，Dart 只渲染；无状态，不参与仲裁）。
         "followPut" => store::follow_put(&req.params).map(ok).unwrap_or_else(|e| {
             let (code, msg, retry) = store_error(e);
@@ -371,11 +615,44 @@ fn dispatch(input: &str) -> Value {
             let (code, msg, retry) = store_error(e);
             err_with(code, msg, retry)
         }),
-        // moveDownloads 超时档位已落位，业务尚未实现 → `UNSUPPORTED`。
-        "moveDownloads" => err(
-            "UNSUPPORTED",
-            "moveDownloads not implemented (inner 600s / outer 620s reserved)",
-        ),
+        // 迁移下载目录：`{dir}` → `{dir, moved, bytes}`。
+        // 走 `arbitrated_read`：它既有 600s 内层预算（慢磁盘搬迁需要），
+        // 也能被 `cancelRead` 打断；先停机再搬，失败时旧目录原样保留。
+        "moveDownloads" => match param_str(&req.params, "dir") {
+            Some(dir) if !dir.trim().is_empty() => arbitrated_read(
+                req.session.as_deref(),
+                req.sequence,
+                "moveDownloads",
+                || {
+                    download::move_downloads(&req.params)
+                        .map(ok)
+                        .unwrap_or_else(|e| {
+                            let (code, msg, retry) = store_error(e);
+                            err_with(code, msg, retry)
+                        })
+                },
+            ),
+            _ => err("BAD_REQUEST", "moveDownloads requires {dir}"),
+        },
+        // 并行任务数（1~6）：持久化到下载目录，下次启动照旧。
+        "downloadSetConcurrency" => download::set_concurrency(&req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
+        // 离线优先取流：`{id, episode}` → 与 `play` 同构的计划；无完成文件 → NOT_FOUND。
+        "playLocal" => {
+            match param_str(&req.params, "id") {
+                Some(id) if !id.is_empty() => download::play_local(&req.params)
+                    .map(ok)
+                    .unwrap_or_else(|e| {
+                        let (code, msg, retry) = store_error(e);
+                        err_with(code, msg, retry)
+                    }),
+                _ => err("BAD_REQUEST", "missing id"),
+            }
+        }
 
         // 下载管理（长任务跑独立运行时；Dart 轮询 `downloadList` 取进度）。
         "downloadStart" => download::start(&req.params).map(ok).unwrap_or_else(|e| {
@@ -409,6 +686,42 @@ fn dispatch(input: &str) -> Value {
                 let (code, msg, retry) = store_error(e);
                 err_with(code, msg, retry)
             }),
+
+        // 搜索历史（Rust 持久化；Dart 侧不再用内存列表，重启后不丢）。
+        "searchHistoryPut" => store::search_history_put(&req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
+        "searchHistoryList" => store::search_history_list().map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "searchHistoryDel" => store::search_history_del(&req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
+        "searchHistoryClear" => store::search_history_clear().map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+
+        // 缓存管理（目录缓存现在完全由 Rust 持有）：设置页「清除缓存」与诊断。
+        "cacheClear" => cache::clear().map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "cacheFlush" => cache::flush().map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
+        "cacheStats" => cache::stats().map(ok).unwrap_or_else(|e| {
+            let (code, msg, retry) = store_error(e);
+            err_with(code, msg, retry)
+        }),
 
         other => err("UNSUPPORTED", format!("unknown op: {other}")),
     }
@@ -457,6 +770,7 @@ pub unsafe extern "C" fn drama_free(ptr: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn ping_returns_pong() {
@@ -500,6 +814,194 @@ mod tests {
         assert_eq!(out["data"]["sources"][0]["caps"]["playback"], json!(true));
     }
 
+    /// 目录缓存与搜索历史都是进程级全局：这些用例必须串行，
+    /// 且跑完清场，避免污染其它用例。
+    ///
+    /// 注意：不设 `data_dir` 时缓存/搜索历史退化为**纯内存**
+    ///（`path()` 返回 `None` → 不落盘），正好适合离线单测。
+    #[test]
+    fn cache_ops_are_wired_through_dispatch() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        let _ = cache::clear();
+
+        let stats = dispatch(r#"{"v":1,"op":"cacheStats"}"#);
+        assert_eq!(stats["ok"], json!(true), "cacheStats 必须已接线");
+        assert_eq!(stats["data"]["entries"], json!(0));
+
+        // 写一条再读：条数与字节数都应反映出来。
+        let _ = cache::cached("probe", cache::TTL_CATALOG_MS, None, || {
+            Ok(json!({ "items": [1, 2, 3] }))
+        });
+        let stats = dispatch(r#"{"v":1,"op":"cacheStats"}"#);
+        assert_eq!(stats["data"]["entries"], json!(1));
+        assert!(stats["data"]["bytes"].as_u64().unwrap() > 0);
+
+        let _ = dispatch(r#"{"v":1,"op":"cacheFlush"}"#);
+        let cleared = dispatch(r#"{"v":1,"op":"cacheClear"}"#);
+        assert_eq!(cleared["data"]["cleared"], json!(true));
+        assert_eq!(
+            dispatch(r#"{"v":1,"op":"cacheStats"}"#)["data"]["entries"],
+            json!(0)
+        );
+    }
+
+    #[test]
+    fn search_history_roundtrips_through_dispatch() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        let _ = store::search_history_clear();
+
+        let put = dispatch(r#"{"v":1,"op":"searchHistoryPut","params":{"keyword":"庆余年"}}"#);
+        assert_eq!(put["ok"], json!(true), "中文关键词必须能入库");
+        assert_eq!(put["data"]["keyword"], json!("庆余年"));
+
+        let list = dispatch(r#"{"v":1,"op":"searchHistoryList"}"#);
+        assert_eq!(list["data"]["items"][0]["keyword"], json!("庆余年"));
+
+        let del = dispatch(r#"{"v":1,"op":"searchHistoryDel","params":{"keyword":"庆余年"}}"#);
+        assert_eq!(del["ok"], json!(true));
+        assert_eq!(
+            dispatch(r#"{"v":1,"op":"searchHistoryList"}"#)["data"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+
+        // 空词 → BAD_REQUEST（不该把空白塞进历史列表）。
+        let empty = dispatch(r#"{"v":1,"op":"searchHistoryPut","params":{"keyword":"  "}}"#);
+        assert_eq!(empty["error"]["code"], json!("PARSE"));
+    }
+
+    #[test]
+    fn catalog_pages_clamps_depth_to_page_limit() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        // 用不存在的源：无论 depth 多大，都应在**有限**步内失败返回，
+        // 而不是串行打几十次网络。这里断言的是错误码（源不存在）与
+        // 「不会挂住」——真跑起来即证明上限生效。
+        let out = dispatch(
+            r#"{"v":1,"op":"catalogPages","source":"nope","params":{"category":"x","depth":9999}}"#,
+        );
+        assert_eq!(out["error"]["code"], json!("NOT_FOUND"));
+    }
+
+    // ── 选集分组（播放页/详情页共用同一口径）────────────────────────────
+
+    fn fake_detail(episode_count: usize) -> Vec<Value> {
+        (1..=episode_count)
+            .map(|i| json!({ "index": i, "vid": format!("v{i}") }))
+            .collect()
+    }
+
+    #[test]
+    fn episode_groups_splits_and_labels_every_group() {
+        let out = episode_groups(fake_detail(120), 50);
+        assert_eq!(out["groupSize"], json!(50));
+        assert_eq!(out["total"], json!(120));
+        assert_eq!(out["groupCount"], json!(3));
+        let groups = out["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 3);
+        // 标签与起止：1-50 / 51-100 / 101-120（末组不足 50 集也完整给出）。
+        assert_eq!(groups[0]["label"], json!("1-50"));
+        assert_eq!(groups[1]["label"], json!("51-100"));
+        assert_eq!(groups[2]["label"], json!("101-120"));
+        assert_eq!(groups[2]["episodes"].as_array().unwrap().len(), 20);
+        // 每组自带本组剧集，Dart 无需再切片。
+        assert_eq!(groups[0]["episodes"][0]["index"], json!(1));
+        assert_eq!(groups[2]["episodes"][19]["index"], json!(120));
+    }
+
+    #[test]
+    fn episode_groups_handles_short_and_empty_lists() {
+        // 少于一组：只有 1 组，不产生空组。
+        let out = episode_groups(fake_detail(7), 50);
+        assert_eq!(out["groupCount"], json!(1));
+        assert_eq!(out["groups"][0]["label"], json!("1-7"));
+        // 空列表：0 组而不是 1 个空组（UI 据此显示"暂无选集"，而不是空白 chip）。
+        let out = episode_groups(Vec::new(), 50);
+        assert_eq!(out["groupCount"], json!(0));
+        assert_eq!(out["total"], json!(0));
+    }
+
+    #[test]
+    fn episode_groups_clamps_group_size() {
+        // 误传 1（会让 UI 变成上百个 chip）→ 抬到下限。
+        let out = episode_groups(fake_detail(30), 1);
+        assert_eq!(out["groupSize"], json!(MIN_EPISODE_GROUP_SIZE));
+        // 误传超大值 → 压到上限。
+        let out = episode_groups(fake_detail(30), 99_999);
+        assert_eq!(out["groupSize"], json!(MAX_EPISODE_GROUP_SIZE));
+    }
+
+    #[test]
+    fn episode_groups_without_id_is_bad_request() {
+        let out = dispatch(r#"{"v":1,"op":"episodeGroups"}"#);
+        assert_eq!(out["error"]["code"], json!("BAD_REQUEST"));
+    }
+
+    #[test]
+    fn play_quality_requires_id_and_vid() {
+        let out = dispatch(r#"{"v":1,"op":"playQuality","params":{"vid":"v1"}}"#);
+        assert_eq!(out["error"]["code"], json!("BAD_REQUEST"));
+        let out = dispatch(r#"{"v":1,"op":"playQuality","params":{"id":"1"}}"#);
+        assert_eq!(out["error"]["code"], json!("BAD_REQUEST"));
+        // 换档内层 15s，Dart 外层更大 → 内层先到期（分级超时纪律）。
+        assert_eq!(
+            http::inner_timeout_for("playQuality"),
+            std::time::Duration::from_secs(15)
+        );
+    }
+
+    /// 选集分组的真实成本：**命中详情缓存**时一次 dispatch 的耗时。
+    ///
+    /// 播放页打开即取（`episodeGroups`），命中时零网络；这一项要回答的是
+    /// 「加了 op 之后，选集区是不是免费的」。200 集是「超 60 集」场景的量级。
+    #[test]
+    #[ignore = "性能测量：需 release，见模块内说明"]
+    fn bench_episode_groups_dispatch() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        crate::cache::clear_for_test();
+        let _ = crate::covers::media_port(); // 预热端口绑定（封面展开要用）
+
+        const TOTAL: usize = 200;
+        let episodes: Vec<Value> = (1..=TOTAL)
+            .map(|i| json!({ "index": i, "vid": format!("v{i}"), "title": format!("第{i}集") }))
+            .collect();
+        crate::cache::seed_for_test(
+            &cache::key_detail("900001"),
+            json!({ "drama": { "id": "900001", "title": "长剧" }, "episodes": episodes }),
+        );
+
+        let out = dispatch(r#"{"v":1,"op":"episodeGroups","params":{"id":"900001"}}"#);
+        assert_eq!(out["ok"], json!(true));
+        let groups = out["data"]["groups"].as_array().unwrap().len();
+        println!("episodeGroups（{TOTAL} 集 → {groups} 组，含 FFI 序列化出参）:");
+
+        const ROUNDS: usize = 200;
+        let per_call = best_of(
+            || {
+                let start = Instant::now();
+                for _ in 0..ROUNDS {
+                    let out = dispatch(r#"{"v":1,"op":"episodeGroups","params":{"id":"900001"}}"#);
+                    assert_eq!(out["ok"], json!(true));
+                    assert_eq!(out["data"]["groups"].as_array().unwrap().len(), 4);
+                }
+                start.elapsed().as_secs_f64() * 1e6 / ROUNDS as f64
+            },
+            5,
+        );
+        println!("  单次 dispatch（缓存命中）: {per_call:.1}µs");
+
+        let json = serde_json::to_string(&out).unwrap();
+        println!("  出参体积: {} 字节（200 集全量分组）", json.len());
+
+        crate::cache::clear_for_test();
+    }
+
+    /// 多组取最小（抑制测量噪声）。
+    fn best_of<F: FnMut() -> f64>(mut measure: F, groups: usize) -> f64 {
+        (0..groups).map(|_| measure()).fold(f64::INFINITY, f64::min)
+    }
+
     #[test]
     fn play_without_id_is_bad_request() {
         let out = dispatch(r#"{"v":1,"op":"play","params":{}}"#);
@@ -528,10 +1030,11 @@ mod tests {
     }
 
     #[test]
-    fn move_downloads_is_unsupported_tier_reserved() {
+    fn move_downloads_requires_dir_and_reserved_budget_still_applies() {
+        // 迁移已实现：缺 `dir` → BAD_REQUEST（不再是 UNSUPPORTED）。
         let out = dispatch(r#"{"v":1,"op":"moveDownloads"}"#);
-        assert_eq!(out["error"]["code"], json!("UNSUPPORTED"));
-        // 档位映射已落位（纯函数单测见 http::tests）。
+        assert_eq!(out["error"]["code"], json!("BAD_REQUEST"));
+        // 600s 内层预算保留（慢磁盘搬迁需要），且 Dart 外层 620s 更大 → 内层先到期。
         assert_eq!(
             http::inner_timeout_for("preload"),
             std::time::Duration::from_secs(15)
@@ -540,6 +1043,25 @@ mod tests {
             http::inner_timeout_for("moveDownloads"),
             std::time::Duration::from_secs(600)
         );
+    }
+
+    #[test]
+    fn download_set_concurrency_rejects_out_of_range() {
+        let out = dispatch(r#"{"v":1,"op":"downloadSetConcurrency","params":{"parallel":99}}"#);
+        assert_eq!(out["ok"], json!(false));
+        assert_eq!(out["error"]["code"], json!("PARSE"));
+        let out = dispatch(r#"{"v":1,"op":"downloadSetConcurrency","params":{"parallel":0}}"#);
+        assert_eq!(out["error"]["code"], json!("PARSE"));
+    }
+
+    #[test]
+    fn play_local_requires_id() {
+        let out = dispatch(r#"{"v":1,"op":"playLocal","params":{}}"#);
+        assert_eq!(out["error"]["code"], json!("BAD_REQUEST"));
+        // 没有对应完成任务 → NOT_FOUND（调用方据此回落到在线取流）。
+        let out = dispatch(r#"{"v":1,"op":"playLocal","params":{"id":"1","episode":1}}"#);
+        assert_eq!(out["ok"], json!(false));
+        assert_eq!(out["error"]["code"], json!("NOT_FOUND"));
     }
 
     #[test]

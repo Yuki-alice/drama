@@ -8,8 +8,11 @@
 //! 算法（签名、密钥派生、清晰度打分）与参照 Go 实现一致；
 //! `hongguoContentKey` 的边界行为由单测锁定。
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use once_cell::sync::Lazy;
 use serde_json::{Value, json};
 
 use crate::device;
@@ -35,6 +38,211 @@ pub const WEB_REFERER: &str = "https://www.hongguoduanju.com/";
 /// 数字 ID 形状（1~32 位）。
 fn is_numeric_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// 轨道衰退记忆时长：冷却期内**直接跳过**该轨道（不再花时间证明它还是坏的）。
+///
+/// 为什么需要它：失败的签名链不是瞬间返回的——`app_request` 会退避重试、
+/// 每次耽误 1~2 秒，再加上 SH 迟到降级，用户感知就是「点了播放要转好几秒」。
+/// 冷却期 5 分钟足够滤掉一次故障窗口，又不会永久放弃高画质轨。
+const TRACK_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// 解析结果 TTL：同 `(vid, 清晰度)` 复用上一次的成功结果。
+///
+/// 受益最明显的是 **预取→实际播放**：播放器预取下一集时会解析一次，
+/// 用户切过去本该再签一次名（重复整套 network 往返），命中缓存后直接起播。
+/// TTL 取得**故意短**（3 分钟）：CDN 直链若带短期鉴权参数，宁可过期重签，
+/// 也不让「缓存还热、链接已失效」的黑屏出现。
+const RESOLVE_TTL: Duration = Duration::from_secs(180);
+/// 缓存条目上限（防长时间使用时堆积）。
+const RESOLVE_CACHE_MAX: usize = 64;
+
+/// 取流轨道。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Track {
+    /// App 签名 `video_model/v1`（全清晰度，当前上游常返回空 body）。
+    App,
+    /// App 签名 `multi_video_model/v1`（备用签名链）。
+    Multi,
+    /// 网页公开轨 `360p.mp4`（免签明文，最稳但只有试看集与 360p）。
+    Public,
+    /// 网页 SSR `video_player_info`（站点已改造，兜底）。
+    Web,
+}
+
+/// 轨道基础顺序：**画质优先**（依次为 App / multi / 公开轨 / SSR）。
+const BASE_ORDER: [Track; 4] = [Track::App, Track::Multi, Track::Public, Track::Web];
+
+/// 轨道失败时刻（`Track` → 最近一次失败时间）。
+static TRACK_FAILS: Lazy<Mutex<HashMap<Track, Instant>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// 解析缓存（键为 `vid:清晰度`）。
+static RESOLVE_CACHE: Lazy<Mutex<HashMap<String, (ResolvedMedia, Instant)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// 最近一次成功解析（键为 `vid`，**保留全量 variants**）。
+///
+/// 为什么单独再来一份：`RESOLVE_CACHE` 的键带清晰度，换档必然 miss → 重跑整条
+/// 签名链（网络 + 重试退避，实测数百毫秒到数秒），用户点「1080P」要等一轮。
+/// 而换档需要的只是**同一集的另一个候选地址**——它已经在上一次的解析结果里了。
+/// 于是旁路这份「按 vid 的最新全量结果」，换档时零网络、零签名，只重新挑一个
+/// variant 并重新注册代理会话。TTL 与解析缓存对齐，避免拿过期直链换档。
+static LAST_BY_VID: Lazy<Mutex<HashMap<String, (ResolvedMedia, Instant)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// 是否处于冷却期（可注入 `now` 便于离线单测）。
+fn track_is_cooled_at(track: Track, now: Instant) -> bool {
+    TRACK_FAILS
+        .lock()
+        .expect("track memory poisoned")
+        .get(&track)
+        .is_some_and(|at| now.duration_since(*at) < TRACK_COOLDOWN)
+}
+
+fn note_track_failure(track: Track) {
+    TRACK_FAILS
+        .lock()
+        .expect("track memory poisoned")
+        .insert(track, Instant::now());
+}
+
+fn note_track_success(track: Track) {
+    TRACK_FAILS
+        .lock()
+        .expect("track memory poisoned")
+        .remove(&track);
+}
+
+/// 本轮尝试顺序：**未冷却的保持画质优先顺序在前**，冷却的降到最后再试。
+///
+/// 只做「降权」不做「提权」——成功过的低画质轨不会反超到第一行，
+/// 否则预取了一次 360p 后，用户要 1080p 也会被钉死在 360p。
+fn track_order_at(now: Instant) -> Vec<Track> {
+    let mut fresh: Vec<Track> = BASE_ORDER
+        .iter()
+        .copied()
+        .filter(|t| !track_is_cooled_at(*t, now))
+        .collect();
+    let cooled: Vec<Track> = BASE_ORDER
+        .iter()
+        .copied()
+        .filter(|t| track_is_cooled_at(*t, now))
+        .collect();
+    fresh.extend(cooled);
+    fresh
+}
+
+fn cache_key(video_id: &str, preferred: i64) -> String {
+    format!("{video_id}:{preferred}")
+}
+
+/// 读缓存（过期即视为未命中；`now` 可注入便于离线单测）。
+fn cache_get(key: &str, now: Instant) -> Option<ResolvedMedia> {
+    let guard = RESOLVE_CACHE.lock().expect("resolve cache poisoned");
+    let (media, at) = guard.get(key)?;
+    if now.duration_since(*at) >= RESOLVE_TTL {
+        return None;
+    }
+    Some(media.clone())
+}
+
+fn cache_put(key: String, media: ResolvedMedia, now: Instant) {
+    let mut guard = RESOLVE_CACHE.lock().expect("resolve cache poisoned");
+    if guard.len() >= RESOLVE_CACHE_MAX && !guard.contains_key(&key) {
+        // 满了就丢掉最早的一批（按插入时刻排序，取前 1/4 淘汰）。
+        let mut keys: Vec<(Instant, String)> =
+            guard.iter().map(|(k, (_, at))| (*at, k.clone())).collect();
+        keys.sort();
+        for (_, k) in keys.into_iter().take(RESOLVE_CACHE_MAX / 4 + 1) {
+            guard.remove(&k);
+        }
+    }
+    guard.insert(key, (media, now));
+}
+
+/// 记下「该 vid 最近一次的全量解析结果」（供换档复用）。
+fn last_put(video_id: &str, media: &ResolvedMedia, now: Instant) {
+    let mut guard = LAST_BY_VID.lock().expect("last-by-vid poisoned");
+    if guard.len() >= RESOLVE_CACHE_MAX && !guard.contains_key(video_id) {
+        let mut keys: Vec<(Instant, String)> =
+            guard.iter().map(|(k, (_, at))| (*at, k.clone())).collect();
+        keys.sort();
+        for (_, k) in keys.into_iter().take(RESOLVE_CACHE_MAX / 4 + 1) {
+            guard.remove(&k);
+        }
+    }
+    guard.insert(video_id.to_owned(), (media.clone(), now));
+}
+
+/// 换档：**零网络、零签名**——只在上一次解析出的候选里按目标清晰度重挑。
+///
+/// `preferred` 语义与 `resolve_media` 一致（0 = 要最高）。缓存里没有这一集
+/// （从未取流过，或已过 TTL）时返回 `None`，调用方回落到完整解析。
+pub fn switch_quality(video_id: &str, preferred: i64) -> Option<ResolvedMedia> {
+    let now = Instant::now();
+    let base = {
+        let guard = LAST_BY_VID.lock().expect("last-by-vid poisoned");
+        let (media, at) = guard.get(video_id)?;
+        if now.duration_since(*at) >= RESOLVE_TTL {
+            return None;
+        }
+        media.clone()
+    };
+    let picked = {
+        let v = pick_variant(&base.variants, preferred)?;
+        (v.url.clone(), v.quality)
+    };
+    let mut out = base;
+    out.url = picked.0;
+    out.quality = picked.1;
+    Some(out)
+}
+
+/// 按期望清晰度挑候选：`preferred > 0` 时取 `quality <= preferred` 里最高的，
+/// 无满足则**回退最低档**（宁可糊也不要断流）；`preferred <= 0` 取最高档。
+fn pick_variant(variants: &[ResolvedVariant], preferred: i64) -> Option<&ResolvedVariant> {
+    let mut best: Option<&ResolvedVariant> = None;
+    let mut lowest: Option<&ResolvedVariant> = None;
+    for v in variants {
+        if lowest.is_none_or(|l| v.quality < l.quality) {
+            lowest = Some(v);
+        }
+        if preferred <= 0 {
+            if best.is_none_or(|b| v.quality > b.quality) {
+                best = Some(v);
+            }
+        } else if v.quality <= preferred && best.is_none_or(|b| v.quality > b.quality) {
+            best = Some(v);
+        }
+    }
+    best.or(lowest)
+}
+
+/// 可用档位（去重、**降序**），供 UI 渲染清晰度切换菜单。
+///
+/// 标签规则也放 Rust：档位命名（4K/2K/1080P…）是业务口径，不是渲染细节。
+pub fn quality_options(variants: &[ResolvedVariant]) -> Vec<Value> {
+    let mut heights: Vec<i64> = variants
+        .iter()
+        .map(|v| v.quality)
+        .filter(|q| *q > 0)
+        .collect();
+    heights.sort_unstable();
+    heights.dedup();
+    heights
+        .into_iter()
+        .rev()
+        .map(|h| json!({ "height": h, "label": quality_label_of(h) }))
+        .collect()
+}
+
+/// 档位标签：2160→4K、1440→2K，其余 `{h}P`。
+fn quality_label_of(height: i64) -> String {
+    match height {
+        2160 => "4K".to_owned(),
+        1440 => "2K".to_owned(),
+        h => format!("{h}P"),
+    }
 }
 
 /// 解析出的可播媒体。
@@ -69,6 +277,9 @@ impl ResolvedMedia {
                 "url": v.url,
                 "quality": v.quality,
             })).collect::<Vec<_>>(),
+            // 可切换的档位（去重降序 + 标签）。单集档位通常 3~6 个，
+            // 只在 `play` / `playQuality` 响应里带，成本可忽略。
+            "qualityOptions": quality_options(&self.variants),
         })
     }
 }
@@ -336,34 +547,40 @@ pub fn resolve_media(
     if !is_numeric_id(series_id) || !is_numeric_id(video_id) {
         return Err(SourceError::Parse("invalid series/video id".to_owned()));
     }
+    // 命中缓存直接返回：省掉整条签名往返（预取与紧接着的播放共享同一次结果）。
+    let key = cache_key(video_id, preferred);
+    let now = Instant::now();
+    if let Some(media) = cache_get(&key, now) {
+        // 命中也要刷新旁路：换档要的是「这一集最近一次的全量候选」。
+        last_put(video_id, &media, now);
+        return Ok(media);
+    }
+
     let mut errors: Vec<String> = Vec::new();
-
-    match resolve_app_media(video_id, preferred) {
-        Ok(media) => return Ok(media),
-        // 取消/超时是「本次不该继续」的信号，不做降级。
-        Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
-        Err(e) => errors.push(format!("app: {e}")),
-    }
-
-    match resolve_multi_media(video_id, preferred) {
-        Ok(media) => return Ok(media),
-        Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
-        Err(e) => errors.push(format!("multi: {e}")),
-    }
-
-    match resolve_public_media(video_id) {
-        Ok(media) => return Ok(media),
-        Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
-        Err(e) => errors.push(format!("public: {e}")),
-    }
-
-    match resolve_web_media(series_id, video_id) {
-        Ok(media) => Ok(media),
-        Err(e) => {
-            errors.push(format!("web: {e}"));
-            Err(SourceError::Parse(errors.join("; ")))
+    for track in track_order_at(now) {
+        let result = match track {
+            Track::App => resolve_app_media(video_id, preferred),
+            Track::Multi => resolve_multi_media(video_id, preferred),
+            Track::Public => resolve_public_media(video_id),
+            Track::Web => resolve_web_media(series_id, video_id),
+        };
+        match result {
+            Ok(media) => {
+                note_track_success(track);
+                let at = Instant::now();
+                cache_put(key, media.clone(), at);
+                last_put(video_id, &media, at);
+                return Ok(media);
+            }
+            // 取消/超时是「本次不该继续」的信号，既不做降级也不记衰退。
+            Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
+            Err(e) => {
+                note_track_failure(track);
+                errors.push(format!("{track:?}: {e}").to_lowercase());
+            }
         }
     }
+    Err(SourceError::Parse(errors.join("; ")))
 }
 
 /// 网页**公开轨**：`/video/public/{vid}/360p.mp4`。
@@ -562,22 +779,14 @@ fn pick_scored(
         }));
     };
     top.variants = all_variants;
-    if preferred > 0 {
-        let mut under: Option<&ResolvedVariant> = None;
-        let mut lowest: Option<&ResolvedVariant> = None;
-        for v in &top.variants {
-            let is_lower = lowest.is_none_or(|l| v.quality < l.quality);
-            if is_lower {
-                lowest = Some(v);
-            }
-            if v.quality <= preferred && under.is_none_or(|u| v.quality > u.quality) {
-                under = Some(v);
-            }
-        }
-        if let Some(pick) = under.or(lowest) {
-            top.url = pick.url.clone();
-            top.quality = pick.quality;
-        }
+    // `preferred <= 0` 时不重挑：打分已含 h264 编码加分，比纯看高度更贴合实际画质。
+    if preferred > 0
+        && let Some(pick) = pick_variant(&top.variants, preferred)
+    {
+        let url = pick.url.clone();
+        let quality = pick.quality;
+        top.url = url;
+        top.quality = quality;
     }
     Ok(top)
 }
@@ -1170,11 +1379,234 @@ mod tests {
         assert_eq!(quality_field(&json!({"vheight": "480"}), "vheight"), 480);
     }
 
+    /// 轨道记忆是**进程级全局**：相关测试必须拿同一把锁，并在开场清空状态，
+    /// 否则会读到别的测试留下的冷却标记（并发跑时表现为偶发失败）。
+    fn lock_track_memory() -> std::sync::MutexGuard<'static, ()> {
+        static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+        let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        TRACK_FAILS.lock().expect("track memory poisoned").clear();
+        guard
+    }
+
+    #[test]
+    fn base_order_is_quality_first_when_nothing_failed() {
+        let _guard = lock_track_memory();
+        let now = Instant::now();
+        assert_eq!(
+            track_order_at(now),
+            vec![Track::App, Track::Multi, Track::Public, Track::Web]
+        );
+    }
+
+    #[test]
+    fn failed_track_is_demoted_behind_healthy_ones() {
+        let _guard = lock_track_memory();
+        let t0 = Instant::now();
+        note_track_failure(Track::App);
+        // 冷却期内：App 被压到最后，公开轨提前到第二位（画质次之的 multi 在前）。
+        let order = track_order_at(t0);
+        assert_eq!(order.first(), Some(&Track::Multi));
+        assert_eq!(order.last(), Some(&Track::App));
+        assert_eq!(order.len(), 4, "no track is dropped from rotation");
+        note_track_success(Track::App);
+    }
+
+    #[test]
+    fn cool_down_expires_and_track_returns_to_front() {
+        let _guard = lock_track_memory();
+        let t0 = Instant::now();
+        note_track_failure(Track::App);
+        assert!(track_is_cooled_at(Track::App, t0));
+        // 超过冷却期 → 恢复画质优先（不永久放弃高画质轨）。
+        let later = t0 + TRACK_COOLDOWN + Duration::from_secs(1);
+        assert!(!track_is_cooled_at(Track::App, later));
+        assert_eq!(track_order_at(later)[0], Track::App);
+        note_track_success(Track::App);
+    }
+
+    #[test]
+    fn success_clears_the_failure_mark_immediately() {
+        let _guard = lock_track_memory();
+        let t0 = Instant::now();
+        note_track_failure(Track::Public);
+        assert!(track_is_cooled_at(Track::Public, t0));
+        note_track_success(Track::Public);
+        assert!(!track_is_cooled_at(Track::Public, t0));
+    }
+
+    #[test]
+    fn success_is_never_promoted_above_higher_quality_tracks() {
+        let _guard = lock_track_memory();
+        // 「成功过的低画质轨」不允许反超：否则预取一次 360p 后，
+        // 用户要 1080p 也会被钉死在 360p。
+        let t0 = Instant::now();
+        note_track_success(Track::Public);
+        assert_eq!(track_order_at(t0)[0], Track::App);
+    }
+
+    #[test]
+    fn resolve_cache_hits_within_ttl_and_expires_after() {
+        let t0 = Instant::now();
+        let key = cache_key("123456", 720);
+        assert!(cache_get(&key, t0).is_none());
+        let media = ResolvedMedia {
+            url: "https://cdn.example/a.mp4".to_owned(),
+            referer: PLAYER_REFERER,
+            duration_secs: 60.0,
+            quality: 720,
+            encrypted: false,
+            key_hex: String::new(),
+            variants: vec![],
+        };
+        cache_put(key.clone(), media.clone(), t0);
+        let hit = cache_get(&key, t0 + Duration::from_secs(10)).expect("should hit");
+        assert_eq!(hit.url, media.url);
+        // TTL 到期 → 未命中（宁可重签，也不让过期链接造成黑屏）。
+        assert!(cache_get(&key, t0 + RESOLVE_TTL + Duration::from_secs(1)).is_none());
+    }
+
+    #[test]
+    fn resolve_cache_is_keyed_by_video_and_quality() {
+        assert_ne!(cache_key("1", 720), cache_key("1", 1080));
+        assert_ne!(cache_key("1", 720), cache_key("2", 720));
+        assert_eq!(cache_key("1", 720), cache_key("1", 720));
+    }
+
     #[test]
     fn spade_url_rejects_garbage() {
         assert!(decrypt_spade_url("!!!", &[]).is_err());
         assert!(decrypt_spade_url("aGVsbG8=", &[]).is_err());
         assert!(content_key_fallback("!!!").is_err());
+    }
+
+    // ── 换档（清晰度多档切换）──────────────────────────────────────────
+    //
+    // 契约：换档只在**已解析出的候选**里重挑，绝不重新签名（否则用户点一下要等
+    // 一整条网络链）。这几个用例锁住「挑哪一档」的口径。
+
+    fn variants(heights: &[i64]) -> Vec<ResolvedVariant> {
+        heights
+            .iter()
+            .map(|h| ResolvedVariant {
+                url: format!("https://cdn.example/{h}.mp4"),
+                quality: *h,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pick_variant_honors_preferred_ceiling() {
+        let vs = variants(&[360, 720, 1080]);
+        // 上限 720 → 取 720，不是 1080。
+        assert_eq!(pick_variant(&vs, 720).expect("pick").quality, 720);
+        // 上限 1080 → 取 1080。
+        assert_eq!(pick_variant(&vs, 1080).expect("pick").quality, 1080);
+        // 0 = 不限 → 取最高。
+        assert_eq!(pick_variant(&vs, 0).expect("pick").quality, 1080);
+    }
+
+    #[test]
+    fn pick_variant_falls_back_to_lowest_when_all_above_ceiling() {
+        let vs = variants(&[720, 1080]);
+        // 上限 240：没有任何档满足 → 回退最低档（宁可糊也不断流）。
+        assert_eq!(pick_variant(&vs, 240).expect("pick").quality, 720);
+    }
+
+    #[test]
+    fn pick_variant_on_empty_is_none() {
+        assert!(pick_variant(&[], 720).is_none());
+    }
+
+    #[test]
+    fn quality_options_are_deduped_and_descending() {
+        let opts = quality_options(&variants(&[360, 1080, 360, 2160, 1440]));
+        let heights: Vec<i64> = opts
+            .iter()
+            .map(|o| o["height"].as_i64().unwrap_or_default())
+            .collect();
+        assert_eq!(heights, vec![2160, 1440, 1080, 360]);
+        // 标签口径：2160→4K、1440→2K，其余 `{h}P`。
+        assert_eq!(opts[0]["label"], json!("4K"));
+        assert_eq!(opts[1]["label"], json!("2K"));
+        assert_eq!(opts[2]["label"], json!("1080P"));
+    }
+
+    #[test]
+    fn switch_quality_is_zero_network_and_switchable() {
+        let vid = "switch-test-vid";
+        let media = ResolvedMedia {
+            url: "https://cdn.example/1080.mp4".to_owned(),
+            referer: PLAYER_REFERER,
+            duration_secs: 60.0,
+            quality: 1080,
+            encrypted: false,
+            key_hex: String::new(),
+            variants: variants(&[360, 720, 1080]),
+        };
+        last_put(vid, &media, Instant::now());
+
+        let got = switch_quality(vid, 480).expect("should switch");
+        assert_eq!(got.quality, 360);
+        assert_eq!(got.url, "https://cdn.example/360.mp4");
+        // 换档不该把候选丢掉——还要支持继续往上切。
+        assert_eq!(got.variants.len(), 3);
+
+        // 未知 vid → None（调用方回落完整解析）。
+        assert!(switch_quality("never-resolved", 720).is_none());
+
+        // TTL 过期 → None（宁可重解析，也不拿过期直链换档）。
+        let old = Instant::now() - RESOLVE_TTL - Duration::from_secs(1);
+        last_put(vid, &media, old);
+        assert!(switch_quality(vid, 1080).is_none());
+    }
+
+    /// 换档快路径成本：**不含网络**的那部分（重挑 variant + 出参 JSON）。
+    ///
+    /// 旧行为是换 `quality` 调 `play` → 解析缓存键不同 → 整条签名链重跑
+    /// （网络 + 重试退避，实测数百毫秒起）。新行为走 `switch_quality`：
+    /// 这两项就是它的全部引擎开销（代理注册另算，那是本机回环）。
+    fn best_of<F: FnMut() -> f64>(mut measure: F, groups: usize) -> f64 {
+        (0..groups).map(|_| measure()).fold(f64::INFINITY, f64::min)
+    }
+
+    #[test]
+    #[ignore = "性能测量：需 release，见模块内说明"]
+    fn bench_quality_switch_path() {
+        let vid = "bench-switch-vid";
+        let media = ResolvedMedia {
+            url: "https://cdn.example/1080.mp4".to_owned(),
+            referer: PLAYER_REFERER,
+            duration_secs: 60.0,
+            quality: 1080,
+            encrypted: false,
+            key_hex: String::new(),
+            // 6 档：360/480/540/720/1080/1440，取典型 App 轨规模。
+            variants: variants(&[360, 480, 540, 720, 1080, 1440]),
+        };
+        last_put(vid, &media, Instant::now());
+
+        const ROUNDS: usize = 2000;
+        let per_switch = best_of(
+            || {
+                let start = Instant::now();
+                for i in 0..ROUNDS {
+                    let height = [360i64, 720, 1080, 480, 1440][i % 5];
+                    let got = switch_quality(vid, height).expect("switch");
+                    assert_eq!(got.quality, height);
+                    let json = serde_json::to_string(&got.to_json()).unwrap();
+                    assert!(json.contains("proxyUrl") || json.contains("qualityOptions"));
+                }
+                start.elapsed().as_secs_f64() * 1e6 / ROUNDS as f64
+            },
+            5,
+        );
+        println!("换档快路径（重挑 + 出参序列化，零网络）: {per_switch:.2}µs/次");
+
+        let opts = quality_options(&media.variants);
+        let labels: Vec<&str> = opts.iter().filter_map(|o| o["label"].as_str()).collect();
+        println!("档位表（降序）: {labels:?}");
+
+        LAST_BY_VID.lock().unwrap().clear();
     }
 
     #[test]

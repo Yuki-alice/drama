@@ -106,34 +106,23 @@ class HomeFeedNotifier extends AsyncNotifier<HomeFeed> {
   Future<HomeFeed> build() async {
     final filter = ref.watch(homeFilterProvider); // 条件变化 → 自动重建重取
     final repository = ref.watch(catalogRepositoryProvider);
-    final store = ref.watch(cacheStoreProvider);
 
-    // 重启续载：此前已加载多页（水位 depth>1）时，按顺序取回 page 0..depth-1
-    // （缓存命中即瞬时返回，不发网络），把 loadedPages 设为 depth，
-    // 使重启后不丢已加载的分页。取回后仍做排序/状态过滤。
-    final depth = store?.catalogDepth(filter.categoryId) ?? 0;
-    if (depth > 1) {
-      final items = <Drama>[];
-      var hasMore = true;
-      for (var page = 0; page < depth; page++) {
-        final result = await repository.catalog(
-          categoryId: filter.categoryId,
-          page: page,
-        );
-        items.addAll(_applyFilter(result.items, filter));
-        hasMore = result.hasMore; // 以最后一页为准
-      }
-      return HomeFeed(items: items, hasMore: hasMore, loadedPages: depth);
+    // 重启续载：**一次往返**取回此前已加载的 0..depth-1 页。
+    //
+    // 分页水位由 Rust 侧记录（`catalogPages` 不传 depth 即跟随水位），
+    // 缓存命中的页在 Rust 内瞬时返回 —— 往返数从 N 降到 1，
+    // 也省掉 N 次 JSON 编解码。取回后仍做排序/状态过滤。
+    final pages = await repository.catalogPages(categoryId: filter.categoryId);
+    if (pages.isEmpty) {
+      return const HomeFeed(items: <Drama>[], hasMore: false, loadedPages: 0);
     }
-
-    final first = await repository.catalog(
-      categoryId: filter.categoryId,
-      page: 0,
-    );
+    final items = <Drama>[
+      for (final page in pages) ..._applyFilter(page.items, filter),
+    ];
     return HomeFeed(
-      items: _applyFilter(first.items, filter),
-      hasMore: first.hasMore,
-      loadedPages: 1,
+      items: items,
+      hasMore: pages.last.hasMore, // 以最后一页为准
+      loadedPages: pages.length,
     );
   }
 

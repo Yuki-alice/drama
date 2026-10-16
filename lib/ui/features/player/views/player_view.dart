@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../../../../data/repositories/catalog_providers.dart';
 import '../../../../data/repositories/playback_repository.dart';
 import '../../../../data/repositories/progress_repository.dart';
 import '../../../../data/services/rust_core.dart';
@@ -54,6 +55,17 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
   /// 会把「旧集的位置」记成「新集的进度」。故只在集号一致时上报。
   int? _openedEpisode;
 
+  /// 选集分组下标（0-based）。切换分组**只影响渲染**——每组的剧集 Rust 已一次给全。
+  int _groupIndex = 0;
+
+  /// 播放中换档的目标高度；`null` = 跟随设置页的清晰度偏好。
+  ///
+  /// 换档是**本集**的选择，不该反向改写全局偏好（那是设置页的事）。
+  int? _qualityOverride;
+
+  /// 是否正在换档（禁用菜单、避免连点）。
+  bool _switchingQuality = false;
+
   @override
   void initState() {
     super.initState();
@@ -100,18 +112,74 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
   /// 自动连播：受设置开关约束，且仅当当前集不是最后一集时前进。
   void _playNextIfAny() {
     if (!ref.read(playbackSettingsProvider).autoPlayNext) return;
-    final episodes =
-        ref.read(detailProvider(widget.id)).value?.episodes.length ?? 0;
-    if (episodes == 0 || _episode >= episodes) return;
+    if (_episode >= _episodeCount) return;
     _goToEpisode(_episode + 1);
   }
 
+  /// 总集数：优先用 Rust 分组结果（与选集区同一口径），未就绪时回落详情。
+  int get _episodeCount {
+    final fromGroups = ref
+        .read(episodeGroupsProvider(widget.id))
+        .value
+        ?.total;
+    if (fromGroups != null && fromGroups > 0) return fromGroups;
+    return ref.read(detailProvider(widget.id)).value?.episodes.length ?? 0;
+  }
+
   /// 切集：重置续播标记（新集需按该集记录重新定位）。
+  ///
+  /// 集号可能落在别的分组里（用户从「1-50」点「101-120」的集），
+  /// 故顺带把分组下标对齐，避免选集区高亮与实际播放的集脱节。
   void _goToEpisode(int episode) {
+    final groups = ref.read(episodeGroupsProvider(widget.id)).value;
+    final size = groups?.groupSize ?? 0;
     setState(() {
       _episode = episode;
       _resumeApplied = false;
+      // 换档是**本集**的选择：切集后回到「跟随偏好」，否则标题与选集
+      // 会停在上一集的档位上，与设置页不一致。
+      _qualityOverride = null;
+      if (groups != null && size > 0) {
+        final index = (episode - 1) ~/ size;
+        _groupIndex = index.clamp(0, groups.groups.length - 1);
+      }
     });
+  }
+
+  /// 换档：走 Rust `playQuality`（复用已解析出的候选线路，零签名零网络），
+  /// 拿到新地址后**原地续播**——记下当前位置与播放状态，重新开流再跳回去，
+  /// 用户感知是「画质变了，进度没动」。
+  Future<void> _switchQuality(int height) async {
+    final holder = ref.read(rustCoreProvider);
+    if (holder == null || _switchingQuality) return;
+    final plan = ref
+        .read(playPlanProvider((id: widget.id, episode: _episode)))
+        .value;
+    final vid = plan?.vid ?? '';
+    // 离线本地文件 / 源未给 vid：没有可换的候选档位，安静地什么都不做。
+    if (vid.isEmpty || plan == null || plan.offline) return;
+
+    setState(() => _switchingQuality = true);
+    try {
+      final next = await PlaybackRepository(
+        SeriesCoreShim(holder.core),
+      ).switchQuality(seriesId: widget.id, vid: vid, quality: height);
+      final position = _player.state.position;
+      final wasPlaying = _player.state.playing;
+      await _player.open(Media(next.proxyUrl), play: wasPlaying);
+      await _player.seek(position);
+      if (!mounted) return;
+      setState(() {
+        _qualityOverride = height;
+        _switchingQuality = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _switchingQuality = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('切换清晰度失败：${_errorMessage(error)}')));
+    }
   }
 
   /// 拖动进度条：跳转并把当前位置**立即**上报，避免「拖完就退出」丢进度。
@@ -204,6 +272,9 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
   @override
   Widget build(BuildContext context) {
     final detailAsync = ref.watch(detailProvider(widget.id));
+    // 选集分组（Rust `episodeGroups`）：组大小/起止/标签/每组剧集一次给全，
+    // Dart 只按组渲染。它与详情页共用同一口径，且复用详情缓存（命中即零网络）。
+    ref.watch(episodeGroupsProvider(widget.id));
     // 取流就绪即打开；切集（key 变化）自动重解重开。
     ref.listen(playPlanProvider((id: widget.id, episode: _episode)), (_, next) {
       next.whenData((plan) {
@@ -253,16 +324,35 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
 
   Widget _playerBody(BuildContext context, List<Episode> episodes) {
     final colors = AppColors.of(context);
+    // 选集渲染用 Rust 分组；未就绪（首次加载 / 详情成功但分组在途）时
+    // 退回整表渲染，避免选集区闪空。
+    final groupsAsync = ref.watch(episodeGroupsProvider(widget.id));
+    final groups = groupsAsync.value;
+    final total = groups?.total ?? episodes.length;
     final hasPrevious = _episode > 1;
-    final hasNext = _episode < episodes.length;
+    final hasNext = _episode < total;
     final planAsync = ref.watch(
       playPlanProvider((id: widget.id, episode: _episode)),
     );
 
     final settings = ref.watch(playbackSettingsProvider);
+    final plan = planAsync.value;
+    // 换档后标题要显示**实际**档位，而不是设置里的期望上限。
+    final qualityLabel = _qualityOverride != null
+        ? _labelOfHeight(plan?.qualityOptions ?? const <QualityOption>[], _qualityOverride!)
+        : (plan?.qualityText ?? settings.qualityLabel);
     return AppGlassScaffold(
-      title: '第 $_episode 集 · ${settings.qualityLabel}',
+      title: '第 $_episode 集 · $qualityLabel',
       leading: _backAction(context),
+      actions: <Widget>[
+        if (plan != null && plan.qualityOptions.isNotEmpty && !plan.offline)
+          _QualityMenu(
+            options: plan.qualityOptions,
+            current: _qualityOverride ?? plan.quality,
+            switching: _switchingQuality,
+            onPick: _switchQuality,
+          ),
+      ],
       body: ListView(
         children: <Widget>[
           // ── 画面区（不透明内容层，真播放器） ───────────────────
@@ -368,25 +458,68 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
             ),
           ),
 
-          const SectionHeader(title: '选集'),
+          SectionHeader(
+            title: groups == null ? '选集' : '选集（共 $total 集）',
+          ),
+          // 分组切换：每组 50 集（口径由 Rust 给）。之前播放页 `take(60)`
+          // 硬截，60 集以上的剧在播放页根本点不到后半段——现在按组翻页。
+          if (groups != null && groups.groups.length > 1)
+            Padding(
+              padding: AppSpacing.pageH,
+              child: Wrap(
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.sm,
+                children: <Widget>[
+                  for (final group in groups.groups)
+                    _MiniEpisodeChip(
+                      label: group.label,
+                      selected: group.index == _groupIndex,
+                      onTap: () => setState(() => _groupIndex = group.index),
+                    ),
+                ],
+              ),
+            ),
+          if (groups != null && groups.groups.length > 1)
+            const SizedBox(height: AppSpacing.md),
           Padding(
             padding: AppSpacing.pageH,
-            child: Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.sm,
-              children: <Widget>[
-                for (final episode in episodes.take(60))
-                  _MiniEpisodeChip(
-                    label: '${episode.index}',
-                    selected: episode.index == _episode,
-                    onTap: () => _goToEpisode(episode.index),
-                  ),
-              ],
+            child: _episodeChips(
+              groups: groups,
+              fallback: episodes,
             ),
           ),
           const SizedBox(height: AppSpacing.xxl),
         ],
       ),
+    );
+  }
+
+  /// 当前分组的集号 chip。
+  ///
+  /// 分组数据未就绪（首次加载 / 分组 op 失败）时整表兜底渲染，
+  /// 保证选集区不会因为一次可选请求失败而空掉。
+  Widget _episodeChips({
+    required EpisodeGroups? groups,
+    required List<Episode> fallback,
+  }) {
+    final List<Episode> items;
+    if (groups == null || groups.groups.isEmpty) {
+      items = fallback;
+    } else {
+      final index = _groupIndex.clamp(0, groups.groups.length - 1);
+      items = groups.groups[index].episodes;
+    }
+    return Wrap(
+      spacing: AppSpacing.sm,
+      runSpacing: AppSpacing.sm,
+      children: <Widget>[
+        for (final episode in items)
+          _MiniEpisodeChip(
+            label: '${episode.index}',
+            selected: episode.index == _episode,
+            onTap: () => _goToEpisode(episode.index),
+          ),
+      ],
     );
   }
 }
@@ -544,6 +677,86 @@ class _ScrubberState extends State<_Scrubber> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// 档位标签：`height` 不在档位表里时回落到 `{h}P`。
+String _labelOfHeight(List<QualityOption> options, int height) {
+  for (final option in options) {
+    if (option.height == height) return option.label;
+  }
+  return '${height}P';
+}
+
+/// 清晰度切换菜单（播放中可切档）。
+///
+/// 档位表来自 Rust，切换走 `playQuality`——复用已解析的候选线路，
+/// 不重跑签名链。离线本地文件没有候选档位，菜单不显示。
+class _QualityMenu extends StatelessWidget {
+  const _QualityMenu({
+    required this.options,
+    required this.current,
+    required this.switching,
+    required this.onPick,
+  });
+
+  final List<QualityOption> options;
+  final int current;
+  final bool switching;
+  final ValueChanged<int> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Center(
+      child: switching
+          ? Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+              child: SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.5,
+                  color: colors.textTertiary,
+                ),
+              ),
+            )
+          : PopupMenuButton<int>(
+              tooltip: '切换清晰度',
+              onSelected: onPick,
+              itemBuilder: (context) => <PopupMenuEntry<int>>[
+                for (final option in options)
+                  PopupMenuItem<int>(
+                    value: option.height,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Icon(
+                          Icons.check,
+                          size: 16,
+                          // 未选中也要占位，否则菜单项文字会左右跳动。
+                          color: option.height == current
+                              ? colors.accent
+                              : Colors.transparent,
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Text(option.label, style: AppText.callout),
+                      ],
+                    ),
+                  ),
+              ],
+              // 用图标而非「清晰度 ▾」文案：窄屏（最小 420pt）下
+              // 标题 + 返回 + 文案 action 会挤爆 AppBar。
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+                child: Icon(
+                  Icons.high_quality,
+                  size: 20,
+                  color: colors.textSecondary,
+                ),
+              ),
+            ),
     );
   }
 }

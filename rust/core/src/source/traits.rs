@@ -130,6 +130,17 @@ pub trait SourceProvider: Send + Sync {
     ) -> Result<Value, SourceError> {
         Err(SourceError::Unsupported)
     }
+    /// 换档：同集换清晰度。**优先复用**已解析出的候选线路（零网络、零签名），
+    /// 旁路缓存没有这一集时才回落到完整解析（等价于 `play`）。
+    /// `quality` 语义同 `play`（期望清晰度上限，0 = 最高）。默认不支持。
+    fn play_variant(
+        &self,
+        _series_id: &str,
+        _video_id: &str,
+        _quality: i64,
+    ) -> Result<Value, SourceError> {
+        Err(SourceError::Unsupported)
+    }
     /// 预取下集：解析 + 注册会话 + 解密首窗口，播放器打开即播。
     /// 失败是可选的（调用方忽略错误即可），默认不支持。
     fn preload(

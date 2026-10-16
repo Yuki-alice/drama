@@ -31,10 +31,16 @@ class DetailView extends ConsumerStatefulWidget {
 }
 
 class _DetailViewState extends ConsumerState<DetailView> {
-  /// 每组 50 集。
-  static const int _groupSize = 50;
-
   int _groupIndex = 0;
+
+  /// 当前分组要展示的剧集。
+  ///
+  /// 分组结果（Rust）未就绪时整表兜底——选集区不该因为一次可选请求失败而空掉。
+  List<Episode> _visibleEpisodes(EpisodeGroups? groups, List<Episode> all) {
+    if (groups == null || groups.groups.isEmpty) return all;
+    final index = _groupIndex.clamp(0, groups.groups.length - 1);
+    return groups.groups[index].episodes;
+  }
 
   /// 追剧写入进行中（忽略重复点击）。
   bool _togglingFollow = false;
@@ -66,14 +72,11 @@ class _DetailViewState extends ConsumerState<DetailView> {
 
   Widget _content(BuildContext context, DramaDetail detail) {
     final drama = detail.drama;
+    // 分组口径来自 Rust（`episodeGroups` op）：组大小/起止/标签/每组剧集
+    // 都由引擎给出，详情页与播放页共用同一份结果。未就绪时整表兜底渲染。
+    final groups = ref.watch(episodeGroupsProvider(widget.id)).value;
     final episodes = detail.episodes;
-    final groupCount = episodes.isEmpty
-        ? 1
-        : (episodes.length / _groupSize).ceil();
-    final visibleEpisodes = episodes
-        .skip(_groupIndex * _groupSize)
-        .take(_groupSize)
-        .toList(growable: false);
+    final visibleEpisodes = _visibleEpisodes(groups, episodes);
     final colors = AppColors.of(context);
     // 已追剧态与续播位置均来自 Rust 持久化；核心不可用/无记录时回落默认。
     final isFollowing = ref.watch(isFollowingProvider(widget.id)).value ?? false;
@@ -184,26 +187,22 @@ class _DetailViewState extends ConsumerState<DetailView> {
 
           const SliverToBoxAdapter(child: SectionHeader(title: '选集')),
 
-          // ── 分组切换（每组 50 集） ────────────────────────────
-          if (groupCount > 1)
+          // ── 分组切换（每组集数由 Rust 给） ─────────────────────
+          if (groups != null && groups.groups.length > 1)
             SliverToBoxAdapter(
               child: SizedBox(
                 height: 52,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
                   padding: AppSpacing.pageH,
-                  itemCount: groupCount,
+                  itemCount: groups.groups.length,
                   separatorBuilder: (context, index) =>
                       const SizedBox(width: AppSpacing.sm),
                   itemBuilder: (context, index) {
-                    final start = index * _groupSize + 1;
-                    final end = ((index + 1) * _groupSize).clamp(
-                      1,
-                      episodes.length,
-                    );
+                    final group = groups.groups[index];
                     return Center(
                       child: GlassChip(
-                        label: '$start-$end',
+                        label: group.label,
                         selected: index == _groupIndex,
                         useOwnLayer: true,
                         onTap: () => setState(() => _groupIndex = index),
