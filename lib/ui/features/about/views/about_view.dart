@@ -3,8 +3,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/app_glass_scaffold.dart';
-import '../../../core/widgets/content_widgets.dart';
 import '../../../core/widgets/glass_kit.dart';
+import '../../../core/widgets/lockups.dart';
 
 /// 关于页（二级页）。
 ///
@@ -31,7 +31,7 @@ class AboutView extends StatelessWidget {
           const SizedBox(height: AppSpacing.lg),
 
           // ── 免责声明 ───────────────────────────────────────────
-          const SectionHeader(title: '免责声明'),
+          const SectionHead.paged(title: '免责声明'),
           Padding(
             padding: AppSpacing.pageH,
             child: Column(
@@ -67,14 +67,14 @@ class AboutView extends StatelessWidget {
           ),
 
           // ── 开源许可 ───────────────────────────────────────────
-          const SectionHeader(title: '开源许可'),
+          const SectionHead.paged(title: '开源许可'),
           _TappableRow(
             label: '查看开源许可',
             onTap: () => _showPlaceholderDialog(context, '开源许可'),
           ),
 
           // ── 联系方式 ───────────────────────────────────────────
-          const SectionHeader(title: '联系方式'),
+          const SectionHead.paged(title: '联系方式'),
           const _ValueRow(label: '联系邮箱', value: 'support@example.com'),
         ],
       ),

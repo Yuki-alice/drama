@@ -28,7 +28,7 @@ class Episode {
   /// 「该集需 App 授权」，不得静默失败。
   final bool locked;
 
-  /// 与 `HongguoCatalogRepository._episode` **同一口径**（字段名 `durationSeconds`、
+  /// 与 `SourceCatalogRepository._episode` **同一口径**（字段名 `durationSeconds`、
   /// 标题缺省「第 N 集」）：分组结果走的是同一批剧集 JSON，两边解析必须一致。
   factory Episode.fromJson(Map<String, Object?> json) {
     final seconds = (json['durationSeconds'] as num?)?.toDouble();

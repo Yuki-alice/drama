@@ -62,6 +62,7 @@ class DramaCover extends StatelessWidget {
             seed: seed,
             showTitle: showTitleOverlay,
             title: title,
+            radius: radius,
           ),
           if (cover.isNotEmpty)
             LayoutBuilder(
@@ -121,36 +122,100 @@ class _NetworkCover extends StatelessWidget {
   }
 }
 
+// ── 封面 Hero：列表卡片 ⇄ 详情页海报的共享元素转场 ──────────────────
+
+/// 封面 Hero 的标签。
+///
+/// 组成 = 源 + 源内 id——跨源同 id 是不同剧，标签必须能区分；
+/// 列表卡片与详情页海报两端引用**同一个**标签，飞行才会发生。
+String coverHeroTag({required String source, required String id}) =>
+    'cover:$source:$id';
+
+/// 把封面包进共享元素转场（Kazumi 的做法）。
+///
+/// - `transitionOnUserGestures: true`：iOS 边缘右滑返回也走转场；
+/// - 自定义 shuttle（见 [_coverFlightShuttle]）：飞行途中沿用出发端的
+///   渲染树，并在出发/落点上下文里补上 `Material` 与 InheritedTheme，
+///   否则飞出原树后文字样式与主题会漂移。
+///
+/// **标签在同一路由内必须唯一**：同一剧目不要在一个页面里出现两份
+/// （例如既进信息流又在别处重复渲染），否则飞行扫描会断言失败。
+class CoverHero extends StatelessWidget {
+  const CoverHero({
+    super.key,
+    required this.source,
+    required this.id,
+    required this.child,
+  });
+
+  final String source;
+  final String id;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    // 空标签 = 调用方还没拿到身份（如追剧行为空 id 的兜底渲染）：
+    // 直接放行，避免所有兜底行共用空标签互相串场。
+    if (id.isEmpty || source.isEmpty) return child;
+    return Hero(
+      tag: coverHeroTag(source: source, id: id),
+      transitionOnUserGestures: true,
+      flightShuttleBuilder: _coverFlightShuttle,
+      child: child,
+    );
+  }
+}
+
+/// 飞行载体：push 取出发端、pop 取落点端的渲染树（Kazumi 同款）。
+Widget _coverFlightShuttle(
+  BuildContext flightContext,
+  Animation<double> animation,
+  HeroFlightDirection flightDirection,
+  BuildContext fromHeroContext,
+  BuildContext toHeroContext,
+) {
+  final push = flightDirection == HeroFlightDirection.push;
+  final sourceContext = push ? fromHeroContext : toHeroContext;
+  final hero = (push ? fromHeroContext.widget : toHeroContext.widget) as Hero;
+  return InheritedTheme.captureAll(
+    sourceContext,
+    Material(type: MaterialType.transparency, child: hero.child),
+  );
+}
+
 /// 确定性渐变占位（同一 seed 每次颜色一致）。
 class _GradientPoster extends StatelessWidget {
   const _GradientPoster({
     required this.seed,
     required this.showTitle,
     this.title,
+    this.radius = AppRadii.lg,
   });
 
   final String seed;
   final bool showTitle;
   final String? title;
+  final double radius;
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
     // 用 hashCode 取色相，保证同一剧目每次渲染颜色一致。
     final hue = seed.hashCode.abs() % 360;
-    // Notion 风：低饱和、低对比的暖灰蓝调，避免五彩斑斓抢内容。
-    // 色相仍随剧目变化（可区分），但饱和度压低、亮度贴近纸面。
+    // 「墨·玻璃」：界面本体零装饰色，所以占位图**不是**彩色海报，
+    // 而是一块低饱和的中性灰，只保留一点点色相用来区分相邻剧目
+    // （这是信息，不是装饰）。真正决定观感的是上面那层真封面。
     final top = HSLColor.fromAHSL(
       1,
       hue.toDouble(),
-      colors.highContrast ? 0.0 : 0.22,
-      colors.brightness == Brightness.dark ? 0.22 : 0.90,
+      colors.highContrast ? 0.0 : 0.10,
+      colors.brightness == Brightness.dark ? 0.20 : 0.94,
     ).toColor();
     final bottom = HSLColor.fromAHSL(
       1,
       ((hue + 28) % 360).toDouble(),
-      colors.highContrast ? 0.0 : 0.26,
-      colors.brightness == Brightness.dark ? 0.16 : 0.83,
+      colors.highContrast ? 0.0 : 0.13,
+      colors.brightness == Brightness.dark ? 0.13 : 0.87,
     ).toColor();
 
     return DecoratedBox(
@@ -161,7 +226,7 @@ class _GradientPoster extends StatelessWidget {
           colors: <Color>[top, bottom],
         ),
         border: Border.all(color: colors.divider),
-        borderRadius: BorderRadius.circular(AppRadii.lg),
+        borderRadius: BorderRadius.circular(radius),
       ),
       child: Stack(
         fit: StackFit.expand,

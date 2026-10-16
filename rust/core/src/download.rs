@@ -66,6 +66,10 @@ pub enum DlState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DlRecord {
     pub id: String,
+    /// 所属源。老索引无此字段 → 反序列化为空串，[`ensure_loaded`] 据此识别
+    /// 并迁移（补默认源 + id 加前缀 + 磁盘目录搬家）；新代码写入时恒非空。
+    #[serde(default)]
+    pub source: String,
     pub series_id: String,
     pub title: String,
     pub cover: String,
@@ -105,6 +109,16 @@ struct Resume {
     total: u64,
     ranges: bool,
     segments: Vec<Segment>,
+}
+
+fn default_source() -> String {
+    crate::source::DEFAULT_SOURCE_ID.to_owned()
+}
+
+/// 任务主键：`{source}:{series_id}:{episode}`。同（剧，集）在不同源下是
+/// 两个独立任务，幂等判断不再跨源误判。
+fn task_key(source: &str, series_id: &str, episode: u32) -> String {
+    format!("{source}:{series_id}:{episode}")
 }
 
 /// 持久化设置。
@@ -213,7 +227,24 @@ fn settings_path() -> Result<PathBuf, SourceError> {
     Ok(dir()?.join(SETTINGS_FILE))
 }
 
-fn task_dir(series_id: &str, vid: &str) -> Result<PathBuf, SourceError> {
+fn task_dir(source: &str, series_id: &str, vid: &str) -> Result<PathBuf, SourceError> {
+    let safe_source: String = source
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let safe_series: String = series_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let safe_vid: String = vid.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    if safe_source.is_empty() || safe_series.is_empty() || safe_vid.is_empty() {
+        return Err(SourceError::Parse("bad source/series/vid".to_owned()));
+    }
+    Ok(dir()?.join(format!("{safe_source}_{safe_series}_{safe_vid}")))
+}
+
+/// 老任务目录（无源前缀）：仅迁移时定位旧文件用。
+fn legacy_task_dir(series_id: &str, vid: &str) -> Result<PathBuf, SourceError> {
     let safe_series: String = series_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -223,6 +254,23 @@ fn task_dir(series_id: &str, vid: &str) -> Result<PathBuf, SourceError> {
         return Err(SourceError::Parse("bad series/vid".to_owned()));
     }
     Ok(dir()?.join(format!("{safe_series}_{safe_vid}")))
+}
+
+/// 数据目录切换时复位：无在途任务时清空任务表并取消已加载标记，
+/// 下次读写从新目录延迟载入。有排队/下载中任务时保持旧状态（任务持有旧目录
+/// 的文件句柄与续传 sidecar，切目录中强行迁移不安全；该场景为应用级重置，
+/// 调用方应在空闲时切换）。由 `device::set_data_dir` / `clear_data_dir` 调用。
+pub(crate) fn reset_for_data_dir() {
+    let mut mgr = MANAGER.lock().expect("download manager poisoned");
+    let live = mgr
+        .tasks
+        .values()
+        .any(|t| matches!(t.record.state, DlState::Queued | DlState::Downloading));
+    if live {
+        return;
+    }
+    mgr.tasks.clear();
+    mgr.loaded = false;
 }
 
 /// 延迟加载索引与设置。
@@ -240,9 +288,15 @@ fn ensure_loaded() {
     let Ok(records) = serde_json::from_slice::<Vec<DlRecord>>(&raw) else {
         return;
     };
-    for record in records {
+    for mut record in records {
+        // 老索引迁移：无源记录归默认源、id 补前缀；磁盘目录一并搬家
+        //（旧目录存在且新目录不存在才搬，不覆盖）。
+        if record.source.is_empty() {
+            record.source = default_source();
+            record.id = format!("{}:{}", record.source, record.id);
+            migrate_task_dir(&record);
+        }
         // 重启后在途任务回退为排队/暂停：下载中→排队等待 pump，其余保持。
-        let mut record = record;
         if record.state == DlState::Downloading {
             record.state = DlState::Queued;
         }
@@ -256,6 +310,21 @@ fn ensure_loaded() {
             },
         );
     }
+}
+
+/// 把老目录（`{series}_{vid}`）搬到新目录（`{source}_{series}_{vid}`）。
+/// 尽力而为：任何一步失败都静默跳过（文件仍在旧位置，不丢数据）。
+fn migrate_task_dir(record: &DlRecord) {
+    let Ok(old) = legacy_task_dir(&record.series_id, &record.vid) else {
+        return;
+    };
+    let Ok(new) = task_dir(&record.source, &record.series_id, &record.vid) else {
+        return;
+    };
+    if !old.exists() || new.exists() {
+        return;
+    }
+    let _ = std::fs::rename(&old, &new);
 }
 
 /// 设置加载：只认 1..=上限，越界/损坏一律回落默认值。
@@ -346,6 +415,7 @@ fn record_to_json(r: &DlRecord, speed_bps: u64) -> Value {
     };
     json!({
         "id": r.id,
+        "source": r.source,
         "seriesId": r.series_id,
         "title": r.title,
         "cover": r.cover,
@@ -361,8 +431,8 @@ fn record_to_json(r: &DlRecord, speed_bps: u64) -> Value {
 }
 
 /// 新建下载：`{seriesId, episode?, vid?, quality?, title?, cover?}`。
-/// 已存在同 id 直接返回当前记录（幂等）；m3u8 明确拒绝。
-pub fn start(params: &Value) -> Result<Value, SourceError> {
+/// 已存在同（源，剧，集）直接返回当前记录（幂等）；m3u8 明确拒绝。
+pub fn start(source: &str, params: &Value) -> Result<Value, SourceError> {
     let series_id = params.get("seriesId").and_then(Value::as_str).unwrap_or("");
     if series_id.is_empty() {
         return Err(SourceError::Parse("missing seriesId".to_owned()));
@@ -373,7 +443,7 @@ pub fn start(params: &Value) -> Result<Value, SourceError> {
         .unwrap_or(1)
         .max(1) as u32;
     let quality = params.get("quality").and_then(Value::as_i64).unwrap_or(0);
-    let id = format!("{series_id}:{episode}");
+    let id = task_key(source, series_id, episode);
     ensure_loaded();
     let mgr = MANAGER.lock().expect("download manager poisoned");
     if let Some(task) = mgr.tasks.get(&id) {
@@ -387,12 +457,12 @@ pub fn start(params: &Value) -> Result<Value, SourceError> {
         .map(str::to_owned)
         .unwrap_or_default();
     drop(mgr);
-    let (vid, media) = resolve_for_download(series_id, episode, &vid, quality)?;
+    let (vid, media) = resolve_for_download(source, series_id, episode, &vid, quality)?;
     if media.url.contains("m3u8") {
         return Err(SourceError::Unsupported);
     }
     let mut mgr = MANAGER.lock().expect("download manager poisoned");
-    let task_dir = task_dir(series_id, &vid)?;
+    let task_dir = task_dir(source, series_id, &vid)?;
     let _ = std::fs::create_dir_all(&task_dir);
     let title = params
         .get("title")
@@ -410,6 +480,7 @@ pub fn start(params: &Value) -> Result<Value, SourceError> {
         .collect();
     let record = DlRecord {
         id: id.clone(),
+        source: source.to_owned(),
         series_id: series_id.to_owned(),
         title,
         cover,
@@ -441,12 +512,13 @@ pub fn start(params: &Value) -> Result<Value, SourceError> {
 }
 
 fn resolve_for_download(
+    source: &str,
     series_id: &str,
     episode: u32,
     vid: &str,
     quality: i64,
 ) -> Result<(String, crate::app_api::ResolvedMedia), SourceError> {
-    let provider = crate::source::provider(Some("hongguo"))?;
+    let provider = crate::source::provider(Some(source).filter(|s| !s.is_empty()))?;
     let vid = if vid.is_empty() {
         let detail = provider.detail(series_id)?;
         let index = episode.max(1) as usize - 1;
@@ -482,7 +554,8 @@ pub fn list() -> Result<Value, SourceError> {
     });
     let parallel = max_parallel();
     Ok(json!({
-        "tasks": items,
+        "tasks": items.clone(),
+        "items": items,
         "parallel": parallel,
         "connections": connections_per_task(parallel),
         // 当前下载根：UI 要把它显示出来（搬迁前得让用户知道现在在哪）。
@@ -561,7 +634,13 @@ pub fn delete(params: &Value) -> Result<Value, SourceError> {
         return Err(SourceError::NotFound);
     };
     task.cancel.cancel();
-    if files && let Ok(dir) = task_dir(&task.record.series_id, &task.record.vid) {
+    if files
+        && let Ok(dir) = task_dir(
+            &task.record.source,
+            &task.record.series_id,
+            &task.record.vid,
+        )
+    {
         let _ = std::fs::remove_dir_all(dir);
     }
     persist_locked(&mgr)?;
@@ -742,11 +821,11 @@ pub fn play_file(params: &Value) -> Result<Value, SourceError> {
     local_playback_of(&task.record)
 }
 
-/// 按「剧 + 集」取已完成文件的播放计划（供播放器离线优先取流）。
+/// 按「源 + 剧 + 集」取已完成文件的播放计划（供播放器离线优先取流）。
 ///
 /// 返回结构与在线 `play` **同构**（`proxyUrl`/`vid`/`quality`/`variants` 齐全），
 /// 没有对应完成任务时返回 `NotFound`——调用方据此回落到在线取流。
-pub fn play_local(params: &Value) -> Result<Value, SourceError> {
+pub fn play_local(source: &str, params: &Value) -> Result<Value, SourceError> {
     let series_id = params.get("id").and_then(Value::as_str).unwrap_or("");
     let episode = params
         .get("episode")
@@ -758,7 +837,7 @@ pub fn play_local(params: &Value) -> Result<Value, SourceError> {
     }
     ensure_loaded();
     let mgr = MANAGER.lock().expect("download manager poisoned");
-    let id = format!("{series_id}:{episode}");
+    let id = task_key(source, series_id, episode as u32);
     let task = mgr.tasks.get(&id).ok_or(SourceError::NotFound)?;
     local_playback_of(&task.record)
 }
@@ -767,7 +846,7 @@ fn local_playback_of(record: &DlRecord) -> Result<Value, SourceError> {
     if record.state != DlState::Completed {
         return Err(SourceError::NotFound);
     }
-    let dir = task_dir(&record.series_id, &record.vid)?;
+    let dir = task_dir(&record.source, &record.series_id, &record.vid)?;
     let path = dir.join("video.mp4");
     if !path.is_file() {
         return Err(SourceError::NotFound);
@@ -843,15 +922,16 @@ async fn run_download(record: DlRecord, cancel: CancellationToken) {
 }
 
 fn part_path(record: &DlRecord) -> std::result::Result<PathBuf, SourceError> {
-    task_dir(&record.series_id, &record.vid).map(|d| d.join("video.mp4.part"))
+    task_dir(&record.source, &record.series_id, &record.vid).map(|d| d.join("video.mp4.part"))
 }
 
 fn progress_path(record: &DlRecord) -> std::result::Result<PathBuf, SourceError> {
-    task_dir(&record.series_id, &record.vid).map(|d| d.join("video.mp4.progress.json"))
+    task_dir(&record.source, &record.series_id, &record.vid)
+        .map(|d| d.join("video.mp4.progress.json"))
 }
 
 fn finish_files(record: &DlRecord, total: u64) {
-    let Ok(dir) = task_dir(&record.series_id, &record.vid) else {
+    let Ok(dir) = task_dir(&record.source, &record.series_id, &record.vid) else {
         return;
     };
     let part = dir.join("video.mp4.part");
@@ -1081,7 +1161,8 @@ async fn download_once(
     cancel: &CancellationToken,
     connections: usize,
 ) -> Result<(u64, u64), String> {
-    let dir = task_dir(&record.series_id, &record.vid).map_err(|e| e.to_string())?;
+    let dir =
+        task_dir(&record.source, &record.series_id, &record.vid).map_err(|e| e.to_string())?;
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| e.to_string())?;
@@ -1343,7 +1424,7 @@ mod tests {
         let provider = crate::source::provider(Some("hongguo")).unwrap();
         let cat = provider.catalog(Some("real-drama"), 1).unwrap();
         let series = cat["items"][0]["id"].as_str().unwrap().to_owned();
-        let out = start(&json!({ "seriesId": series, "episode": 1 })).unwrap();
+        let out = start("hongguo", &json!({ "seriesId": series, "episode": 1 })).unwrap();
         let id = out["id"].as_str().unwrap().to_owned();
         // 轮询等完成（单集约 10~20MB，上限 10 分钟）。
         let mut done = false;
@@ -1398,6 +1479,7 @@ mod tests {
     fn record_json_state_names() {
         let mut r = DlRecord {
             id: "1:1".to_owned(),
+            source: "hongguo".to_owned(),
             series_id: "1".to_owned(),
             title: String::new(),
             cover: String::new(),
@@ -1419,6 +1501,7 @@ mod tests {
         let json = record_to_json(&r, 1024);
         assert_eq!(json["done"], json!(25));
         assert_eq!(json["speed"], json!(1024));
+        assert_eq!(json["source"], json!("hongguo"));
     }
 
     #[test]
@@ -1426,6 +1509,60 @@ mod tests {
         assert!(hex_to_key(&"ab".repeat(16)).is_ok());
         assert!(hex_to_key("zz".repeat(16).as_str()).is_err());
         assert!(hex_to_key("abc").is_err());
+    }
+
+    #[test]
+    fn task_key_and_dir_are_namespaced_by_source() {
+        // 同（剧，集）在不同源下是不同任务、不同目录。
+        assert_eq!(task_key("hongguo", "1", 2), "hongguo:1:2");
+        assert_ne!(task_key("hongguo", "1", 2), task_key("other", "1", 2));
+    }
+
+    #[test]
+    fn legacy_index_migrates_id_source_and_dir() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        let base = std::env::temp_dir().join(format!("drama-dl-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::create_dir_all(&base);
+        crate::device::set_download_dir(base.clone());
+        // 老索引：无 source、裸 id；老目录：无源前缀。
+        let legacy = r#"[{"id":"900001:1","series_id":"900001","title":"T",
+            "cover":"","episode":1,"vid":"700001","quality":360,"url":"https://cdn.example/x.mp4",
+            "referer":"https://example/","key_hex":"","total":10,"done":10,
+            "state":"completed","error":""}]"#;
+        std::fs::write(base.join("downloads.json"), legacy).unwrap();
+        let old_dir = base.join("900001_700001");
+        let _ = std::fs::create_dir_all(&old_dir);
+        std::fs::write(old_dir.join("video.mp4"), b"0123456789").unwrap();
+        {
+            let mut mgr = MANAGER.lock().expect("download manager poisoned");
+            mgr.tasks.clear();
+            mgr.loaded = false;
+        }
+        ensure_loaded();
+        {
+            let mgr = MANAGER.lock().expect("download manager poisoned");
+            let task = mgr
+                .tasks
+                .get("hongguo:900001:1")
+                .expect("migrated task missing");
+            assert_eq!(task.record.source, "hongguo");
+            assert_eq!(task.record.id, "hongguo:900001:1");
+        }
+        // 文件跟人走：新目录有文件，旧目录已搬空。
+        let new_dir = base.join("hongguo_900001_700001");
+        assert!(new_dir.join("video.mp4").is_file());
+        assert!(!old_dir.exists());
+        // play_local 按新 id 找到（离线不断流）。
+        let plan = play_local("hongguo", &json!({"id": "900001", "episode": 1})).unwrap();
+        assert!((plan["proxyUrl"].as_str().unwrap_or("")).starts_with("http://127.0.0.1:"));
+        {
+            let mut mgr = MANAGER.lock().expect("download manager poisoned");
+            mgr.tasks.clear();
+            mgr.loaded = false;
+        }
+        crate::device::set_download_dir(std::path::PathBuf::new());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1471,6 +1608,13 @@ mod tests {
         assert_eq!(out["parallel"], json!(4));
         assert!(out["connections"].as_u64().unwrap() >= 1);
         let _ = set_concurrency(&json!({ "parallel": old }));
+    }
+
+    #[test]
+    fn list_exposes_tasks_and_items_aliases() {
+        let out = list().unwrap();
+        assert_eq!(out["tasks"], out["items"]);
+        assert!(out["parallel"].as_u64().is_some());
     }
 
     #[test]
@@ -1597,6 +1741,7 @@ mod tests {
         crate::device::set_download_dir(root);
         DlRecord {
             id: id.to_owned(),
+            source: "hongguo".to_owned(),
             series_id: "900001".to_owned(),
             title: "本地测试剧".to_owned(),
             cover: String::new(),
@@ -1614,7 +1759,7 @@ mod tests {
     }
 
     fn cleanup(record: &DlRecord) {
-        if let Ok(dir) = task_dir(&record.series_id, &record.vid) {
+        if let Ok(dir) = task_dir(&record.source, &record.series_id, &record.vid) {
             let _ = std::fs::remove_dir_all(dir);
         }
         crate::device::set_download_dir(std::path::PathBuf::new());
@@ -1727,17 +1872,18 @@ mod tests {
         crate::device::set_download_dir(old_root.clone());
 
         // 造一个「已完成假象」的任务目录（含成品文件）+ 让索引里有一条记录。
-        let task_dir_path = task_dir("777001", "888001").unwrap();
+        let task_dir_path = task_dir("hongguo", "777001", "888001").unwrap();
         let _ = std::fs::create_dir_all(&task_dir_path);
         std::fs::write(task_dir_path.join("video.mp4"), b"cached-episode").unwrap();
         std::fs::write(task_dir_path.join("meta.json"), b"{}").unwrap();
         {
             let mut mgr = MANAGER.lock().expect("download manager poisoned");
             mgr.tasks.insert(
-                "777001:1".to_owned(),
+                "hongguo:777001:1".to_owned(),
                 LiveTask {
                     record: DlRecord {
-                        id: "777001:1".to_owned(),
+                        id: "hongguo:777001:1".to_owned(),
+                        source: "hongguo".to_owned(),
                         series_id: "777001".to_owned(),
                         title: "搬家测试剧".to_owned(),
                         cover: String::new(),
@@ -1771,7 +1917,7 @@ mod tests {
             !task_dir_path.join("video.mp4").exists(),
             "old file remains"
         );
-        let moved_file = new_root.join("777001_888001").join("video.mp4");
+        let moved_file = new_root.join("hongguo_777001_888001").join("video.mp4");
         assert!(moved_file.is_file(), "file not present at new root");
         assert_eq!(std::fs::read(&moved_file).unwrap(), b"cached-episode");
         assert!(new_root.join(INDEX_FILE).is_file(), "index not rewritten");
@@ -1839,7 +1985,7 @@ mod tests {
         let body = body_of(1024 * 1024);
         let (url, _stop) = spawn_test_server(body.clone(), 8 * 1024 * 1024);
         let record = test_record("restart", &url);
-        let dir = task_dir(&record.series_id, &record.vid).unwrap();
+        let dir = task_dir(&record.source, &record.series_id, &record.vid).unwrap();
         let _ = std::fs::create_dir_all(&dir);
         let part = part_path(&record).unwrap();
         // 假的 sidecar：声称三段都写完了，但磁盘上什么都没有。

@@ -14,6 +14,7 @@ class SearchState {
     this.searching = false,
     this.submitted = false,
     this.recentSearches = const <String>[],
+    this.source = 'hongguo',
   });
 
   /// 当前输入框内容。
@@ -34,6 +35,9 @@ class SearchState {
   /// 最近搜索词（纯内存，最新在前）。
   final List<String> recentSearches;
 
+  /// 当前搜索源（`availableSourcesProvider` 中 `search` 为真的子集里选）。
+  final String source;
+
   SearchState copyWith({
     String? query,
     List<String>? suggestions,
@@ -41,14 +45,17 @@ class SearchState {
     bool? searching,
     bool? submitted,
     List<String>? recentSearches,
-  }) => SearchState(
-    query: query ?? this.query,
-    suggestions: suggestions ?? this.suggestions,
-    results: results ?? this.results,
-    searching: searching ?? this.searching,
-    submitted: submitted ?? this.submitted,
-    recentSearches: recentSearches ?? this.recentSearches,
-  );
+    String? source,
+  }) =>
+      SearchState(
+        query: query ?? this.query,
+        suggestions: suggestions ?? this.suggestions,
+        results: results ?? this.results,
+        searching: searching ?? this.searching,
+        submitted: submitted ?? this.submitted,
+        recentSearches: recentSearches ?? this.recentSearches,
+        source: source ?? this.source,
+      );
 }
 
 /// 搜索状态控制器。
@@ -62,6 +69,38 @@ class SearchNotifier extends Notifier<SearchState> {
 
   @override
   SearchState build() => const SearchState();
+
+  /// 切换搜索源：清空旧源结果/联想，避免把 A 源的结果顶着 B 源的标展示；
+  /// 若输入框有词，立即在新源重查。
+  Future<void> selectSource(String source) async {
+    if (source.isEmpty || source == state.source) return;
+    state = state.copyWith(
+      source: source,
+      suggestions: const <String>[],
+      results: const <Drama>[],
+      searching: false,
+      submitted: false,
+    );
+    if (state.query.trim().isNotEmpty) {
+      await submit(state.query);
+    }
+  }
+
+  /// 指定源是否声明了某能力；源表未加载时按“未知即允许”（只在显式 false
+  /// 时隐藏入口，与后端「未声明返回错误」的纪律互补）。
+  bool _capEnabled(String cap) {
+    final sources = ref.read(availableSourcesProvider).value;
+    if (sources == null) return true;
+    for (final s in sources) {
+      if (s.id != state.source) continue;
+      return switch (cap) {
+        'suggest' => s.caps.suggest,
+        'search' => s.caps.search,
+        _ => true,
+      };
+    }
+    return true;
+  }
 
   /// 输入变化（由视图在 300ms 防抖后调用）：拉取联想，不算提交。
   ///
@@ -79,16 +118,22 @@ class SearchNotifier extends Notifier<SearchState> {
       state = state.copyWith(searching: false);
       return;
     }
+    // 无联想能力的源直接跳过（省一次必错的往返）。
+    if (!_capEnabled('suggest')) {
+      state = state.copyWith(searching: false);
+      return;
+    }
+    final source = state.source;
     try {
       final suggestions = await ref
-          .read(catalogRepositoryProvider)
+          .read(catalogRepositoryForSourceProvider(source))
           .suggest(keyword);
-      // stale 抑制：等待期间用户已改字 → 丢弃这条迟到响应。
-      if (state.query.trim() != keyword) return;
+      // stale 抑制：等待期间用户已改字或切源 → 丢弃这条迟到响应。
+      if (state.query.trim() != keyword || state.source != source) return;
       state = state.copyWith(suggestions: suggestions, searching: false);
     } catch (_) {
       // 联想失败静默降级（不打断输入）。
-      if (state.query.trim() != keyword) return;
+      if (state.query.trim() != keyword || state.source != source) return;
       state = state.copyWith(searching: false);
     }
   }
@@ -97,6 +142,7 @@ class SearchNotifier extends Notifier<SearchState> {
   Future<void> submit(String q) async {
     final keyword = q.trim();
     if (keyword.isEmpty) return;
+    final source = state.source;
     state = state.copyWith(
       query: keyword,
       suggestions: const <String>[],
@@ -106,9 +152,12 @@ class SearchNotifier extends Notifier<SearchState> {
       recentSearches: _pushRecent(state.recentSearches, keyword),
     );
     try {
-      final results = await ref.read(catalogRepositoryProvider).search(keyword);
+      final results = await ref
+          .read(catalogRepositoryForSourceProvider(source))
+          .search(keyword);
       // stale 抑制：已被更新的查询取代 → 丢弃迟到结果。
-      if (state.query.trim() != keyword) return;
+      // 同时核对源：等待期间切了源 → 旧源结果不得写入新源态。
+      if (state.query.trim() != keyword || state.source != source) return;
       state = state.copyWith(
         results: results,
         searching: false,
@@ -130,11 +179,28 @@ class SearchNotifier extends Notifier<SearchState> {
     state = SearchState(recentSearches: state.recentSearches);
   }
 
+  /// 清空最近搜索记录（引导页的「清除」动作）。
+  ///
+  /// 与 [clear] 分开：一个是「清掉这次的输入」，一个是「忘掉搜索历史」，
+  /// 后者是用户的隐私意图，不该混进前者顺手做掉。
+  void clearRecent() {
+    state = state.copyWith(recentSearches: const <String>[]);
+  }
+
+  /// 覆盖整表（管理态单删的入口）。
+  ///
+  /// 词表上限 [maxRecent] 条且纯内存，重建整表比给 notifier 加单删状态便宜。
+  void setRecent(List<String> recent) {
+    state = state.copyWith(
+      recentSearches: recent.take(maxRecent).toList(growable: false),
+    );
+  }
+
   /// 将 [keyword] 置顶且去重，超过上限时截断。
   List<String> _pushRecent(List<String> current, String keyword) => <String>[
-    keyword,
-    ...current.where((item) => item != keyword),
-  ].take(maxRecent).toList(growable: false);
+        keyword,
+        ...current.where((item) => item != keyword),
+      ].take(maxRecent).toList(growable: false);
 }
 
 /// 最近搜索词（派生自 [searchProvider] 状态，供视图单独监听）。

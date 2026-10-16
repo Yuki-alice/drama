@@ -86,6 +86,43 @@ void main() {
       expect(session.isEmpty, isFalse);
       expect(sessionPattern.hasMatch(session), isTrue, reason: session);
     });
+
+    test('缺省源归主源（与显式 hongguo 同流）', () {
+      final omitted = logicalStreamFor('catalog', <String, Object?>{
+        'category': 'real-drama',
+      });
+      final explicit = logicalStreamFor(
+        'catalog',
+        <String, Object?>{'category': 'real-drama'},
+        'hongguo',
+      );
+      expect(omitted, explicit);
+      expect(omitted.startsWith('hongguo:'), isTrue, reason: omitted);
+    });
+  });
+
+  group('session 按源隔离', () {
+    test('同操作同参数不同源 = 不同 session（切源不互斥）', () {
+      final params = <String, Object?>{
+        'category': 'real-drama',
+        'page': 0,
+      };
+      final a = logicalStreamFor('catalog', params, 'hongguo');
+      final b = logicalStreamFor('catalog', params, 'other');
+      expect(a, isNot(b));
+      expect(sessionPattern.hasMatch(a), isTrue, reason: a);
+      expect(sessionPattern.hasMatch(b), isTrue, reason: b);
+    });
+
+    test('源名非法字符被清洗且长度受控', () {
+      final session = logicalStreamFor(
+        'search',
+        <String, Object?>{'keyword': '总裁'},
+        '某源/evil?.',
+      );
+      expect(sessionPattern.hasMatch(session), isTrue, reason: session);
+      expect(session.length <= 128, isTrue, reason: 'len=${session.length}');
+    });
   });
 
   group('RustCoreException.isSuperseded', () {

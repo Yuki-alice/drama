@@ -189,12 +189,28 @@ fn param_str(params: &Value, key: &str) -> Option<String> {
     params.get(key).and_then(Value::as_str).map(str::to_owned)
 }
 
-/// 取参数中的无符号整数（缺失 → `default`）。
+/// 取参数中的无符号整数（缺失 → `default`；超 `u32` 上限饱和到 `u32::MAX`，
+/// 禁止 `as` 截断回绕——回绕会把巨大 `depth` 静默变成 0（跟随水位），语义完全走样）。
 fn param_u32(params: &Value, key: &str, default: u32) -> u32 {
     params
         .get(key)
         .and_then(Value::as_u64)
-        .map_or(default, |n| n as u32)
+        .map_or(default, |n| u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// 缓存 key 用的源 id：缺省/空白一律归默认源。
+///
+/// fetch 路径仍透传原始 `Option`（空串源保持 `NotFound` 语义），只有 key 做
+/// 归一化——错误结果不落盘，不会串库。
+fn effective_source(source: Option<&str>) -> &str {
+    source
+        .filter(|s| !s.is_empty())
+        .unwrap_or(source::DEFAULT_SOURCE_ID)
+}
+
+/// 读类过滤用的源：空/缺省表示不过滤（全源），保持单源时代行为。
+fn source_filter(source: Option<&str>) -> Option<&str> {
+    source.filter(|s| !s.is_empty())
 }
 
 /// 取源实现并执行 `f`，返回**原始** [`Result`]。
@@ -374,10 +390,14 @@ fn dispatch(input: &str) -> Value {
         // Dart 侧不再持有任何缓存逻辑：命中直接返回，失败回退旧值并在 `data`
         // 里带上 `stale=true`（UI 据此提示"当前是缓存数据"）。
         "catalog" => {
+            // 页号 0 起（与 Dart 侧、`catalogPages` 的 `0..depth` 同一起点）：
+            // 单页 `page=P` 与聚合里第 P 页共用同一缓存 key，水位 `page+1`
+            // 即“已取页数”，与 `catalogPages` 写的 `depth` 同一含义。
             let category = param_str(&req.params, "category");
-            let page = param_u32(&req.params, "page", 1);
-            let key = cache::key_catalog(category.as_deref().unwrap_or(""), page);
-            let depth_key = cache::key_catalog_depth(category.as_deref().unwrap_or(""));
+            let page = param_u32(&req.params, "page", 0);
+            let src = effective_source(req.source.as_deref());
+            let key = cache::key_catalog(src, category.as_deref().unwrap_or(""), page);
+            let depth_key = cache::key_catalog_depth(src, category.as_deref().unwrap_or(""));
             arbitrated_read(req.session.as_deref(), req.sequence, "catalog", || {
                 let source = req.source.as_deref();
                 let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
@@ -393,7 +413,8 @@ fn dispatch(input: &str) -> Value {
 
         "recommend" => arbitrated_read(req.session.as_deref(), req.sequence, "recommend", || {
             let source = req.source.as_deref();
-            let result = cache::cached(cache::KEY_RECOMMEND, cache::TTL_CATALOG_MS, None, || {
+            let key = cache::key_recommend(effective_source(source));
+            let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
                 with_provider_result(source, |p| p.recommend())
             });
             cached_to_value(result)
@@ -402,12 +423,14 @@ fn dispatch(input: &str) -> Value {
         "ranking" => {
             let board_opt = param_str(&req.params, "board");
             let board_key = board_opt.clone().unwrap_or_else(|| "hot".to_owned());
-            let key = cache::key_ranking(&board_key);
+            let src = effective_source(req.source.as_deref());
+            let key = cache::key_ranking(src, &board_key);
+            // 榜单按（源，板）独立熔断：一个坏榜不拖垮其他榜和其他源。
+            let breaker_key = format!("{src}:{board_key}");
             arbitrated_read(req.session.as_deref(), req.sequence, "ranking", || {
                 let source = req.source.as_deref();
                 let board = board_opt.clone();
-                // 榜单按板独立熔断：一个坏榜不拖垮其他榜。
-                let result = cache::cached(&key, cache::TTL_RANKING_MS, Some(&board_key), || {
+                let result = cache::cached(&key, cache::TTL_RANKING_MS, Some(&breaker_key), || {
                     with_provider_result(source, |p| p.ranking(board.as_deref()))
                 });
                 cached_to_value(result)
@@ -416,7 +439,7 @@ fn dispatch(input: &str) -> Value {
 
         "search" => match param_str(&req.params, "keyword") {
             Some(kw) if !kw.is_empty() => {
-                let key = cache::key_search(&kw);
+                let key = cache::key_search(effective_source(req.source.as_deref()), &kw);
                 arbitrated_read(req.session.as_deref(), req.sequence, "search", || {
                     let source = req.source.as_deref();
                     let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
@@ -430,7 +453,7 @@ fn dispatch(input: &str) -> Value {
 
         "suggest" => match param_str(&req.params, "keyword") {
             Some(kw) if !kw.is_empty() => {
-                let key = cache::key_suggest(&kw);
+                let key = cache::key_suggest(effective_source(req.source.as_deref()), &kw);
                 arbitrated_read(req.session.as_deref(), req.sequence, "suggest", || {
                     let source = req.source.as_deref();
                     let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
@@ -445,7 +468,7 @@ fn dispatch(input: &str) -> Value {
         // 详情：App 签名主链 + SSR 降级，返回同契约的 `{drama, episodes}`。
         "detail" => match param_str(&req.params, "id") {
             Some(id) if !id.is_empty() => {
-                let key = cache::key_detail(&id);
+                let key = cache::key_detail(effective_source(req.source.as_deref()), &id);
                 arbitrated_read(req.session.as_deref(), req.sequence, "detail", || {
                     let source = req.source.as_deref();
                     let result = cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
@@ -465,7 +488,7 @@ fn dispatch(input: &str) -> Value {
         "episodeGroups" => match param_str(&req.params, "id") {
             Some(id) if !id.is_empty() => {
                 let group_size = param_u32(&req.params, "groupSize", EPISODE_GROUP_SIZE);
-                let key = cache::key_detail(&id);
+                let key = cache::key_detail(effective_source(req.source.as_deref()), &id);
                 arbitrated_read(
                     req.session.as_deref(),
                     req.sequence,
@@ -506,7 +529,8 @@ fn dispatch(input: &str) -> Value {
         "catalogPages" => {
             let category = param_str(&req.params, "category");
             let category_key = category.clone().unwrap_or_default();
-            let depth_key = cache::key_catalog_depth(&category_key);
+            let src = effective_source(req.source.as_deref());
+            let depth_key = cache::key_catalog_depth(src, &category_key);
             // `depth` 省略 / 0 = 跟随**已记录的分页水位**（首页重启续载：
             // 上次看到第几页就取回几页，Dart 侧零循环、也无需先查水位）。
             let requested = param_u32(&req.params, "depth", 0);
@@ -523,7 +547,7 @@ fn dispatch(input: &str) -> Value {
                 let mut stale = false;
                 let mut age_secs = 0i64;
                 for page in 0..depth {
-                    let key = cache::key_catalog(&category_key, page);
+                    let key = cache::key_catalog(src, &category_key, page);
                     let category_now = category.clone();
                     match cache::cached(&key, cache::TTL_CATALOG_MS, None, || {
                         with_provider_result(source, |p| p.catalog(category_now.as_deref(), page))
@@ -640,30 +664,43 @@ fn dispatch(input: &str) -> Value {
         },
 
         // 追剧与进度（Rust 持久化，Dart 只渲染；无状态，不参与仲裁）。
-        "followPut" => store::follow_put(&req.params).map(ok).unwrap_or_else(|e| {
-            let (code, msg, retry) = store_error(e);
-            err_with(code, msg, retry)
-        }),
-        "followDel" => store::follow_del(&req.params).map(ok).unwrap_or_else(|e| {
-            let (code, msg, retry) = store_error(e);
-            err_with(code, msg, retry)
-        }),
-        "followList" => store::follow_list().map(ok).unwrap_or_else(|e| {
-            let (code, msg, retry) = store_error(e);
-            err_with(code, msg, retry)
-        }),
-        "historyPut" => store::history_put(&req.params).map(ok).unwrap_or_else(|e| {
-            let (code, msg, retry) = store_error(e);
-            err_with(code, msg, retry)
-        }),
-        "historyGet" => store::history_get(&req.params).map(ok).unwrap_or_else(|e| {
-            let (code, msg, retry) = store_error(e);
-            err_with(code, msg, retry)
-        }),
-        "historyClear" => store::history_clear().map(ok).unwrap_or_else(|e| {
-            let (code, msg, retry) = store_error(e);
-            err_with(code, msg, retry)
-        }),
+        // 写操作按有效源落键，读操作缺省查全源——单源行为与过去完全一致。
+        "followPut" => store::follow_put(effective_source(req.source.as_deref()), &req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
+        "followDel" => store::follow_del(effective_source(req.source.as_deref()), &req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
+        "followList" => store::follow_list(source_filter(req.source.as_deref()))
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
+        "historyPut" => store::history_put(effective_source(req.source.as_deref()), &req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
+        "historyGet" => store::history_get(source_filter(req.source.as_deref()), &req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
+        "historyClear" => store::history_clear(source_filter(req.source.as_deref()))
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
         // 迁移下载目录：`{dir}` → `{dir, moved, bytes}`。
         // 走 `arbitrated_read`：它既有 600s 内层预算（慢磁盘搬迁需要），
         // 也能被 `cancelRead` 打断；先停机再搬，失败时旧目录原样保留。
@@ -691,23 +728,27 @@ fn dispatch(input: &str) -> Value {
                 err_with(code, msg, retry)
             }),
         // 离线优先取流：`{id, episode}` → 与 `play` 同构的计划；无完成文件 → NOT_FOUND。
-        "playLocal" => {
-            match param_str(&req.params, "id") {
-                Some(id) if !id.is_empty() => download::play_local(&req.params)
+        // 按有效源查表（同剧集在不同源的离线文件互不干扰）。
+        "playLocal" => match param_str(&req.params, "id") {
+            Some(id) if !id.is_empty() => {
+                download::play_local(effective_source(req.source.as_deref()), &req.params)
                     .map(ok)
                     .unwrap_or_else(|e| {
                         let (code, msg, retry) = store_error(e);
                         err_with(code, msg, retry)
-                    }),
-                _ => err("BAD_REQUEST", "missing id"),
+                    })
             }
-        }
+            _ => err("BAD_REQUEST", "missing id"),
+        },
 
         // 下载管理（长任务跑独立运行时；Dart 轮询 `downloadList` 取进度）。
-        "downloadStart" => download::start(&req.params).map(ok).unwrap_or_else(|e| {
-            let (code, msg, retry) = store_error(e);
-            err_with(code, msg, retry)
-        }),
+        // 新建/取流按有效源归属； pause/retry/cancel/delete/file 凭不透明任务 id 操作。
+        "downloadStart" => download::start(effective_source(req.source.as_deref()), &req.params)
+            .map(ok)
+            .unwrap_or_else(|e| {
+                let (code, msg, retry) = store_error(e);
+                err_with(code, msg, retry)
+            }),
         "downloadList" => download::list().map(ok).unwrap_or_else(|e| {
             let (code, msg, retry) = store_error(e);
             err_with(code, msg, retry)
@@ -737,22 +778,31 @@ fn dispatch(input: &str) -> Value {
             }),
 
         // 搜索历史（Rust 持久化；Dart 侧不再用内存列表，重启后不丢）。
-        "searchHistoryPut" => store::search_history_put(&req.params)
-            .map(ok)
-            .unwrap_or_else(|e| {
-                let (code, msg, retry) = store_error(e);
-                err_with(code, msg, retry)
-            }),
+        //
+        // 空白关键词在信封层即判 `BAD_REQUEST`（与 search/suggest 缺参同码）；
+        // store 内的 `Parse` 作为直调兜底保留。
+        "searchHistoryPut" => match param_str(&req.params, "keyword") {
+            Some(kw) if !kw.trim().is_empty() => store::search_history_put(&req.params)
+                .map(ok)
+                .unwrap_or_else(|e| {
+                    let (code, msg, retry) = store_error(e);
+                    err_with(code, msg, retry)
+                }),
+            _ => err("BAD_REQUEST", "missing keyword"),
+        },
         "searchHistoryList" => store::search_history_list().map(ok).unwrap_or_else(|e| {
             let (code, msg, retry) = store_error(e);
             err_with(code, msg, retry)
         }),
-        "searchHistoryDel" => store::search_history_del(&req.params)
-            .map(ok)
-            .unwrap_or_else(|e| {
-                let (code, msg, retry) = store_error(e);
-                err_with(code, msg, retry)
-            }),
+        "searchHistoryDel" => match param_str(&req.params, "keyword") {
+            Some(kw) if !kw.trim().is_empty() => store::search_history_del(&req.params)
+                .map(ok)
+                .unwrap_or_else(|e| {
+                    let (code, msg, retry) = store_error(e);
+                    err_with(code, msg, retry)
+                }),
+            _ => err("BAD_REQUEST", "missing keyword"),
+        },
         "searchHistoryClear" => store::search_history_clear().map(ok).unwrap_or_else(|e| {
             let (code, msg, retry) = store_error(e);
             err_with(code, msg, retry)
@@ -854,6 +904,19 @@ mod tests {
         assert_eq!(out["error"]["code"], json!("TOO_LARGE"));
     }
 
+    #[test]
+    fn param_u32_saturates_instead_of_wrapping() {
+        assert_eq!(param_u32(&json!({}), "page", 7), 7);
+        assert_eq!(param_u32(&json!({"page": 3}), "page", 7), 3);
+        // 超 u32 上限饱和，不回绕成小值。
+        assert_eq!(
+            param_u32(&json!({"page": 18446744073709551615u64}), "page", 7),
+            u32::MAX
+        );
+        // 负数/非数字按缺失处理。
+        assert_eq!(param_u32(&json!({"page": -1}), "page", 7), 7);
+    }
+
     /// 契约守卫：`CONTRACT_OPS` 必须与 `dispatch` 实际处理的 op **完全一致**。
     ///
     /// 做法：对表里每个 op 发一次最小信封，断言**不是** `UNSUPPORTED`
@@ -861,6 +924,8 @@ mod tests {
     /// 这样「加了 op 忘了进表」与「删了 op 没清表」都会被抓到。
     #[test]
     fn contract_table_matches_dispatch() {
+        // 串行执行，避免占用缓存 key / 在途槽污染并发测试。
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
         // 1) 表内无重复
         let mut names: Vec<&str> = CONTRACT_OPS.iter().map(|(n, _)| *n).collect();
         let total = names.len();
@@ -868,9 +933,17 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), total, "CONTRACT_OPS 有重复 op");
 
-        // 2) 每个 op 都被 dispatch 认得（不返回 UNSUPPORTED）
+        // 2) 每个 op 都被 dispatch 认得（不返回 UNSUPPORTED）。
+        //
+        // 会触网的读 op 用不存在的源：本用例只关心“认得”，`NOT_FOUND` 同样证明
+        // 接线正常，且失败是瞬时的（不占网络、不写缓存、不污染其他测试）。
+        const OFFLINE_SOURCE: &str = r#","source":"nope""#;
         for (op, _) in CONTRACT_OPS {
-            let out = dispatch(&format!(r#"{{"v":1,"op":"{op}"}}"#));
+            let extra = match *op {
+                "catalog" | "recommend" | "ranking" | "catalogPages" => OFFLINE_SOURCE,
+                _ => "",
+            };
+            let out = dispatch(&format!(r#"{{"v":1,"op":"{op}"{extra}}}"#));
             let code = out["error"]["code"].as_str().unwrap_or("");
             assert_ne!(
                 code, "UNSUPPORTED",
@@ -900,6 +973,10 @@ mod tests {
     /// 否则测不到仲裁这一层——表里第三列即为此而设。
     #[test]
     fn contract_arbitration_flags_match_implementation() {
+        // 本用例 dispatch 全表：非仲裁 op 会真跑（含 cacheClear /
+        // searchHistoryClear / historyClear / downloadList），必须串行，
+        // 否则与 SERIAL 测试互删全局状态。
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
         /// 让 op 能通过「参数校验」这一关的最小参数。
         fn minimal_params(op: &str) -> &'static str {
             match op {
@@ -1026,9 +1103,11 @@ mod tests {
             0
         );
 
-        // 空词 → BAD_REQUEST（不该把空白塞进历史列表）。
+        // 空词 → BAD_REQUEST（不该把空白塞进历史列表；与 search/suggest 缺参同码）。
         let empty = dispatch(r#"{"v":1,"op":"searchHistoryPut","params":{"keyword":"  "}}"#);
-        assert_eq!(empty["error"]["code"], json!("PARSE"));
+        assert_eq!(empty["error"]["code"], json!("BAD_REQUEST"));
+        let empty_del = dispatch(r#"{"v":1,"op":"searchHistoryDel","params":{"keyword":""}}"#);
+        assert_eq!(empty_del["error"]["code"], json!("BAD_REQUEST"));
     }
 
     #[test]
@@ -1126,7 +1205,7 @@ mod tests {
             .map(|i| json!({ "index": i, "vid": format!("v{i}"), "title": format!("第{i}集") }))
             .collect();
         crate::cache::seed_for_test(
-            &cache::key_detail("900001"),
+            &cache::key_detail("hongguo", "900001"),
             json!({ "drama": { "id": "900001", "title": "长剧" }, "episodes": episodes }),
         );
 
@@ -1186,6 +1265,75 @@ mod tests {
         assert_eq!(out["ok"], json!(true));
         assert_eq!(out["data"]["initialized"], json!(true));
         let _ = std::fs::remove_dir_all(&dir);
+        // 不留悬空 DATA_DIR：否则后续测试的落盘会重建该目录并产生文件 cross-talk。
+        crate::device::clear_data_dir();
+    }
+
+    #[test]
+    fn catalog_and_catalog_pages_share_page_zero_key() {
+        // 单页 `page=0` 与聚合 `depth=1` 必须命中同一缓存条目（0 起页号统一）。
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        // 专属数据目录：文件后端（延迟载入/防抖落盘）与其他测试完全隔离。
+        let dir = std::env::temp_dir().join(format!("drama-zerokey-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        crate::device::set_data_dir(dir.clone());
+        crate::cache::clear_for_test();
+        let seed_key = crate::cache::key_catalog("hongguo", "unified", 0);
+        crate::cache::seed_for_test(
+            &seed_key,
+            json!({ "items": [{"id": "u1"}], "hasMore": true, "page": 0 }),
+        );
+        let single = dispatch(r#"{"v":1,"op":"catalog","params":{"category":"unified","page":0}}"#);
+        assert_eq!(single["ok"], json!(true));
+        // 必须命中种子（而非误抓网络）：否则下面的等价断言失去意义。
+        assert_eq!(
+            single["data"]["items"],
+            json!([{"id": "u1"}]),
+            "single catalog must hit the seeded entry"
+        );
+        // 聚合 dispatch 前种子必须还在：若不在，说明并行测试干扰了全局缓存，
+        // 先修隔离再谈等价（与被测的 key 口径无关）。
+        assert!(
+            crate::cache::contains_for_test(&seed_key),
+            "seed entry vanished before catalogPages (suite interference)"
+        );
+        let multi =
+            dispatch(r#"{"v":1,"op":"catalogPages","params":{"category":"unified","depth":1}}"#);
+        assert_eq!(multi["ok"], json!(true));
+        assert_eq!(multi["data"]["pages"][0]["items"], single["data"]["items"]);
+        crate::cache::clear_for_test();
+        crate::device::clear_data_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn data_dir_switch_resets_store_and_cache() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        let dir_a = std::env::temp_dir().join(format!("drama-switch-a-{}", std::process::id()));
+        let dir_b = std::env::temp_dir().join(format!("drama-switch-b-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir_a);
+        let _ = std::fs::create_dir_all(&dir_b);
+        crate::device::set_data_dir(dir_a.clone());
+        crate::store::follow_put("hongguo", &json!({"id": "s1", "title": "T"})).unwrap();
+        let _ = crate::cache::cached("switch-probe", crate::cache::TTL_CATALOG_MS, None, || {
+            Ok(json!({"v": 1}))
+        })
+        .unwrap();
+        // 切目录：旧内存表不得继续服务。
+        crate::device::set_data_dir(dir_b.clone());
+        let list = crate::store::follow_list(None).unwrap();
+        assert_eq!(list["items"].as_array().unwrap().len(), 0);
+        let miss = crate::cache::cached("switch-probe", crate::cache::TTL_CATALOG_MS, None, || {
+            Err(SourceError::NotFound)
+        });
+        assert!(miss.is_err());
+        // A 目录落盘仍在，切回去可读回。
+        crate::device::set_data_dir(dir_a.clone());
+        let list = crate::store::follow_list(None).unwrap();
+        assert_eq!(list["items"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        crate::device::clear_data_dir();
     }
 
     #[test]
@@ -1231,7 +1379,12 @@ mod tests {
 
     #[test]
     fn unknown_source_is_not_found() {
-        let out = dispatch(r#"{"v":1,"op":"catalog","source":"nope"}"#);
+        // 用专属分类+页号隔离缓存 key：裸 `catalog` 信封的 key（`catalog::1`）
+        // 会被并发测试（如 contract_table 的真实源抓取）占住在途槽，
+        // 撞槽的请求拿不到 NOT_FOUND 会变 TIMEOUT。
+        let out = dispatch(
+            r#"{"v":1,"op":"catalog","source":"nope","params":{"category":"no-such-source-probe","page":7}}"#,
+        );
         assert_eq!(out["error"]["code"], json!("NOT_FOUND"));
     }
 

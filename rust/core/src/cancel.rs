@@ -17,6 +17,13 @@ use tokio_util::sync::CancellationToken;
 /// `session` 最大长度（`[0-9a-zA-Z-_:.]`，≥1 且 ≤128）。
 const MAX_SESSION_LEN: usize = 128;
 
+/// 单 session 在途上限：超出时取消并驱逐最旧者（它必已被更新的请求取代）。
+const MAX_ACTIVE_PER_SESSION: usize = 16;
+
+/// 注册表 session 条目上限：超出时回收无在途的空壳条目
+///（正常收尾已删条目，此处只清 panic 跳过 `complete` 漏下的）。
+const MAX_SESSIONS: usize = 512;
+
 /// 仲裁阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -100,11 +107,25 @@ fn lock() -> std::sync::MutexGuard<'static, HashMap<String, SessionEntry>> {
 /// 返回 [`Decision::Canceled`] 时**不登记**、不更新 `latest`（旧请求直接作废）。
 pub fn begin(session: &str, sequence: u64, token: CancellationToken) -> Decision {
     let mut map = lock();
-    let entry = map.entry(session.to_owned()).or_default();
-    let decision = arbitrate(entry.latest, entry.cancel_before, sequence, Phase::Enter);
-    if decision == Decision::Continue {
-        entry.latest = Some(sequence);
-        entry.active.insert(sequence, token);
+    let decision = {
+        let entry = map.entry(session.to_owned()).or_default();
+        let d = arbitrate(entry.latest, entry.cancel_before, sequence, Phase::Enter);
+        if d == Decision::Continue {
+            entry.latest = Some(sequence);
+            entry.active.insert(sequence, token);
+            // 有界：在途超限说明最旧者早该被取代，取消并驱逐（其收尾仍经仲裁判 Canceled）。
+            while entry.active.len() > MAX_ACTIVE_PER_SESSION {
+                if let Some((_, oldest)) = entry.active.pop_first() {
+                    oldest.cancel();
+                } else {
+                    break;
+                }
+            }
+        }
+        d
+    };
+    if map.len() > MAX_SESSIONS {
+        map.retain(|_, e| !e.active.is_empty());
     }
     decision
 }
@@ -237,5 +258,23 @@ mod tests {
         // 后到的 6 覆盖 latest；5 收尾应被判为 Canceled。
         assert_eq!(complete(s, 5), Decision::Canceled);
         assert_eq!(complete(s, 6), Decision::Continue);
+    }
+
+    #[test]
+    fn active_table_is_bounded_and_evicts_oldest() {
+        let s = "unit-bounded-active";
+        let first = CancellationToken::new();
+        assert_eq!(begin(s, 1, first.clone()), Decision::Continue);
+        for seq in 2..=(MAX_ACTIVE_PER_SESSION as u64 + 5) {
+            assert_eq!(begin(s, seq, CancellationToken::new()), Decision::Continue);
+        }
+        // 最旧者被驱逐并取消，但其收尾仍判 Canceled（已被取代）。
+        assert!(first.is_cancelled());
+        assert_eq!(complete(s, 1), Decision::Canceled);
+        // 收尾全部后条目回收。
+        for seq in 2..=(MAX_ACTIVE_PER_SESSION as u64 + 5) {
+            let _ = complete(s, seq);
+        }
+        assert!(!lock().contains_key(s));
     }
 }

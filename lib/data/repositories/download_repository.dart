@@ -23,6 +23,7 @@ class DownloadRecord {
     required this.state,
     required this.error,
     this.speed = 0,
+    this.source = 'hongguo',
   });
 
   final String id;
@@ -42,6 +43,9 @@ class DownloadRecord {
   /// 只有 `downloading` 的任务非 0；Dart 不做任何速度换算，避免两边算法漂移。
   final int speed;
 
+  /// 所属源（Rust 任务 id 首段同一口径；暂停/重试等凭不透明 id 操作）。
+  final String source;
+
   double get progress =>
       total > 0 ? (done / total).clamp(0.0, 1.0).toDouble() : 0.0;
 
@@ -49,6 +53,7 @@ class DownloadRecord {
 
   factory DownloadRecord.fromJson(Map<String, Object?> json) => DownloadRecord(
         id: json['id'] as String? ?? '',
+        source: json['source'] as String? ?? 'hongguo',
         seriesId: json['seriesId'] as String? ?? '',
         title: json['title'] as String? ?? '',
         cover: json['cover'] as String? ?? '',
@@ -119,8 +124,11 @@ class DownloadRepository {
   final CoreCaller _core;
 
   Future<Map<String, Object?>> _call(
-      String op, Map<String, Object?> params) async {
-    final envelope = await _core.call(op, params: params);
+    String op,
+    Map<String, Object?> params, {
+    String? source,
+  }) async {
+    final envelope = await _core.call(op, source: source, params: params);
     if (envelope['ok'] == true) {
       final data = envelope['data'];
       if (data is Map) return Map<String, Object?>.from(data);
@@ -136,15 +144,20 @@ class DownloadRepository {
     String title = '',
     String cover = '',
     int quality = 0,
+    String source = 'hongguo',
   }) async {
-    final data = await _call('downloadStart', <String, Object?>{
-      'seriesId': seriesId,
-      'episode': episode,
-      if (vid.isNotEmpty) 'vid': vid,
-      if (title.isNotEmpty) 'title': title,
-      if (cover.isNotEmpty) 'cover': cover,
-      if (quality > 0) 'quality': quality,
-    });
+    final data = await _call(
+      'downloadStart',
+      <String, Object?>{
+        'seriesId': seriesId,
+        'episode': episode,
+        if (vid.isNotEmpty) 'vid': vid,
+        if (title.isNotEmpty) 'title': title,
+        if (cover.isNotEmpty) 'cover': cover,
+        if (quality > 0) 'quality': quality,
+      },
+      source: source,
+    );
     return DownloadRecord.fromJson(data);
   }
 
@@ -214,11 +227,16 @@ class DownloadRepository {
   Future<PlaybackPlan> localPlan({
     required String seriesId,
     required int episode,
+    String source = 'hongguo',
   }) async {
-    final data = await _call('playLocal', <String, Object?>{
-      'id': seriesId,
-      'episode': episode,
-    });
+    final data = await _call(
+      'playLocal',
+      <String, Object?>{
+        'id': seriesId,
+        'episode': episode,
+      },
+      source: source,
+    );
     final plan = PlaybackPlan.fromJson(data);
     if (plan.proxyUrl.isEmpty) {
       throw const RustCoreException('PARSE', 'playLocal 缺少 proxyUrl', false);
@@ -232,6 +250,17 @@ DownloadRepository _repository(Ref ref) {
   if (holder == null) throw StateError('Rust 核心不可用');
   return DownloadRepository(SeriesCoreShim(holder.core));
 }
+
+/// 下载仓库 provider（**视图不得自己 new 仓库**——见
+/// `playback_repository.dart` 里 `playbackRepositoryProvider` 的说明）。
+///
+/// 核心不可用时抛 [StateError]：下载没有「假实现」这一档，
+/// 静默造一条假任务比报错更糟。
+final downloadRepositoryProvider = Provider<DownloadRepository>((ref) {
+  final holder = ref.watch(rustCoreProvider);
+  if (holder == null) throw StateError('Rust 核心不可用');
+  return DownloadRepository(SeriesCoreShim(holder.core));
+});
 
 /// 下载设置（并发数 / 每任务连接数 / 下载目录）。
 ///

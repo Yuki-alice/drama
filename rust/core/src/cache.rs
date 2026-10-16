@@ -1,7 +1,9 @@
 //! 目录缓存引擎（持久化面）。
 //!
-//! 单文件 JSON（`{dataDir}/catalog_cache.json`，上限 4 MiB），
+//! 单文件 JSON（`{dataDir}/catalog_cache_v2.json`，上限 4 MiB），
 //! 内存快照 + 原子落盘（写 `.tmp` 再 `rename`）。
+//!
+//! v2 起全部缓存 key 带源前缀（`{source}:...`），旧版无源 key 文件不再读取。
 //!
 //! 语义（Dart 侧不再持有任何缓存策略，只渲染）：
 //! - 新鲜命中（TTL 内）→ 直接返回，不打网络；
@@ -50,31 +52,35 @@ const BREAKER_COOLDOWN_MS: i64 = 60 * 1000;
 const COVER_CANON_PREFIX: &str = "drama-img:";
 
 // ── key 约定（与诊断脚本口径一致，勿随意改） ─────────────────────────────
-
-pub fn key_catalog(category: &str, page: u32) -> String {
-    format!("catalog:{category}:{page}")
+//
+// 首段一律是源 id（`{source}:...`）：多源同分类/同榜单/同关键词/同剧集 id
+// 必须落到不同条目，否则 A 源数据会被 B 源命中（S0 多源命名空间）。
+pub fn key_catalog(source: &str, category: &str, page: u32) -> String {
+    format!("{source}:catalog:{category}:{page}")
 }
 
-pub fn key_catalog_depth(category: &str) -> String {
-    format!("catalog:{category}:depth")
+pub fn key_catalog_depth(source: &str, category: &str) -> String {
+    format!("{source}:catalog:{category}:depth")
 }
 
-pub const KEY_RECOMMEND: &str = "recommend";
-
-pub fn key_ranking(board: &str) -> String {
-    format!("ranking:{board}:last")
+pub fn key_recommend(source: &str) -> String {
+    format!("{source}:recommend")
 }
 
-pub fn key_detail(series_id: &str) -> String {
-    format!("detail:{series_id}")
+pub fn key_ranking(source: &str, board: &str) -> String {
+    format!("{source}:ranking:{board}:last")
 }
 
-pub fn key_search(keyword: &str) -> String {
-    format!("search:{keyword}")
+pub fn key_detail(source: &str, series_id: &str) -> String {
+    format!("{source}:detail:{series_id}")
 }
 
-pub fn key_suggest(keyword: &str) -> String {
-    format!("suggest:{keyword}")
+pub fn key_search(source: &str, keyword: &str) -> String {
+    format!("{source}:search:{keyword}")
+}
+
+pub fn key_suggest(source: &str, keyword: &str) -> String {
+    format!("{source}:suggest:{keyword}")
 }
 
 // ── 缓存条目与状态 ───────────────────────────────────────────────────────
@@ -121,11 +127,26 @@ fn now_ms() -> i64 {
 }
 
 fn path() -> Option<std::path::PathBuf> {
+    // v2：S0 起 key 全部带源前缀，旧文件（无源 key）不再读取，尽力删除。
+    crate::device::data_dir().map(|d| d.join("catalog_cache_v2.json"))
+}
+
+fn legacy_path() -> Option<std::path::PathBuf> {
     crate::device::data_dir().map(|d| d.join("catalog_cache.json"))
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Cache> {
     CACHE.lock().expect("cache poisoned")
+}
+
+/// 数据目录切换时复位：清空内存表并取消已加载标记，下次读写从新目录延迟载入。
+/// 熔断器与在途槽位与目录无关，保留。由 `device::set_data_dir` / `clear_data_dir` 调用。
+pub(crate) fn reset_for_data_dir() {
+    let mut cache = lock();
+    cache.entries.clear();
+    cache.dirty = false;
+    cache.last_flush_ms = 0;
+    cache.loaded = false;
 }
 
 /// 延迟载入：首次读/写时从文件载入（损坏即用空表——缓存是加速手段，不是真相源）。
@@ -135,6 +156,9 @@ fn ensure_loaded() {
         return;
     }
     cache.loaded = true;
+    if let Some(legacy) = legacy_path() {
+        let _ = std::fs::remove_file(&legacy);
+    }
     let Some(path) = path() else { return };
     let Ok(raw) = std::fs::read(&path) else {
         return;
@@ -634,6 +658,14 @@ pub(crate) fn seed_for_test(key: &str, value: Value) {
     write(key, value);
 }
 
+/// 测试专用：条目是否存在（新鲜度不限）。供播种类测试断言前置条件，
+/// 把“种子被并行干扰抹掉”与“被测逻辑错误”区分开。
+#[cfg(test)]
+pub(crate) fn contains_for_test(key: &str) -> bool {
+    ensure_loaded();
+    lock().entries.contains_key(key)
+}
+
 /// 测量/集成测试专用：清空缓存、熔断与在途去重状态。
 #[cfg(test)]
 pub(crate) fn clear_for_test() {
@@ -661,6 +693,20 @@ mod tests {
         drop(cache);
         BREAKERS.lock().unwrap().clear();
         INFLIGHT.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn keys_are_namespaced_by_source() {
+        // 同分类/同榜/同关键词/同剧集 id 在不同源必须落不同 key，否则串库。
+        assert_ne!(key_catalog("a", "c", 0), key_catalog("b", "c", 0));
+        assert_ne!(key_catalog_depth("a", "c"), key_catalog_depth("b", "c"));
+        assert_ne!(key_recommend("a"), key_recommend("b"));
+        assert_ne!(key_ranking("a", "hot"), key_ranking("b", "hot"));
+        assert_ne!(key_detail("a", "1"), key_detail("b", "1"));
+        assert_ne!(key_search("a", "k"), key_search("b", "k"));
+        assert_ne!(key_suggest("a", "k"), key_suggest("b", "k"));
+        // 同源同参稳定（重启后续载/去重依赖）。
+        assert_eq!(key_catalog("a", "c", 0), key_catalog("a", "c", 0));
     }
 
     #[test]
@@ -792,12 +838,21 @@ mod tests {
     fn depth_only_grows() {
         let _guard = crate::test_serial::SERIAL.lock().unwrap();
         reset();
-        write_depth(key_catalog_depth("real-drama").as_str(), 3);
-        assert_eq!(read_depth(&key_catalog_depth("real-drama")), Some(3));
-        write_depth(key_catalog_depth("real-drama").as_str(), 2);
-        assert_eq!(read_depth(&key_catalog_depth("real-drama")), Some(3));
-        write_depth(key_catalog_depth("real-drama").as_str(), 5);
-        assert_eq!(read_depth(&key_catalog_depth("real-drama")), Some(5));
+        write_depth(key_catalog_depth("hongguo", "real-drama").as_str(), 3);
+        assert_eq!(
+            read_depth(&key_catalog_depth("hongguo", "real-drama")),
+            Some(3)
+        );
+        write_depth(key_catalog_depth("hongguo", "real-drama").as_str(), 2);
+        assert_eq!(
+            read_depth(&key_catalog_depth("hongguo", "real-drama")),
+            Some(3)
+        );
+        write_depth(key_catalog_depth("hongguo", "real-drama").as_str(), 5);
+        assert_eq!(
+            read_depth(&key_catalog_depth("hongguo", "real-drama")),
+            Some(5)
+        );
         reset();
     }
 
@@ -885,14 +940,17 @@ mod tests {
 
         const PAGES: u32 = 20;
         for page in 0..PAGES {
-            write(&key_catalog("real-drama", page), sample_page(page));
+            write(
+                &key_catalog("hongguo", "real-drama", page),
+                sample_page(page),
+            );
         }
 
         // 1) 缓存命中（含封面端口展开 + JSON 序列化出参）——真实首页路径。
         const RUNS: usize = 2000;
         let mut samples = Vec::with_capacity(RUNS);
         for i in 0..RUNS {
-            let key = key_catalog("real-drama", (i as u32) % PAGES);
+            let key = key_catalog("hongguo", "real-drama", (i as u32) % PAGES);
             let start = Instant::now();
             let hit = cached(&key, TTL_CATALOG_MS, None, || {
                 Err(SourceError::NotFound) // 命中时根本不会被调用
@@ -910,15 +968,18 @@ mod tests {
         );
 
         // 2) 出参体积：这就是每次 FFI 往返要序列化 + Dart 侧要解析的量。
-        let hit = cached(&key_catalog("real-drama", 0), TTL_CATALOG_MS, None, || {
-            Err(SourceError::NotFound)
-        })
+        let hit = cached(
+            &key_catalog("hongguo", "real-drama", 0),
+            TTL_CATALOG_MS,
+            None,
+            || Err(SourceError::NotFound),
+        )
         .unwrap();
         let json = serde_json::to_string(&hit.value).unwrap();
         println!("单页出参体积: {} 字节（20 条）", json.len());
 
         // 3) 落盘体积：封面已是规范形式（无端口），比存完整 URL 更短。
-        let stored = lock().entries[&key_catalog("real-drama", 0)]
+        let stored = lock().entries[&key_catalog("hongguo", "real-drama", 0)]
             .value_json
             .clone();
         println!("单页落盘体积: {} 字节（封面为规范形式）", stored.len());
@@ -940,7 +1001,10 @@ mod tests {
 
         const DEPTH: u32 = 5;
         for page in 0..DEPTH {
-            write(&key_catalog("real-drama", page), sample_page(page));
+            write(
+                &key_catalog("hongguo", "real-drama", page),
+                sample_page(page),
+            );
         }
 
         // A：旧路径等价——Dart 循环 depth 次 catalog（每次一次 FFI 往返）。

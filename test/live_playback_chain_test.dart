@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:drama_app/data/repositories/playback_repository.dart';
-import 'package:drama_app/data/repositories/hongguo_catalog_repository.dart';
+import 'package:drama_app/data/repositories/source_catalog_repository.dart';
 import 'package:drama_app/data/services/rust_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -13,7 +13,7 @@ void main() {
   test('LIVE: play → proxy serves real MP4 bytes', () async {
     final core = await RustCore.spawn();
     await core.call('init', params: {'dataDir': '/tmp/drama-chain-probe'});
-    final repo = HongguoCatalogRepository(core);
+    final repo = SourceCatalogRepository(core);
     final page = await repo.catalog(categoryId: 'real-drama', page: 0);
     final id = page.items.first.id;
 

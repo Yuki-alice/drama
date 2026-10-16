@@ -40,6 +40,10 @@ allow = [
     "CC0-1.0",
     "BSL-1.0",
     "OpenSSL",
+    # MPL-2.0（R1 黄果试点引入，经 scraper → selectors/cssparser/dtoa-short，
+    # 均为 Servo 系基础库）：文件级 copyleft，仅以库形式链接，不触发我方代码
+    # 开源义务；分发时保留其许可证声明即可。
+    "MPL-2.0",
 ]
 confidence-threshold = 0.9
 

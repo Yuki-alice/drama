@@ -13,14 +13,14 @@ import '../../../core/theme/appearance_controller.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/tokens/glass_tier.dart';
 import '../../../core/widgets/app_glass_scaffold.dart';
-import '../../../core/widgets/content_widgets.dart';
 import '../../../core/widgets/glass_kit.dart';
+import '../../../core/widgets/lockups.dart';
 
 /// 设置页。
 ///
 /// 二级页，`AppGlassScaffold` 包整页。玻璃不嵌套：外观分组的玻璃开关 / chips
-/// 一律直接落在 body（背景是 `AppBackdrop`），绝不塞进 `GlassSurfaceCard`
-/// ——玻璃套玻璃会静默降质；分组标题用 `SectionHeader`，普通行用 `InkWell`。
+/// 一律直接落在 body（纯色底），绝不塞进 `GlassSurfaceCard`
+/// ——玻璃套玻璃会静默降质；分组标题用 `SectionHead.paged`，普通行用 `InkWell`。
 class SettingsView extends ConsumerWidget {
   const SettingsView({super.key});
 
@@ -44,7 +44,7 @@ class SettingsView extends ConsumerWidget {
         padding: const EdgeInsets.only(bottom: AppSpacing.xxl),
         children: <Widget>[
           // ── 外观（接到真实设置，持久化） ────────────────────────
-          const SectionHeader(title: '外观'),
+          const SectionHead.paged(title: '外观'),
           _ChipField(
             label: '主题',
             options: const <String>['跟随系统', '浅色', '深色'],
@@ -81,7 +81,7 @@ class SettingsView extends ConsumerWidget {
           ),
 
           // ── 播放（接到真实偏好，持久化；播放页读同一份） ────────
-          const SectionHeader(title: '播放'),
+          const SectionHead.paged(title: '播放'),
           _ChipField(
             label: '默认清晰度',
             options: PlaybackSettings.labels,
@@ -91,20 +91,18 @@ class SettingsView extends ConsumerWidget {
           _SwitchRow(
             label: '自动连播下一集',
             value: playback.autoPlayNext,
-            onChanged: ref
-                .read(playbackSettingsProvider.notifier)
-                .setAutoPlayNext,
+            onChanged:
+                ref.read(playbackSettingsProvider.notifier).setAutoPlayNext,
           ),
           _SwitchRow(
             label: '进入播放页立即播放',
             value: playback.autoPlayOnOpen,
-            onChanged: ref
-                .read(playbackSettingsProvider.notifier)
-                .setAutoPlayOnOpen,
+            onChanged:
+                ref.read(playbackSettingsProvider.notifier).setAutoPlayOnOpen,
           ),
 
           // ── 下载（并发数接到 Rust 真实设置；目录可搬迁） ───────────
-          const SectionHeader(title: '下载'),
+          const SectionHead.paged(title: '下载'),
           _ChipField(
             label: '同时下载任务数',
             options: _concurrencyOptions,
@@ -133,7 +131,7 @@ class SettingsView extends ConsumerWidget {
           ),
 
           // ── 存储 ───────────────────────────────────────────────
-          const SectionHeader(title: '存储'),
+          const SectionHead.paged(title: '存储'),
           _TappableRow(
             label: '清除缓存',
             value: '目录缓存',
@@ -141,7 +139,7 @@ class SettingsView extends ConsumerWidget {
           ),
 
           // ── 关于 ───────────────────────────────────────────────
-          const SectionHeader(title: '关于'),
+          const SectionHead.paged(title: '关于'),
           _TappableRow(
             label: '关于本应用',
             onTap: () => context.push(AppRoutes.about),
@@ -288,10 +286,10 @@ const List<ThemeMode> _themeModes = <ThemeMode>[
 ];
 
 int _themeModeIndex(ThemeMode mode) => switch (mode) {
-  ThemeMode.system => 0,
-  ThemeMode.light => 1,
-  ThemeMode.dark => 2,
-};
+      ThemeMode.system => 0,
+      ThemeMode.light => 1,
+      ThemeMode.dark => 2,
+    };
 
 // ── 行 / 字段组件（普通控件，非玻璃，故可安全放入 body） ───────────────
 
@@ -337,7 +335,7 @@ class _SwitchRow extends StatelessWidget {
   }
 }
 
-/// 「标签 + 一排 GlassChip」字段（主题 / 清晰度 / 并发数共用）。
+/// 「标签 + 一排描边胶囊」字段（主题 / 清晰度 / 并发数共用）。
 class _ChipField extends StatelessWidget {
   const _ChipField({
     required this.label,
@@ -374,23 +372,15 @@ class _ChipField extends StatelessWidget {
             spacing: AppSpacing.sm,
             runSpacing: AppSpacing.sm,
             children: <Widget>[
+              // 单选云统一用内容层描边胶囊：与首页分类、搜索标签同一套
+              // 选中语言（墨色浅底 + 墨色加粗字），不再混用玻璃 chip——
+              // 半透明墨底在浅色下会发灰，与「选中 = 墨色」的规则打架。
               for (var index = 0; index < options.length; index++)
-                GlassChip(
+                OutlinePill(
                   label: options[index],
-                  onTap: () => onSelected(index),
                   selected: index == selectedIndex,
-                  selectedColor: colors.accent.withValues(alpha: 0.28),
-                  useOwnLayer: true,
-                  quality: GlassQuality.standard,
-                  labelStyle: AppText.callout.copyWith(
-                    color: index == selectedIndex
-                        ? colors.textPrimary
-                        : colors.textSecondary,
-                    fontWeight: index == selectedIndex
-                        ? FontWeight.w600
-                        : FontWeight.w500,
-                  ),
-                  semanticLabel: options[index],
+                  height: 38,
+                  onTap: () => onSelected(index),
                 ),
             ],
           ),

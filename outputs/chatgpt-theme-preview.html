@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN" data-page-node-id="xv03MtiX25bDm1LteEqsy9">
+<head data-page-node-id="QHbTk1nfnrHifb1p2910qZ">
+<meta charset="utf-8" data-page-node-id="9ReMqUsl3CeqBcHpUshBDb">
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="Gz5LDHYKIINy7faXK8uKRt">
+<title>「ChatGPT 双色 · 玻璃」色板预览</title>
+<style>
+  :root {
+    --canvas: #FFFFFF;
+    --sunken: #F7F7F8;
+    --ink: #0F0F0F;
+    --graphite: #6E6E80;
+    --silver: #8F8F8F;
+    --hairline: #E5E5E5;
+    --green: #10A37F;
+    --green-deep: #0B7A61;
+    --dark-canvas: #212121;
+    --dark-surface: #2F2F2F;
+    --dark-raised: #3A3A3A;
+    --dark-sunken: #171717;
+    --dark-text: #ECECEC;
+    --dark-secondary: #B4B4B4;
+    --dark-tertiary: #8E8E8E;
+    --dark-hairline: #3D3D3D;
+    --green-bright: #19C37D;
+    --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font: 15px/1.6 -apple-system, "PingFang SC", "Noto Sans SC", "Segoe UI", sans-serif;
+    padding: 48px 24px 72px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 28px; letter-spacing: -0.3px; margin: 0 0 6px; }
+  .sub { color: var(--graphite); margin: 0 0 4px; }
+  .meta { color: var(--silver); font-size: 13px; }
+  h2 {
+    font-size: 17px; margin: 44px 0 14px; padding-top: 20px;
+    border-top: 1px solid var(--hairline);
+  }
+  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .duo { grid-template-columns: 1fr; } }
+  .panel { border-radius: 18px; padding: 20px; border: 1px solid var(--hairline); background: var(--canvas); }
+  .panel.dark { background: var(--dark-canvas); border-color: var(--dark-hairline); color: var(--dark-text); }
+  .panel h3 { margin: 0 0 14px; font-size: 13px; font-weight: 600; letter-spacing: .4px; color: var(--graphite); text-transform: uppercase; }
+  .panel.dark h3 { color: var(--dark-tertiary); }
+  .row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+  .chip { width: 34px; height: 34px; border-radius: 9px; flex: none; border: 1px solid var(--hairline); }
+  .panel.dark .chip { border-color: var(--dark-hairline); }
+  .row .name { width: 108px; flex: none; font-weight: 600; font-size: 13px; }
+  .row .hex { font-family: var(--mono); font-size: 12px; width: 84px; flex: none; color: var(--graphite); }
+  .panel.dark .row .hex { color: var(--dark-secondary); }
+  .row .use { font-size: 12.5px; color: var(--graphite); }
+  .panel.dark .row .use { color: var(--dark-secondary); }
+  .roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 860px) { .roles { grid-template-columns: 1fr; } }
+  .role { border: 1px solid var(--hairline); border-radius: 16px; padding: 18px; }
+  .role .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+  .role h4 { margin: 0 0 8px; font-size: 14px; }
+  .role p { margin: 0; font-size: 12.5px; color: var(--graphite); }
+  .role code { font-family: var(--mono); font-size: 11.5px; color: var(--ink); background: var(--sunken); padding: 1px 5px; border-radius: 5px; }
+  .contrast { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .pillnum { font-family: var(--mono); font-size: 12px; border: 1px solid var(--hairline); border-radius: 999px; padding: 4px 12px; color: var(--graphite); }
+  .demo { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+  /* 组件速览 */
+  .inkpill {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--ink); color: #FFFFFF; font-weight: 600; font-size: 14px;
+    border-radius: 999px; padding: 10px 18px;
+  }
+  .panel.dark .inkpill { background: var(--dark-text); color: #101010; }
+  .opill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 500; }
+  .opill.on { background: rgba(16,163,127,.12); border: 1.5px solid var(--green); color: var(--green-deep); font-weight: 700; }
+  .panel.dark .opill.on { background: rgba(16,163,127,.2); color: var(--green-bright); }
+  .opill.off { background: var(--canvas); border: 1px solid var(--hairline); color: var(--ink); }
+  .panel.dark .opill.off { background: var(--dark-surface); border-color: var(--dark-hairline); color: var(--dark-text); }
+  .progress { width: 200px; height: 3px; border-radius: 2px; background: var(--sunken); overflow: hidden; }
+  .panel.dark .progress { background: rgba(255,255,255,.25); }
+  .progress i { display: block; height: 100%; width: 62%; background: var(--green); }
+  .switch { width: 46px; height: 28px; border-radius: 999px; background: var(--green); position: relative; }
+  .switch::after { content: ""; position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border-radius: 50%; background: #FFFFFF; }
+  .badge { font-size: 12px; color: var(--green-deep); font-weight: 600; }
+  .panel.dark .badge { color: var(--green-bright); }
+  .link { font-size: 13px; font-weight: 600; color: var(--green-deep); }
+  .panel.dark .link { color: var(--green-bright); }
+  .cells { display: flex; gap: 8px; }
+  .cell {
+    width: 52px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 13px; font-weight: 500;
+    background: var(--sunken); color: var(--ink); border: 1px solid var(--hairline);
+  }
+  .cell.on { background: var(--ink); color: #FFFFFF; font-weight: 700; border-color: var(--ink); }
+  .panel.dark .cell { background: var(--dark-sunken); color: var(--dark-text); border-color: var(--dark-hairline); }
+  .panel.dark .cell.on { background: var(--dark-text); color: #101010; border-color: var(--dark-text); }
+  .note { margin-top: 10px; font-size: 12px; color: var(--silver); }
+  .panel.dark .note { color: var(--dark-tertiary); }
+  footer { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--hairline); font-size: 12.5px; color: var(--silver); }
+  footer code { font-family: var(--mono); font-size: 11.5px; }
+</style>
+</head>
+<body data-page-node-id="Xth11XbvMY2Gzj36iH2voE">
+<div class="wrap" data-page-node-id="u4GnW3nLoPBelHUC7ACjcC">
+  <h1 data-page-node-id="ifkFZKcYbYSqUJMH6hR3ZS">「ChatGPT 双色 · 玻璃」色板预览</h1>
+  <p class="sub" data-page-node-id="90JNHaW8WAuNLyWp6xFZFX">OpenAI 灰阶 + 一支标志绿 · 深色画布采用 ChatGPT 炭灰体系</p>
+  <p class="meta" data-page-node-id="tnUpzECrSev8BhPDQSEFdR">配色 v3 · 2026-10-16 · 对应 lib/ui/core/tokens/app_tokens.dart（注释中的 WCAG 实算表即色板契约）</p>
+
+  <h2 data-page-node-id="EdLazcaXNgc7ScrXLCf0xL">色板总览</h2>
+  <div class="duo" data-page-node-id="iDiK0PeCoX5b1upz07PXCy">
+    <div class="panel" data-page-node-id="lYQOESGAbpfv9EPNGFw3Z8">
+      <h3 data-page-node-id="ulhOQWBnOHfpdDWXPoiX9A">浅色</h3>
+      <div class="row" data-page-node-id="pwuXhRBJ55KMTGt6vBt2Io"><span class="chip" style="background:#FFFFFF" data-page-node-id="m2DeSjGc3GD8ImG3Yifg5P"></span><span class="name" data-page-node-id="uEDpeWuXkCDMR7WQxWH9OW">纸白 canvas</span><span class="hex" data-page-node-id="VoJ6QN8MpORn40OeHQcd6w">#FFFFFF</span><span class="use" data-page-node-id="PqM3KhGFgJSB1uzSRGB9xj">页面底色</span></div>
+      <div class="row" data-page-node-id="FAbr9GES4xJJotvMZuwqZi"><span class="chip" style="background:#F7F7F8" data-page-node-id="aoAJcJFWGwbUKkoznCt12A"></span><span class="name" data-page-node-id="QeMWFUBCaMTTPDSdmBcS90">浅雾 mist</span><span class="hex" data-page-node-id="lHM29rtUYQslGbbreNAZbP">#F7F7F8</span><span class="use" data-page-node-id="JSJ4k9mQEUKfmXsOnaJCTE">输入底 / 凹陷面 / 轨道底</span></div>
+      <div class="row" data-page-node-id="hM5RVEZ2Whe1nhu4P5SU0h"><span class="chip" style="background:#0F0F0F" data-page-node-id="dRvUSEzZEuc3GorXL8dxFW"></span><span class="name" data-page-node-id="xyrOIHF4DRoopQJMW3BYtD">墨黑 ink</span><span class="hex" data-page-node-id="aEU5QUUVdYjRSi5RNmJi1C">#0F0F0F</span><span class="use" data-page-node-id="UIEVx1afPX3EcdJSFPqZAQ">正文 / 重型填充（19.2:1）</span></div>
+      <div class="row" data-page-node-id="VP8rT03vgBJc3j7T04gIGH"><span class="chip" style="background:#6E6E80" data-page-node-id="xDgG9sVmlkf0Dbfaas0HO1"></span><span class="name" data-page-node-id="yGjgKldlcn1bE9h4QkQ58x">石墨 graphite</span><span class="hex" data-page-node-id="ziK8i9pWFzW6gcCEKHB6U0">#6E6E80</span><span class="use" data-page-node-id="WqvYqYD8nLwrbW6A8kKX0m">次级文字（4.99:1）</span></div>
+      <div class="row" data-page-node-id="mcfX6GN5xZiwl8bY4fvWQb"><span class="chip" style="background:#8F8F8F" data-page-node-id="0ADhIMyioJvMDZ0GwsVOXP"></span><span class="name" data-page-node-id="BUpU5eK0O5L6AGpyBEvOS6">银灰 silver</span><span class="hex" data-page-node-id="N8Ctr0bYbJ3YsldGnfSf4e">#8F8F8F</span><span class="use" data-page-node-id="dWbRg9kVC5XRWDlCVjA0Kn">三级文字（3.23:1，只作装饰）</span></div>
+      <div class="row" data-page-node-id="9OYRXIYPovrJJIqleBzeEc"><span class="chip" style="background:#E5E5E5" data-page-node-id="p93PkOsUomAQNTYy0jYOS5"></span><span class="name" data-page-node-id="sLgbILMchYL7JgjLXVuqaK">发丝线</span><span class="hex" data-page-node-id="mqGVNweRI01rhWmhyJeZ1a">#E5E5E5</span><span class="use" data-page-node-id="5166t0lfPSh8ZeWkOA2KBM">分隔线 / 描边</span></div>
+      <div class="row" data-page-node-id="wlOHICUl2yWKuUOG8PLOMr"><span class="chip" style="background:#10A37F" data-page-node-id="VthIIwm6TDpHepzb5eyVbi"></span><span class="name" data-page-node-id="LpKI8NvUMOvy5eloyitcYG">标志绿 accent</span><span class="hex" data-page-node-id="jxJShA1gWli8iDFSAemC1B">#10A37F</span><span class="use" data-page-node-id="GGbQbKs9JwyTOJeGCsZx9N">状态与进程（3.20:1，图形级）</span></div>
+      <div class="row" data-page-node-id="fDdfYIvJ77rpcCwBlPXlOA"><span class="chip" style="background:#0B7A61" data-page-node-id="rEHdCAXsGfzAj8pgwiklxH"></span><span class="name" data-page-node-id="IT7lQ64FaxWfreeIEOpopH">深绿 accentDeep</span><span class="hex" data-page-node-id="C7nBhVLKGYaFJokU6u2FmS">#0B7A61</span><span class="use" data-page-node-id="cyoJdNRsgfp86yiuAKwWFE">绿色小字（5.29:1）</span></div>
+      <div class="row" data-page-node-id="7HJuNjBY9qMi79sSDK8SDU"><span class="chip" style="background:rgba(16,163,127,.12)" data-page-node-id="GTNQO4E00vnGpoFzDBZ65N"></span><span class="name" data-page-node-id="LqH8pFjOEDAymMgzMbwkTF">绿浅底</span><span class="hex" data-page-node-id="jsIRxLvIUMwfC2BTmgfS4P">12%</span><span class="use" data-page-node-id="F2Jza6ugzXLlXFEu58ghKC">选中行 / 悬停 / 弱提示底</span></div>
+    </div>
+    <div class="panel dark" data-page-node-id="SdHFez4nMAJ5gA3WXRswAH">
+      <h3 data-page-node-id="llDIchoGanJ5qJzpjpeJU4">深色</h3>
+      <div class="row" data-page-node-id="zRg6wm1XxzWvHFRQ1EABJS"><span class="chip" style="background:#171717" data-page-node-id="EjAKrSLEEGzRZMRcd1tQWk"></span><span class="name" data-page-node-id="BBMVtvxmjgiJhGYKhEknG5">凹陷 sunken</span><span class="hex" data-page-node-id="D7UpGUm6B21tpK2c8WY4NX">#171717</span><span class="use" data-page-node-id="20FGZVrr6QdQG1t1D0FbxI">比画布更深（侧栏同向）</span></div>
+      <div class="row" data-page-node-id="uaLd9oQwkcnQUNnAfGl5FS"><span class="chip" style="background:#212121" data-page-node-id="kQJ8BPmvwxHVVKf0YhgEg7"></span><span class="name" data-page-node-id="jYAObVyMN4zGCgd6nctspA">炭灰 canvas</span><span class="hex" data-page-node-id="OeYpAbx19eeUm2rAJo6ckA">#212121</span><span class="use" data-page-node-id="pJu1hd46nnaDTUvZtVO9zY">页面底色（播放器纯黑）</span></div>
+      <div class="row" data-page-node-id="j6AVPgypQE7fnayFZzQYjr"><span class="chip" style="background:#2F2F2F" data-page-node-id="HyCVQjD0OEehBQV724J7QA"></span><span class="name" data-page-node-id="uvtqn2Xwe14bAupfafV4DJ">面 surface</span><span class="hex" data-page-node-id="ll61XAT30z1nZi3SvRcScf">#2F2F2F</span><span class="use" data-page-node-id="6qcBECEqwnp6jnCtCdqLgA">卡片 / 抽屉</span></div>
+      <div class="row" data-page-node-id="mDaRbV6PSebrcKuOEoMrAM"><span class="chip" style="background:#3A3A3A" data-page-node-id="wLxnZNJffS6Z8r6VhMvwBk"></span><span class="name" data-page-node-id="XjwOGrOOqJLyz3f1PomZ7R">抬高面</span><span class="hex" data-page-node-id="fKBSHkVODkHZ0MAM5kImNl">#3A3A3A</span><span class="use" data-page-node-id="jRjPYmqo7x1gCGcsPgD385">弹层 / 选中行</span></div>
+      <div class="row" data-page-node-id="SkwFmdQ51RRbr2pvO96Kf2"><span class="chip" style="background:#ECECEC" data-page-node-id="GDihEAaWVR9vjpgPJ3ocaD"></span><span class="name" data-page-node-id="Or42RinrzxlvtDifCofIwm">亮白 label</span><span class="hex" data-page-node-id="RBUwqjIyfdLU58TFokeABf">#ECECEC</span><span class="use" data-page-node-id="cKGpQ0VMiMTljMqvW0TpZE">正文 / 重型填充（13.6:1）</span></div>
+      <div class="row" data-page-node-id="ZN68961UncbGDm89bRglss"><span class="chip" style="background:#B4B4B4" data-page-node-id="U3HFVwMRM7ivHP9WTPPR1w"></span><span class="name" data-page-node-id="A63GgSREl3wUXmFIFFaGbG">石墨 graphite</span><span class="hex" data-page-node-id="f3UygDscVZpstSVNNcUnDr">#B4B4B4</span><span class="use" data-page-node-id="QpQBiGxKSH7gZ8FGHeD9Ew">次级文字（7.77:1）</span></div>
+      <div class="row" data-page-node-id="bZZ4xUxnBFONSpHj5NmIMc"><span class="chip" style="background:#8E8E8E" data-page-node-id="XuW1KeFXXYF9tYb5UIGoGB"></span><span class="name" data-page-node-id="oAGSLYHdOCch04s2VhZsJG">银灰 silver</span><span class="hex" data-page-node-id="vyT82CEKEQfoEGRSFzXtNr">#8E8E8E</span><span class="use" data-page-node-id="HA1EKgyGFwwjiDk7BIVxGd">三级文字（4.91:1）</span></div>
+      <div class="row" data-page-node-id="2Ck6TwNXjOMCrl0pt29BHE"><span class="chip" style="background:#3D3D3D" data-page-node-id="TD6hJxVIzFJKqXPguSBNZl"></span><span class="name" data-page-node-id="QSGDrO5uQVtc4dzgUeUQmT">发丝线</span><span class="hex" data-page-node-id="XBSFBXeoR7Jmxq4GJXNCHK">#3D3D3D</span><span class="use" data-page-node-id="9BeywqI5wuWLEaYTJaPRyT">分隔线 / 描边</span></div>
+      <div class="row" data-page-node-id="bHZkoPTPpBBkt6up6VuEfx"><span class="chip" style="background:#10A37F" data-page-node-id="LQcqBBxYRbMA9CCrL9ACTx"></span><span class="name" data-page-node-id="nhIbFR2uCpKIoqc0u7RTqw">标志绿 accent</span><span class="hex" data-page-node-id="OfffYphVDCDXA40DgWaFvo">#10A37F</span><span class="use" data-page-node-id="X7ZQHFqTevik0aJX72WZCh">状态与进程（5.04:1，可载小字）</span></div>
+      <div class="row" data-page-node-id="6Mxyk6DiVKVC69tM60RrdQ"><span class="chip" style="background:#19C37D" data-page-node-id="Ovk7nseaISgHRkiOR7SBx6"></span><span class="name" data-page-node-id="jh0oL854vQSPIAkkYwYrRM">亮绿 accentDeep</span><span class="hex" data-page-node-id="svVCCCoVJgHN16zFPbJT82">#19C37D</span><span class="use" data-page-node-id="FddaII9FWOtMLzURs5tKD0">绿色小字（7.01:1）</span></div>
+    </div>
+  </div>
+
+  <h2 data-page-node-id="7ccQ4tFacCQypoTl3Fvibo">三种颜色角色的纪律</h2>
+  <div class="roles" data-page-node-id="jPGhLqo7sa5wznxtZELB0f">
+    <div class="role" data-page-node-id="0EUThZIW0Bq73NMIfJ80kp">
+      <h4 data-page-node-id="JXRLwpZtM9RH0AWuhBzdtY"><span class="dot" style="background:#0F0F0F" data-page-node-id="dHINCvHUHBCUxFEXVErHDG"></span>墨：正文与重型填充</h4>
+      <p data-page-node-id="VEhSHGilidoydLK8rTqqHV">主按钮（墨色胶囊）、选区格选中 = <code data-page-node-id="bYDlP7MVYB1YU2JgAeZ2hd">textPrimary</code> 填充 + <code data-page-node-id="tUgLeia0WIjY3OfU2H14iH">onInk</code> 前景。绿色不做重型填充——与 ChatGPT 现行的黑色主按钮同构。</p>
+    </div>
+    <div class="role" data-page-node-id="Fh8yfZRX1GCIM0b3hx3x5s">
+      <h4 data-page-node-id="XtCGpqBBkmgjlN6SKHI8Qm"><span class="dot" style="background:#10A37F" data-page-node-id="Mlzqj3jH2SEOJhfEl8c99w"></span>绿：状态与进程</h4>
+      <p data-page-node-id="83BBS3YZnhIZXVBrf4WyZ0">进度、加载、开关、焦点、选中胶囊、徽章、链接。<code data-page-node-id="GWZCpES28yz7fhLDpfoNEh">accent</code> 是图形级绿；承载小号的绿一律换 <code data-page-node-id="ATZc14eSxHtjZof4SPAohc">accentDeep</code>；白字不进绿底做小号。</p>
+    </div>
+    <div class="role" data-page-node-id="CObBt3T64CMkllEV6r3COG">
+      <h4 data-page-node-id="8CsbYeOQiFMMr1SxVNZRie"><span class="dot" style="background:#8F8F8F" data-page-node-id="jrwqMUaSGBbzz5S8SBKlDv"></span>灰：承载文字的两级</h4>
+      <p data-page-node-id="tvlDoH15gccHHlpTU7jzAJ"><code data-page-node-id="R3s8kPm4vSlmacyLgf8tQu">textSecondary</code> 两底皆可承载正文（浅雾上也过 4.5:1）；<code data-page-node-id="4rAWh8Q81kOfRPDnEB3GaM">textTertiary</code> 浅色端只作装饰（3.23:1），深色端达标（4.91:1）。</p>
+    </div>
+  </div>
+
+  <h2 data-page-node-id="yr8Xio3DnCQky5HIh3Sxbj">组件速览</h2>
+  <div class="duo" data-page-node-id="DODvwrPmNhGUZBdG4TOXSP">
+    <div class="panel" data-page-node-id="cJEVrx21lSPNy3RZgqHAGO">
+      <h3 data-page-node-id="K0xfyTe6nc39qjj2IgFtjr">浅色</h3>
+      <div class="demo" data-page-node-id="tUcVOAjswCwBFvd82ocFuW">
+        <span class="inkpill" data-page-node-id="8Y2txDpbpUhb2lslOX7dGB">▶ 继续观看 第 24 集</span>
+        <span class="opill on" data-page-node-id="Udq63BWryYQIyoHOf0Na4c">✓ 已追剧</span>
+        <span class="opill off" data-page-node-id="EAtKUPEhZVzudZqZXQHuCa">1080P</span>
+        <span class="switch" data-page-node-id="I2NBqnNj1GUPmGQvxYxSir"></span>
+        <span class="badge" data-page-node-id="JaWXLXZOILQYwQeh8VqiHA">还有未看的</span>
+        <span class="link" data-page-node-id="RkHC4Xw79akmLzKtg5ujoR">查看全部 ›</span>
+      </div>
+      <div class="demo" style="margin-top:16px" data-page-node-id="PJMgIWPB4RoHrWjrkQp4Tl">
+        <span class="progress" data-page-node-id="KfyQj5k2emhiB2543i36dM"><i data-page-node-id="Ah13v6nMpeDpALeK17j0Hi"></i></span>
+        <span class="cells" data-page-node-id="KCkkP2Upp8JBBFM0OGhm0m"><span class="cell" data-page-node-id="OvUsey48AJ7WWKTxdSaO7C">23</span><span class="cell on" data-page-node-id="UurTbNNSCAsLXvgwxjeJ5Y">24</span><span class="cell" data-page-node-id="lGcPzOa1jXdefWv2JFmyBJ">25</span></span>
+      </div>
+      <p class="note" data-page-node-id="NUPtEwfmfYJ3ZnwFbaIv57">进度线绿 #10A37F；选集格选中 = 墨底反白字。</p>
+    </div>
+    <div class="panel dark" data-page-node-id="O58XAgS6NnGCbPFHOnbSAM">
+      <h3 data-page-node-id="G7bZO51IKi04ELEhPoYlqu">深色</h3>
+      <div class="demo" data-page-node-id="2CIlNYzYAKZybO4uU0zFHi">
+        <span class="inkpill" data-page-node-id="XMIAEzzc1MKNXfDkPrdsq2">▶ 继续观看 第 24 集</span>
+        <span class="opill on" data-page-node-id="C4W5CMLRB5WmbL0mi2DwwD">✓ 已追剧</span>
+        <span class="opill off" data-page-node-id="oPwTiPFSJErHymXHOtd8Ib">1080P</span>
+        <span class="switch" data-page-node-id="c2OjvyPGCbBZEdwko8UBp3"></span>
+        <span class="badge" data-page-node-id="9WGnJlHAuo44MCcIGHFSg2">还有未看的</span>
+        <span class="link" data-page-node-id="EVyxhREbDyuF1OTthhgw0g">查看全部 ›</span>
+      </div>
+      <div class="demo" style="margin-top:16px" data-page-node-id="mA37MOAizT5VBLuII0X4cw">
+        <span class="progress" data-page-node-id="H7QTegxIRfLiESDcHsx5wD"><i data-page-node-id="Oc9QxGqAIjQjAhyTLMA1r4"></i></span>
+        <span class="cells" data-page-node-id="S6nCuRzKxQICPjgRzjHi8c"><span class="cell" data-page-node-id="ZVUgRrjMJoprYENK34HfLF">23</span><span class="cell on" data-page-node-id="Zef4PYODPQPw6Cf6dpnfH3">24</span><span class="cell" data-page-node-id="Jyevj9YnNerJCBuXk8BOxr">25</span></span>
+      </div>
+      <p class="note" data-page-node-id="HifXPQj6YT61UKo7AIuzpa">深色端绿色小字用亮绿 #19C37D；墨色填充反转为亮面。</p>
+    </div>
+  </div>
+
+  <h2 data-page-node-id="xpca02DEZCVDwMZQBAUZrS">关键对比度（WCAG 实算）</h2>
+  <div class="contrast" data-page-node-id="0JRaCQGzMPSwHValPLLSoJ">
+    <span class="pillnum" data-page-node-id="95hHRSd1pWSgCUNjlEfg1H">ink / 纸白 19.2:1</span>
+    <span class="pillnum" data-page-node-id="2AyYObPwas3SOQCq622FcP">反白 / 墨底 19.2:1</span>
+    <span class="pillnum" data-page-node-id="gbm9c1mPT7nDfP1Tmob8ld">label / 炭灰 13.6:1</span>
+    <span class="pillnum" data-page-node-id="dufQlpJwkbcFUoKVu0aleP">深绿 / 纸白 5.29:1</span>
+    <span class="pillnum" data-page-node-id="lnH6eMdqtNxD13u1bgiD9h">亮绿 / 炭灰 7.01:1</span>
+    <span class="pillnum" data-page-node-id="AYIrc4A2vpfKwfZCR4ZCQY">标志绿 / 纸白 3.20:1（图形级）</span>
+    <span class="pillnum" data-page-node-id="xEYJsGAaGFdKDcWXH3W9wq">白字 / 绿 3.20:1（只配大号字与图形）</span>
+  </div>
+
+  <footer data-page-node-id="w0QDMUDywJG0N3mITTp9rI">
+    回归测试：<code data-page-node-id="l4h39TnF9E1zR1TeuEZDpo">test/token_contrast_test.dart</code>（色板注释与实算值漂移即失败） · 规范与实现映射：<code data-page-node-id="910XHTdtjJK5utXUbtCSaE">outputs/design-prototype-spec.md</code> · 令牌源码：<code data-page-node-id="9Qxt6GYi5EB78ukxVcK5rT">lib/ui/core/tokens/app_tokens.dart</code>
+  </footer>
+</div>
+</body>
+</html>

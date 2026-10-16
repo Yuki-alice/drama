@@ -28,6 +28,10 @@ struct Follow {
     /// 总集数（`0` = 未知）。`serde(default)` 保证旧 progress.json 仍可读。
     #[serde(default)]
     total_episode: u32,
+    /// 所属源。老文件无此字段 → 默认主源（见 [`default_source`]），
+    /// 并在载入时把裸 id 键改写为复合键（见 [`migrate_store`]）。
+    #[serde(default = "default_source")]
+    source: String,
 }
 
 /// 历史条目。
@@ -38,6 +42,26 @@ struct HistoryItem {
     position_secs: u64,
     duration_secs: u64,
     updated_at_ms: i64,
+    /// 所属源（语义同 [`Follow::source`]）。
+    #[serde(default = "default_source")]
+    source: String,
+}
+
+fn default_source() -> String {
+    crate::source::DEFAULT_SOURCE_ID.to_owned()
+}
+
+/// 存储主键：`{source}:{id}`。同剧集在不同源下是两条独立记录，
+/// 数字 id 跨源撞号不再互相覆盖。
+fn store_key(source: &str, id: &str) -> String {
+    format!("{source}:{id}")
+}
+
+/// 裸剧集 id：从复合键剥离已知源前缀（写键一律经 [`store_key`]，前缀必中；
+/// 兜底返回全键，行为不比单源时代差）。
+fn bare_id<'a>(source: &str, key: &'a str) -> &'a str {
+    let prefix = format!("{source}:");
+    key.strip_prefix(&prefix).unwrap_or(key)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -60,6 +84,15 @@ fn path() -> Option<std::path::PathBuf> {
     crate::device::data_dir().map(|d| d.join("progress.json"))
 }
 
+/// 数据目录切换时复位：清空内存表并取消已加载标记，下次读写从新目录延迟载入。
+/// 由 `device::set_data_dir` / `clear_data_dir` 调用。
+pub(crate) fn reset_for_data_dir() {
+    *STORE.lock().expect("store poisoned") = Store::default();
+    *LOADED.lock().expect("store flag poisoned") = false;
+    *SEARCH_HISTORY.lock().expect("search poisoned") = Vec::new();
+    *SEARCH_LOADED.lock().expect("search flag poisoned") = false;
+}
+
 /// 延迟加载：首次写/读时从文件载入（失败即用空表）。
 fn ensure_loaded() {
     if *LOADED.lock().expect("store flag poisoned") {
@@ -74,8 +107,34 @@ fn ensure_loaded() {
         return;
     }
     if let Ok(store) = serde_json::from_slice::<Store>(&raw) {
-        *STORE.lock().expect("store poisoned") = store;
+        *STORE.lock().expect("store poisoned") = migrate_store(store);
     }
+}
+
+/// 老文件迁移：无源字段的条目归默认源，裸 id 键改写为复合键。
+/// 幂等（已迁移数据再跑一次结果不变）。
+fn migrate_store(store: Store) -> Store {
+    let mut follows = HashMap::with_capacity(store.follows.len());
+    for (key, mut follow) in store.follows {
+        if follow.source.is_empty() {
+            follow.source = default_source();
+        }
+        follows.insert(
+            store_key(&follow.source, bare_id(&follow.source, &key)),
+            follow,
+        );
+    }
+    let history = store
+        .history
+        .into_iter()
+        .map(|mut item| {
+            if item.source.is_empty() {
+                item.source = default_source();
+            }
+            item
+        })
+        .collect();
+    Store { follows, history }
 }
 
 fn persist() -> Result<(), SourceError> {
@@ -99,7 +158,9 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// 追剧：新增或更新（缺省标题时保留旧值）。
-pub fn follow_put(params: &Value) -> Result<Value, SourceError> {
+///
+/// `source` 参与主键：同 id 在不同源下互不干扰。
+pub fn follow_put(source: &str, params: &Value) -> Result<Value, SourceError> {
     let id = params
         .get("id")
         .and_then(Value::as_str)
@@ -110,15 +171,19 @@ pub fn follow_put(params: &Value) -> Result<Value, SourceError> {
     }
     ensure_loaded();
     let mut store = STORE.lock().expect("store poisoned");
-    let entry = store.follows.entry(id.clone()).or_insert(Follow {
-        title: String::new(),
-        cover: String::new(),
-        episode: 1,
-        position_secs: 0,
-        duration_secs: 0,
-        updated_at_ms: 0,
-        total_episode: 0,
-    });
+    let entry = store
+        .follows
+        .entry(store_key(source, &id))
+        .or_insert(Follow {
+            title: String::new(),
+            cover: String::new(),
+            episode: 1,
+            position_secs: 0,
+            duration_secs: 0,
+            updated_at_ms: 0,
+            total_episode: 0,
+            source: source.to_owned(),
+        });
     if let Some(title) = params.get("title").and_then(Value::as_str)
         && !title.is_empty()
     {
@@ -142,30 +207,41 @@ pub fn follow_put(params: &Value) -> Result<Value, SourceError> {
     entry.updated_at_ms = now_ms();
     drop(store);
     persist()?;
-    Ok(json!({ "id": id }))
+    Ok(json!({ "id": id, "source": source }))
 }
 
 /// 取消追剧（不存在也算成功，幂等）。
-pub fn follow_del(params: &Value) -> Result<Value, SourceError> {
+pub fn follow_del(source: &str, params: &Value) -> Result<Value, SourceError> {
     let id = params.get("id").and_then(Value::as_str).unwrap_or("");
     if !valid_id(id) {
         return Err(SourceError::Parse("missing id".to_owned()));
     }
     ensure_loaded();
-    STORE.lock().expect("store poisoned").follows.remove(id);
+    STORE
+        .lock()
+        .expect("store poisoned")
+        .follows
+        .remove(&store_key(source, id));
     persist()?;
     Ok(json!({ "id": id }))
 }
 
 /// 追剧列表（按更新时间倒序）。
-pub fn follow_list() -> Result<Value, SourceError> {
+///
+/// `filter` 为空表示不过滤（全源）；否则只返回该源。条目均带 `source`。
+pub fn follow_list(filter: Option<&str>) -> Result<Value, SourceError> {
     ensure_loaded();
     let store = STORE.lock().expect("store poisoned");
-    let mut items: Vec<(&String, &Follow)> = store.follows.iter().collect();
+    let mut items: Vec<(&String, &Follow)> = store
+        .follows
+        .iter()
+        .filter(|(_, f)| filter.is_none_or(|s| f.source.as_str() == s))
+        .collect();
     items.sort_by_key(|(_, f)| -f.updated_at_ms);
     Ok(json!({
-        "items": items.iter().map(|(id, f)| json!({
-            "id": id,
+        "items": items.iter().map(|(key, f)| json!({
+            "id": bare_id(&f.source, key),
+            "source": f.source,
             "title": f.title,
             // 封面地址是**持久化**的，里面记的是上次会话的代理端口；
             // 端口跨会话会变，故读出时改写，让旧记录自愈
@@ -182,7 +258,9 @@ pub fn follow_list() -> Result<Value, SourceError> {
 }
 
 /// 观看进度上报（同时刷新追剧条目与历史）。
-pub fn history_put(params: &Value) -> Result<Value, SourceError> {
+///
+/// 去重键为（源，剧集）：同 id 跨源各记各的进度。
+pub fn history_put(source: &str, params: &Value) -> Result<Value, SourceError> {
     let id = params
         .get("id")
         .and_then(Value::as_str)
@@ -208,13 +286,15 @@ pub fn history_put(params: &Value) -> Result<Value, SourceError> {
         .min(1_000_000);
     ensure_loaded();
     let mut store = STORE.lock().expect("store poisoned");
-    if let Some(follow) = store.follows.get_mut(&id) {
+    if let Some(follow) = store.follows.get_mut(&store_key(source, &id)) {
         follow.episode = episode;
         follow.position_secs = position;
         follow.duration_secs = duration;
         follow.updated_at_ms = now_ms();
     }
-    store.history.retain(|h| h.id != id);
+    store
+        .history
+        .retain(|h| !(h.id == id && h.source == source));
     store.history.insert(
         0,
         HistoryItem {
@@ -223,23 +303,29 @@ pub fn history_put(params: &Value) -> Result<Value, SourceError> {
             position_secs: position,
             duration_secs: duration,
             updated_at_ms: now_ms(),
+            source: source.to_owned(),
         },
     );
     store.history.truncate(MAX_HISTORY);
     drop(store);
     persist()?;
-    Ok(json!({ "id": id }))
+    Ok(json!({ "id": id, "source": source }))
 }
 
 /// 历史列表（最近在前；传 `id` 则只返回该条）。
-pub fn history_get(params: &Value) -> Result<Value, SourceError> {
+///
+/// `filter` 为空表示不过滤（全源，单条查询时取首个同名 id，保持旧行为）；
+/// 否则只返回该源。条目均带 `source`。
+pub fn history_get(filter: Option<&str>, params: &Value) -> Result<Value, SourceError> {
     ensure_loaded();
     let store = STORE.lock().expect("store poisoned");
+    let matches = |h: &HistoryItem| filter.is_none_or(|s| h.source.as_str() == s);
     if let Some(id) = params.get("id").and_then(Value::as_str) {
-        let item = store.history.iter().find(|h| h.id == id);
+        let item = store.history.iter().find(|h| h.id == id && matches(h));
         return Ok(json!({
             "item": item.map(|h| json!({
                 "id": h.id,
+                "source": h.source,
                 "episode": h.episode,
                 "positionSecs": h.position_secs,
                 "durationSecs": h.duration_secs,
@@ -248,8 +334,9 @@ pub fn history_get(params: &Value) -> Result<Value, SourceError> {
         }));
     }
     Ok(json!({
-        "items": store.history.iter().map(|h| json!({
+        "items": store.history.iter().filter(|h| matches(h)).map(|h| json!({
             "id": h.id,
+            "source": h.source,
             "episode": h.episode,
             "positionSecs": h.position_secs,
             "durationSecs": h.duration_secs,
@@ -259,9 +346,17 @@ pub fn history_get(params: &Value) -> Result<Value, SourceError> {
 }
 
 /// 清空历史（追剧表不动）。
-pub fn history_clear() -> Result<Value, SourceError> {
+///
+/// `filter` 为空清空全源；否则只清该源。
+pub fn history_clear(filter: Option<&str>) -> Result<Value, SourceError> {
     ensure_loaded();
-    STORE.lock().expect("store poisoned").history.clear();
+    {
+        let mut store = STORE.lock().expect("store poisoned");
+        match filter {
+            Some(s) => store.history.retain(|h| h.source != s),
+            None => store.history.clear(),
+        }
+    }
     persist()?;
     Ok(json!({ "cleared": true }))
 }
@@ -406,9 +501,9 @@ mod tests {
     fn follow_crud_and_order() {
         let _guard = crate::test_serial::SERIAL.lock().unwrap();
         reset();
-        follow_put(&json!({"id": "a", "title": "A"})).unwrap();
-        follow_put(&json!({"id": "b", "title": "B"})).unwrap();
-        let list = follow_list().unwrap();
+        follow_put("hongguo", &json!({"id": "a", "title": "A"})).unwrap();
+        follow_put("hongguo", &json!({"id": "b", "title": "B"})).unwrap();
+        let list = follow_list(None).unwrap();
         let ids: Vec<&str> = list["items"]
             .as_array()
             .unwrap()
@@ -417,12 +512,12 @@ mod tests {
             .collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"a") && ids.contains(&"b"));
-        follow_del(&json!({"id": "b"})).unwrap();
-        let list = follow_list().unwrap();
+        follow_del("hongguo", &json!({"id": "b"})).unwrap();
+        let list = follow_list(None).unwrap();
         assert_eq!(list["items"].as_array().unwrap().len(), 1);
         assert_eq!(list["items"][0]["id"], json!("a"));
         // 幂等删除。
-        follow_del(&json!({"id": "nope"})).unwrap();
+        follow_del("hongguo", &json!({"id": "nope"})).unwrap();
         reset();
     }
 
@@ -430,20 +525,24 @@ mod tests {
     fn history_put_updates_follow_and_caps_length() {
         let _guard = crate::test_serial::SERIAL.lock().unwrap();
         reset();
-        follow_put(&json!({"id": "a", "title": "A"})).unwrap();
-        history_put(&json!({"id": "a", "episode": 3, "positionSecs": 12})).unwrap();
-        let list = follow_list().unwrap();
+        follow_put("hongguo", &json!({"id": "a", "title": "A"})).unwrap();
+        history_put(
+            "hongguo",
+            &json!({"id": "a", "episode": 3, "positionSecs": 12}),
+        )
+        .unwrap();
+        let list = follow_list(None).unwrap();
         assert_eq!(list["items"][0]["episode"], json!(3));
-        let one = history_get(&json!({"id": "a"})).unwrap();
+        let one = history_get(None, &json!({"id": "a"})).unwrap();
         assert_eq!(one["item"]["positionSecs"], json!(12));
         assert!(
-            history_get(&json!({})).unwrap()["items"]
+            history_get(None, &json!({})).unwrap()["items"]
                 .as_array()
                 .unwrap()
                 .len()
                 == 1
         );
-        assert!(follow_put(&json!({})).is_err());
+        assert!(follow_put("hongguo", &json!({})).is_err());
         reset();
     }
 
@@ -452,13 +551,17 @@ mod tests {
         let _guard = crate::test_serial::SERIAL.lock().unwrap();
         reset();
         // 显式给总集数 → 原样回读（追剧页据此算进度与「还有未看」）。
-        follow_put(&json!({"id": "a", "title": "A", "totalEpisode": 80})).unwrap();
-        let list = follow_list().unwrap();
+        follow_put(
+            "hongguo",
+            &json!({"id": "a", "title": "A", "totalEpisode": 80}),
+        )
+        .unwrap();
+        let list = follow_list(None).unwrap();
         assert_eq!(list["items"][0]["totalEpisode"], json!(80));
 
         // 未给总集数 → 0（未知），不臆造。
-        follow_put(&json!({"id": "b", "title": "B"})).unwrap();
-        let list = follow_list().unwrap();
+        follow_put("hongguo", &json!({"id": "b", "title": "B"})).unwrap();
+        let list = follow_list(None).unwrap();
         let b = list["items"]
             .as_array()
             .unwrap()
@@ -468,8 +571,8 @@ mod tests {
         assert_eq!(b["totalEpisode"], json!(0));
 
         // 后续更新未携带该字段时保留旧值（不被重置为 0）。
-        follow_put(&json!({"id": "a", "episode": 5})).unwrap();
-        let list = follow_list().unwrap();
+        follow_put("hongguo", &json!({"id": "a", "episode": 5})).unwrap();
+        let list = follow_list(None).unwrap();
         let a = list["items"]
             .as_array()
             .unwrap()
@@ -535,5 +638,59 @@ mod tests {
         let parsed: Store = serde_json::from_str(legacy).unwrap();
         assert_eq!(parsed.follows["a"].total_episode, 0);
         assert_eq!(parsed.follows["a"].episode, 2);
+    }
+
+    #[test]
+    fn follows_and_history_are_namespaced_by_source() {
+        let _guard = crate::test_serial::SERIAL.lock().unwrap();
+        reset();
+        // 同 id 在两源下互不干扰。
+        follow_put("hongguo", &json!({"id": "1", "title": "H", "episode": 3})).unwrap();
+        follow_put("other", &json!({"id": "1", "title": "O", "episode": 7})).unwrap();
+        history_put("hongguo", &json!({"id": "1", "episode": 3})).unwrap();
+        history_put("other", &json!({"id": "1", "episode": 7})).unwrap();
+
+        let all = follow_list(None).unwrap();
+        assert_eq!(all["items"].as_array().unwrap().len(), 2);
+        let hong = follow_list(Some("hongguo")).unwrap();
+        assert_eq!(hong["items"].as_array().unwrap().len(), 1);
+        assert_eq!(hong["items"][0]["episode"], json!(3));
+        assert_eq!(hong["items"][0]["source"], json!("hongguo"));
+
+        let one = history_get(Some("other"), &json!({"id": "1"})).unwrap();
+        assert_eq!(one["item"]["episode"], json!(7));
+        // 无过滤时取首个同名 id（旧行为）。
+        let any = history_get(None, &json!({"id": "1"})).unwrap();
+        assert!(any["item"]["episode"].as_u64().is_some());
+
+        // 按源删除只删本源。
+        follow_del("hongguo", &json!({"id": "1"})).unwrap();
+        let rest = follow_list(None).unwrap();
+        assert_eq!(rest["items"].as_array().unwrap().len(), 1);
+        assert_eq!(rest["items"][0]["source"], json!("other"));
+
+        // 按源清空只清本源。
+        history_clear(Some("hongguo")).unwrap();
+        let rest = history_get(None, &json!({})).unwrap();
+        assert_eq!(rest["items"].as_array().unwrap().len(), 1);
+        reset();
+    }
+
+    #[test]
+    fn legacy_store_without_source_migrates_to_default() {
+        // 老文件：裸 id 键 + 无 source 字段 → 归默认源并改写为复合键（幂等）。
+        let legacy = r#"{"follows":{"42":{"title":"T","cover":"","episode":2,
+            "position_secs":5,"duration_secs":0,"updated_at_ms":1}},
+            "history":[{"id":"42","episode":2,"position_secs":5,
+            "duration_secs":0,"updated_at_ms":1}]}"#;
+        let parsed: Store = serde_json::from_str(legacy).unwrap();
+        let migrated = migrate_store(parsed);
+        assert!(migrated.follows.contains_key("hongguo:42"));
+        assert_eq!(migrated.follows["hongguo:42"].source, "hongguo");
+        assert_eq!(migrated.history[0].source, "hongguo");
+        // 幂等：再迁一次不变。
+        let again = migrate_store(migrated);
+        assert!(again.follows.contains_key("hongguo:42"));
+        assert_eq!(again.follows.len(), 1);
     }
 }

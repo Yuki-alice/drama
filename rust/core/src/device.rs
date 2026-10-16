@@ -33,6 +33,9 @@ pub struct Identity {
 ///
 /// 空路径视为「未初始化」（`None`）：否则 `""` 会让 `progress.json` /
 /// `device.json` 相对于进程 CWD 落盘（测试会污染仓库目录）。
+///
+/// 切换同时复位依赖该目录的内存表（追剧/历史/搜索、目录缓存、下载索引），
+/// 否则旧目录的数据会在新目录下继续被服务。
 pub fn set_data_dir(dir: PathBuf) {
     let normalized = if dir.as_os_str().is_empty() {
         None
@@ -41,12 +44,18 @@ pub fn set_data_dir(dir: PathBuf) {
     };
     *DATA_DIR.lock().expect("data dir poisoned") = normalized;
     *CACHED.lock().expect("identity cache poisoned") = None;
+    crate::store::reset_for_data_dir();
+    crate::cache::reset_for_data_dir();
+    crate::download::reset_for_data_dir();
 }
 
 /// 清除数据目录（回到未初始化的内存模式）；供测试与生命周期收尾使用。
 pub fn clear_data_dir() {
     *DATA_DIR.lock().expect("data dir poisoned") = None;
     *CACHED.lock().expect("identity cache poisoned") = None;
+    crate::store::reset_for_data_dir();
+    crate::cache::reset_for_data_dir();
+    crate::download::reset_for_data_dir();
 }
 
 /// 当前数据目录（未初始化为 `None`，调用方退化为内存模式）。

@@ -1,7 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
+import '../domain/models/drama.dart';
 import '../ui/core/widgets/app_glass_scaffold.dart';
 import '../ui/core/widgets/content_widgets.dart';
 import '../ui/features/about/views/about_view.dart';
@@ -18,6 +18,12 @@ import '../ui/features/search/views/search_view.dart';
 import '../ui/features/settings/views/settings_view.dart';
 import 'app_navigation_shell.dart';
 import 'routes.dart';
+
+/// 路由 `source` 查询参数：缺省/空白归主源（与 Rust 信封缺省一致）。
+String _sourceOf(GoRouterState state) {
+  final source = (state.uri.queryParameters['source'] ?? '').trim();
+  return source.isEmpty ? 'hongguo' : source;
+}
 
 /// 应用路由。
 ///
@@ -76,8 +82,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: AppRoutes.detailPattern,
-        pageBuilder: (context, state) =>
-            _page(DetailView(id: state.pathParameters['id'] ?? '')),
+        pageBuilder: (context, state) => _page(
+          DetailView(
+            id: state.pathParameters['id'] ?? '',
+            source: _sourceOf(state),
+            // 列表卡片点入时随路携带剧目数据：详情页在数据到达前就能渲染
+            // 海报头，封面 Hero 转场才有落点。深链进入时没有 extra（null），
+            // 页面走普通加载态——不为深链伪造数据。
+            initial: state.extra is Drama ? state.extra as Drama : null,
+          ),
+        ),
       ),
       GoRoute(
         path: AppRoutes.playerPattern,
@@ -85,6 +99,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           PlayerView(
             id: state.pathParameters['id'] ?? '',
             episode: int.tryParse(state.uri.queryParameters['ep'] ?? ''),
+            source: _sourceOf(state),
           ),
         ),
       ),
@@ -121,12 +136,12 @@ class _AppErrorView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AppGlassScaffold(
-    title: '页面不存在',
-    body: Center(
-      child: ErrorView(
-        message: detail ?? '未找到该页面',
-        onRetry: () => context.go(AppRoutes.home),
-      ),
-    ),
-  );
+        title: '页面不存在',
+        body: Center(
+          child: ErrorView(
+            message: detail ?? '未找到该页面',
+            onRetry: () => context.go(AppRoutes.home),
+          ),
+        ),
+      );
 }

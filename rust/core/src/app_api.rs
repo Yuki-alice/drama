@@ -516,8 +516,7 @@ fn parse_app_detail(result: &Value, series_id: &str) -> Result<Value, SourceErro
     }))
 }
 
-/// App 状态映射：`series_status` 整数语义以直播校验为准，
-/// 当前按字符串 `"1"` 判完结（与 SSR 轨一致，待直播确认后统一）。
+/// App 状态映射：与 SSR 轨同一口径，`1` 为连载中，其余为完结。
 fn app_status(detail: &Value) -> &'static str {
     let raw = detail
         .get("series_status")
@@ -529,7 +528,7 @@ fn app_status(detail: &Value) -> &'static str {
             }
         })
         .unwrap_or_default();
-    if raw == "1" { "finished" } else { "ongoing" }
+    if raw == "1" { "ongoing" } else { "finished" }
 }
 
 /// 取流主链：App 签名接口 → multi 签名接口 → 网页公开轨 → 网页 SSR。
@@ -557,6 +556,7 @@ pub fn resolve_media(
     }
 
     let mut errors: Vec<String> = Vec::new();
+    let mut not_found: Option<SourceError> = None;
     for track in track_order_at(now) {
         let result = match track {
             Track::App => resolve_app_media(video_id, preferred),
@@ -576,9 +576,19 @@ pub fn resolve_media(
             Err(e @ (SourceError::Canceled | SourceError::Timeout)) => return Err(e),
             Err(e) => {
                 note_track_failure(track);
-                errors.push(format!("{track:?}: {e}").to_lowercase());
+                // 公开轨 404 意味着该集未公开：四轨全灭时优先报 NOT_FOUND，
+                // 前端据此展示授权文案，而不是可重试的 PARSE。
+                if matches!(e, SourceError::NotFound) && not_found.is_none() {
+                    not_found = Some(e);
+                    errors.push(format!("{track:?}: resource not found").to_lowercase());
+                } else {
+                    errors.push(format!("{track:?}: {e}").to_lowercase());
+                }
             }
         }
+    }
+    if let Some(e) = not_found {
+        return Err(e);
     }
     Err(SourceError::Parse(errors.join("; ")))
 }
@@ -592,7 +602,7 @@ pub fn resolve_media(
 /// 继续降级，而不是把一个 404 地址交给播放器（那会表现为「黑屏无错」）。
 fn resolve_public_media(video_id: &str) -> Result<ResolvedMedia, SourceError> {
     let url = format!("{WEB_BASE}/video/public/{video_id}/360p.mp4");
-    http::probe_playable(&url, WEB_REFERER)?;
+    http::probe_playable(&url, WEB_REFERER).map_err(public_probe_error)?;
     Ok(ResolvedMedia {
         url: url.clone(),
         referer: WEB_REFERER,
@@ -604,7 +614,17 @@ fn resolve_public_media(video_id: &str) -> Result<ResolvedMedia, SourceError> {
     })
 }
 
-/// App 取流：`video_model/v1` → 按清晰度打分选最优 + 全量 variants。
+/// 公开轨探测失败映射：404 即该集未公开，报 `NotFound`（前端展示授权文案），
+/// 其余按原错误透传。
+fn public_probe_error(e: crate::http::HttpError) -> SourceError {
+    if e.status == Some(404) {
+        SourceError::NotFound
+    } else {
+        SourceError::from(e)
+    }
+}
+
+/// App 取流：`video_model/v1` → 按清晰度打分选最优 + 全量 variants.
 /// `preferred > 0` 时只在 `quality <= preferred` 里选最优；无满足时回退最低档。
 fn resolve_app_media(video_id: &str, preferred: i64) -> Result<ResolvedMedia, SourceError> {
     let result = app_request(
@@ -1377,6 +1397,37 @@ mod tests {
         assert_eq!(quality_number(""), 0);
         assert_eq!(quality_field(&json!({"vheight": 720}), "vheight"), 720);
         assert_eq!(quality_field(&json!({"vheight": "480"}), "vheight"), 480);
+    }
+
+    #[test]
+    fn app_status_matches_ssr_track() {
+        assert_eq!(app_status(&json!({"series_status": "1"})), "ongoing");
+        assert_eq!(app_status(&json!({"series_status": 1})), "ongoing");
+        assert_eq!(app_status(&json!({"series_status": "2"})), "finished");
+        assert_eq!(app_status(&json!({"series_status": 2})), "finished");
+        assert_eq!(app_status(&json!({})), "finished");
+    }
+
+    #[test]
+    fn public_probe_404_maps_to_not_found() {
+        use crate::http::{HttpError, HttpErrorKind};
+        let not_found = public_probe_error(HttpError {
+            kind: HttpErrorKind::Transport,
+            status: Some(404),
+            retryable: false,
+            msg: "media not playable (status 404)".to_owned(),
+        });
+        assert!(matches!(not_found, SourceError::NotFound));
+        assert_eq!(not_found.code(), "NOT_FOUND");
+        // 非 404 原样透传为 Http，保持重试语义。
+        let other = public_probe_error(HttpError {
+            kind: HttpErrorKind::Transport,
+            status: Some(500),
+            retryable: true,
+            msg: "status 500".to_owned(),
+        });
+        assert!(matches!(other, SourceError::Http(_)));
+        assert!(other.retry());
     }
 
     /// 轨道记忆是**进程级全局**：相关测试必须拿同一把锁，并在开场清空状态，

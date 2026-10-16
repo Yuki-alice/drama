@@ -16,6 +16,7 @@ analyzer:
     - macos/**
     - linux/**
     - reference/** # 第三方参照源码，不入仓也不参与分析
+    - prototype/** # 独立 Flutter 工程，自带 pubspec，由它自己分析
 include: package:flutter_lints/flutter.yaml
 
 linter:

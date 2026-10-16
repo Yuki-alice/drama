@@ -96,3 +96,14 @@ abstract final class RankingBoards {
     DramaCategory(id: 'finished', name: '完结榜'),
   ];
 }
+
+/// 黄果 AI 分类（路由 id 与 Rust `CATEGORIES` 同口径，见契约文档源表）。
+abstract final class HuangguoCategories {
+  static const List<DramaCategory> all = <DramaCategory>[
+    DramaCategory(id: 'recommend', name: '推荐'),
+    DramaCategory(id: 'ai-duanju', name: 'AI短剧'),
+    DramaCategory(id: 'ai-manju', name: 'AI漫剧'),
+    DramaCategory(id: 'ai-huanlian', name: 'AI换脸'),
+    DramaCategory(id: 'ai-mogai', name: 'AI魔改'),
+  ];
+}

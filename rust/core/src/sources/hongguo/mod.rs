@@ -54,11 +54,12 @@ impl SourceProvider for HongguoProvider {
         let route = category
             .filter(|c| !c.is_empty())
             .unwrap_or(DEFAULT_CATEGORY_ROUTE);
-        // 站点分页参数未经实测；page>1 时按 `?page=` 拼装（待 W3 联网校准）。
-        let url = if page > 1 {
-            format!("{BASE}/category/{route}?page={page}")
-        } else {
+        // `page` 为 0 起页号；站点是 1 起 `?page=N`，裸 URL 即第 1 页
+        //（联网实测：裸 URL 与 `?page=1` 同内容，`?page=2` 为第 2 页）。
+        let url = if page == 0 {
             format!("{BASE}/category/{route}")
+        } else {
+            format!("{BASE}/category/{route}?page={}", page + 1)
         };
         let html = http::fetch_text_throttled(&url)?;
         let data = web_ssr::extract_router_data(&html)?;
@@ -239,23 +240,7 @@ fn register_and_warm(
 /// （Dart 侧据此回落到渐变占位）。`covers::proxy_url` 在端口未绑定或
 /// 未 `init` 时返回空串，此时同样回落占位，不影响主流程。
 fn proxy_covers(value: Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.into_iter().map(proxy_covers).collect()),
-        Value::Object(mut map) => {
-            if let Some(Value::String(raw)) = map.get("cover") {
-                let proxied = crate::covers::proxy_url(raw, SITE_REFERER);
-                if !proxied.is_empty() {
-                    map.insert("cover".to_owned(), Value::String(proxied));
-                }
-            }
-            for (_, child) in map.iter_mut() {
-                let taken = std::mem::take(child);
-                *child = proxy_covers(taken);
-            }
-            Value::Object(map)
-        }
-        other => other,
-    }
+    crate::covers::proxy_covers(value, SITE_REFERER)
 }
 
 /// `keyHex` → 16 字节（网关解密用；非法即报错，不静默降级为透传）。
@@ -272,6 +257,10 @@ fn hex_to_key(hex: &str) -> Result<[u8; 16], SourceError> {
 }
 
 /// 语义 `board` → 榜单页 key（`hot-drama|hot-real-drama|hot-comic-drama|hot-ai-drama`）。
+///
+/// 未知板**故意**回退热榜而非报错：榜单是内容位，降级不断流
+///（与熔断回退旧值、分栏越界回退第 1 段同一哲学）；前端只发三板，
+/// 未知值只可能来自手工构造，此时返回热榜比抛错更可用。
 fn rank_key_for(board: &str) -> &str {
     match board {
         "hot-drama" | "hot-real-drama" | "hot-comic-drama" | "hot-ai-drama" => board,

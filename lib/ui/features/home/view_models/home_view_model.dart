@@ -2,79 +2,44 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../data/repositories/catalog_providers.dart';
+import '../../../../data/repositories/catalog_repository.dart';
+import '../../../../data/services/rust_core.dart';
 import '../../../../domain/models/drama.dart';
 import '../../../../domain/models/drama_category.dart';
 
-/// 排序口径（「排序/连载筛选」）。
-enum HomeSort {
-  latest('最新'),
-  popular('最热');
-
-  const HomeSort(this.label);
-
-  final String label;
-}
-
-/// 连载状态筛选。
-enum HomeStatusFilter {
-  all('全部'),
-  ongoing('连载'),
-  finished('完结');
-
-  const HomeStatusFilter(this.label);
-
-  final String label;
-}
-
-/// 首页浏览条件（切类 / 排序 / 状态）。**只放条件，分页由 [HomeFeed] 承载。**
-@immutable
-class HomeFilter {
-  const HomeFilter({
-    // 默认落在「真人短剧」而非「推荐」：`recommend` 走的是 `recommend` op，
-    // 与顶部「为你推荐」横滑条**同源**，会让首屏上下重复展示同一批剧目。
-    // 选一个真实分类，首屏才是两种内容。
-    this.categoryId = _defaultCategoryId,
-    this.sort = HomeSort.latest,
-    this.status = HomeStatusFilter.all,
-  });
-
-  /// 与 `HongguoCategories.all` 的首个真实分类保持一致（`recommend` 是聚合位，不作默认）。
-  static const String _defaultCategoryId = 'real-drama';
-
-  final String categoryId;
-  final HomeSort sort;
-  final HomeStatusFilter status;
-
-  HomeFilter copyWith({
-    String? categoryId,
-    HomeSort? sort,
-    HomeStatusFilter? status,
-  }) => HomeFilter(
-    categoryId: categoryId ?? this.categoryId,
-    sort: sort ?? this.sort,
-    status: status ?? this.status,
-  );
-}
-
-class HomeFilterNotifier extends Notifier<HomeFilter> {
-  @override
-  HomeFilter build() => const HomeFilter();
-
-  /// 切类要重置筛选（切类不丢状态只针对导航位置）。
-  void selectCategory(String categoryId) =>
-      state = HomeFilter(categoryId: categoryId);
-
-  void selectSort(HomeSort sort) => state = state.copyWith(sort: sort);
-
-  void selectStatus(HomeStatusFilter status) =>
-      state = state.copyWith(status: status);
-}
-
-final homeFilterProvider = NotifierProvider<HomeFilterNotifier, HomeFilter>(
-  HomeFilterNotifier.new,
+/// 首页当前内容源（默认主源 `hongguo`）。
+///
+/// 顶栏「选择源」切换它；[homeFeedProvider] 跟随重建并重取。
+final homeSourceProvider = NotifierProvider<HomeSourceNotifier, String>(
+  HomeSourceNotifier.new,
 );
 
-/// 首页聚合结果：过滤/排序后的条目 + 是否还有下一页 + 已加载页数。
+class HomeSourceNotifier extends Notifier<String> {
+  @override
+  String build() => 'hongguo';
+
+  void select(String source) {
+    if (source.isNotEmpty) state = source;
+  }
+}
+
+/// 源对应的首页默认分类（真实源的首个内容分类；未知源退回 `recommend`）。
+String homeDefaultCategoryOf(String source) => switch (source) {
+      'hongguo' => 'real-drama',
+      'huangguoai' => 'ai-duanju',
+      _ => 'recommend',
+    };
+
+/// 当前源对应的目录仓库。
+///
+/// 主源走默认装配（含核心不可用时的 mock 回退）；其余源走按源仓库。
+final homeRepositoryProvider = Provider.family<CatalogRepository, String>(
+  (ref, source) => source == 'hongguo'
+      ? ref.watch(catalogRepositoryProvider)
+      : ref.watch(catalogRepositoryForSourceProvider(source)),
+);
+
+/// 首页聚合结果：条目 + 是否还有下一页 + 已加载页数。
 @immutable
 class HomeFeed {
   const HomeFeed({
@@ -82,6 +47,7 @@ class HomeFeed {
     required this.hasMore,
     required this.loadedPages,
     this.loadingMore = false,
+    this.loadMoreError,
   });
 
   final List<Drama> items;
@@ -89,14 +55,51 @@ class HomeFeed {
   /// 是否还能「加载更多」（的兜底入口）。
   final bool hasMore;
 
-  /// 已加载页数——触底分页。
+  /// 已加载页数——分页水位。
   final int loadedPages;
 
   /// 是否正在追加下一页（用于展示加载态，同时保留旧列表避免整页闪）。
   final bool loadingMore;
+
+  /// 追加失败的原因；`null` = 上次追加成功或尚未追加。
+  ///
+  /// **失败只标记错误，不动 [items]**：此前失败时 `state = AsyncError(...)`
+  /// 会把已加载的 `items` 整个丢掉，视图随之渲染整页 `ErrorView`——用户翻到
+  /// 第 5 页时一次网络抖动，整个信息流就消失了。现在失败只在列表尾部出现
+  /// 一条可重试的提示。
+  final String? loadMoreError;
+
+  /// 是否列表为空（首屏失败才会整页报错，见 [loadMoreError]）。
+  bool get isEmpty => items.isEmpty;
+
+  /// 只改「追加中 / 追加失败」两个瞬时标记，列表本身**原样保留**。
+  HomeFeed markLoadMore({
+    bool? loadingMore,
+    String? error,
+    bool clearError = false,
+  }) =>
+      HomeFeed(
+        items: items,
+        hasMore: hasMore,
+        loadedPages: loadedPages,
+        loadingMore: loadingMore ?? this.loadingMore,
+        loadMoreError: clearError ? null : (error ?? loadMoreError),
+      );
+
+  /// 追加一页（成功路径）。
+  HomeFeed append(
+    List<Drama> more, {
+    required bool hasMore,
+    required int loadedPages,
+  }) =>
+      HomeFeed(
+        items: <Drama>[...items, ...more],
+        hasMore: hasMore,
+        loadedPages: loadedPages,
+      );
 }
 
-/// 首页目录流：切类/筛选变化 → 自动重建重取；触底 → [loadMore] 追加。
+/// 首页目录流：源变化 → 自动重建重取；触底 → [loadMore] 追加。
 final homeFeedProvider = AsyncNotifierProvider<HomeFeedNotifier, HomeFeed>(
   HomeFeedNotifier.new,
 );
@@ -104,80 +107,67 @@ final homeFeedProvider = AsyncNotifierProvider<HomeFeedNotifier, HomeFeed>(
 class HomeFeedNotifier extends AsyncNotifier<HomeFeed> {
   @override
   Future<HomeFeed> build() async {
-    final filter = ref.watch(homeFilterProvider); // 条件变化 → 自动重建重取
-    final repository = ref.watch(catalogRepositoryProvider);
+    final source = ref.watch(homeSourceProvider);
+    final repository = ref.watch(homeRepositoryProvider(source));
 
     // 重启续载：**一次往返**取回此前已加载的 0..depth-1 页。
     //
     // 分页水位由 Rust 侧记录（`catalogPages` 不传 depth 即跟随水位），
     // 缓存命中的页在 Rust 内瞬时返回 —— 往返数从 N 降到 1，
-    // 也省掉 N 次 JSON 编解码。取回后仍做排序/状态过滤。
-    final pages = await repository.catalogPages(categoryId: filter.categoryId);
+    // 也省掉 N 次 JSON 编解码。
+    final pages = await repository.catalogPages(
+      categoryId: homeDefaultCategoryOf(source),
+    );
     if (pages.isEmpty) {
       return const HomeFeed(items: <Drama>[], hasMore: false, loadedPages: 0);
     }
-    final items = <Drama>[
-      for (final page in pages) ..._applyFilter(page.items, filter),
-    ];
     return HomeFeed(
-      items: items,
+      items: <Drama>[
+        for (final page in pages) ...page.items,
+      ],
       hasMore: pages.last.hasMore, // 以最后一页为准
       loadedPages: pages.length,
     );
   }
 
-  /// 追加下一页；失败保留旧数据并让错误态可见。
+  /// 追加下一页。
+  ///
+  /// **失败不丢数据**：catch 分支只把错误记进 [HomeFeed.loadMoreError]，
+  /// 已加载的 `items` 原样保留，视图在列表尾部渲染一条可重试的提示。
+  /// 只有 `build()` 的首载失败才让 `AsyncError` 冒到整页 `ErrorView`。
   Future<void> loadMore() async {
     // Riverpod 3 移除了 `valueOrNull`，`AsyncValue.value` 本身即为可空。
     final current = state.value;
     if (current == null || !current.hasMore || current.loadingMore) return;
-    final filter = ref.read(homeFilterProvider);
-    final repository = ref.read(catalogRepositoryProvider);
+    final source = ref.read(homeSourceProvider);
+    final repository = ref.read(homeRepositoryProvider(source));
     // 保留旧列表、仅标记追加中，避免整页闪（不触发 AsyncLoading）。
-    state = AsyncData(
-      HomeFeed(
-        items: current.items,
-        hasMore: current.hasMore,
-        loadedPages: current.loadedPages,
-        loadingMore: true,
-      ),
-    );
+    // 同时清掉上一次的错误：重试期间不该继续显示「上次失败了」。
+    state =
+        AsyncData(current.markLoadMore(loadingMore: true, clearError: true));
     try {
       final page = await repository.catalog(
-        categoryId: filter.categoryId,
+        categoryId: homeDefaultCategoryOf(source),
         page: current.loadedPages,
       );
       state = AsyncData(
-        HomeFeed(
-          items: <Drama>[...current.items, ..._applyFilter(page.items, filter)],
+        current.append(
+          page.items,
           hasMore: page.hasMore,
           loadedPages: current.loadedPages + 1,
         ),
       );
-    } catch (error, stack) {
-      state = AsyncError<HomeFeed>(error, stack); // 顶部「加载更多」失败要让用户看到
+    } catch (error) {
+      final message =
+          error is RustCoreException ? '${error.msg}（${error.code}）' : '$error';
+      state = AsyncData(
+        current.markLoadMore(loadingMore: false, error: message),
+      );
     }
   }
 }
 
-/// 客户端筛选/排序（真源无排序参数，故取回后本地处理）。
-List<Drama> _applyFilter(List<Drama> items, HomeFilter filter) {
-  var result = items
-      .where(
-        (drama) => switch (filter.status) {
-          HomeStatusFilter.all => true,
-          HomeStatusFilter.ongoing => drama.status == DramaStatus.ongoing,
-          HomeStatusFilter.finished => drama.status == DramaStatus.finished,
-        },
-      )
-      .toList();
-  if (filter.sort == HomeSort.popular) {
-    result = result.reversed.toList();
-  }
-  return result;
-}
-
-/// 推荐位。
+/// 推荐位（其它页面的推荐货架可用）。
 final homeRecommendationsProvider = FutureProvider<List<Drama>>(
   (ref) => ref.watch(catalogRepositoryProvider).recommendations(),
 );

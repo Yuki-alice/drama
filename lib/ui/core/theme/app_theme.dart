@@ -1,19 +1,20 @@
+import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
 import '../tokens/app_tokens.dart';
 import '../tokens/glass_tier.dart';
 import 'appearance_controller.dart';
 
-/// Material 主题（F-09）。
+/// Material 主题。
 ///
 /// 只负责 Material 侧的配色与字体——玻璃侧由 `GlassTheme` 另外提供
-/// （见 [buildGlassThemeData]）。`scaffoldBackgroundColor` 让
-/// `CupertinoPageScaffold` 在无显式背景时有正确底色。
+/// （见 [buildGlassThemeData]）。
 ///
-/// **为什么不 `ColorScheme.fromSeed`**：从种子推导会生成一整套
-/// 带有 Material 色相的容器色（primaryContainer / tertiary / surfaceTint…），
-/// 与我们精心算过对比度的暖中性面**冲突**，且会给海报墙引入第二、第三支
-/// 抢眼的颜色。这里显式构造 [ColorScheme]，只保留真正会用到的角色。
+/// **为什么不 `ColorScheme.fromSeed`**：从种子推导会生成一整套带 Material
+/// 色相的容器色（primaryContainer / tertiary / surfaceTint…），与本项目
+/// 「灰阶 + 一支标志绿」的双色板直接冲突。这里显式构造 [ColorScheme]，
+/// 只保留真正会用到的角色：交互态（开关 / 勾选 / 焦点 / 加载）指向标志绿，
+/// 主操作与中性面指向墨色。
 ThemeData buildMaterialTheme(
   Brightness brightness, {
   bool highContrast = false,
@@ -23,7 +24,9 @@ ThemeData buildMaterialTheme(
 
   final scheme = ColorScheme(
     brightness: brightness,
-    // 强调色：浅色下用白字、深色下用深墨字（见 AppColors.onAccent）。
+    // Material 的「主色」= 标志绿：开关 / 勾选 / 焦点 / 加载这类交互态
+    // 会取它。主操作**不**走 Material 按钮——它们是自绘的墨色胶囊
+    // （textPrimary 填充），所以绿色不会落到大块按钮上。
     primary: colors.accent,
     onPrimary: colors.onAccent,
     primaryContainer: colors.accentSubtle,
@@ -34,7 +37,9 @@ ThemeData buildMaterialTheme(
     tertiary: colors.textSecondary,
     onTertiary: colors.contentSurface,
     // 破坏性操作在 UI 层用措辞 + 确认承载，色板不再单列一支红。
-    error: colors.accent,
+    // 注意：这里也**不**指向 accent——色板里没有真正的错误色，
+    // 让 ErrorView 自己用墨色图标 + 措辞表达。
+    error: colors.textPrimary,
     onError: colors.onAccent,
     errorContainer: colors.accentSubtle,
     onErrorContainer: colors.textPrimary,
@@ -46,8 +51,8 @@ ThemeData buildMaterialTheme(
     surfaceContainer: colors.contentSurface,
     surfaceContainerHigh: colors.surfaceElevated,
     surfaceContainerHighest: colors.surfaceElevated,
-    // 关闭 Material 3 的色调叠加：我们的面色已是最终值，
-    // 再叠一层 primary 色调会让暖灰发紫。
+    // 关闭 Material 3 的色调叠加：面色已是最终值，
+    // 再叠一层 primary 色调会让纯中性面发紫。
     surfaceTint: Colors.transparent,
     outline: colors.divider,
     outlineVariant: colors.divider,
@@ -67,6 +72,7 @@ ThemeData buildMaterialTheme(
     scaffoldBackgroundColor: colors.background,
     canvasColor: colors.background,
     dividerColor: colors.divider,
+    // 发丝线：HIG 的分隔线语义（1px，不参与布局间距）。
     dividerTheme: DividerThemeData(
       color: colors.divider,
       thickness: 1,
@@ -74,9 +80,10 @@ ThemeData buildMaterialTheme(
     ),
     // 玻璃面自己承担动效，Material 的水波纹在玻璃上是噪点。
     splashFactory: NoSplash.splashFactory,
-    // Notion 风：选中/悬停靠**底色**而非描边或水波纹。
+    // 选中/悬停靠**底色**而非描边或水波纹（绿色浅底，见 accentSubtle）。
     highlightColor: colors.accentSubtle,
     hoverColor: colors.accentSubtle,
+    focusColor: colors.accentSubtle,
     textTheme: TextTheme(
       displaySmall: AppText.display.copyWith(color: colors.textPrimary),
       titleLarge: AppText.title.copyWith(color: colors.textPrimary),
@@ -96,37 +103,50 @@ ThemeData buildMaterialTheme(
       iconTheme: IconThemeData(color: colors.textPrimary, size: 20),
     ),
     iconTheme: IconThemeData(color: colors.textSecondary, size: 20),
-    // 列表/卡片默认无「纸片阴影」：Notion 用边界线分层，Apple 用材质分层，
-    // 两者都不靠投影——投影只留给真正浮起的功能层（玻璃）。
+    // 列表/卡片默认无「纸片阴影」：分层靠发丝线与材质，
+    // 投影只留给真正浮起的功能层（玻璃）。
     cardTheme: CardThemeData(
       color: colors.contentSurface,
       surfaceTintColor: Colors.transparent,
       elevation: 0,
-      shape: RoundedRectangleBorder(
+      shape: RoundedSuperellipseBorder(
         borderRadius: BorderRadius.circular(AppRadii.lg),
         side: BorderSide(color: colors.divider),
       ),
     ),
-    // 弹层用第三级亮度，与页面和卡片都拉开（HIG dark-mode.md base/elevated）。
+    // 弹层用更高一级的面 + 大圆角（弹层 28，见 AppRadii.sheet）。
     dialogTheme: DialogThemeData(
       backgroundColor: colors.surfaceElevated,
       surfaceTintColor: Colors.transparent,
       titleTextStyle: AppText.headline.copyWith(color: colors.textPrimary),
       contentTextStyle: AppText.body.copyWith(color: colors.textSecondary),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadii.lg),
+      shape: RoundedSuperellipseBorder(
+        borderRadius: BorderRadius.circular(AppRadii.sheet),
+      ),
+    ),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: colors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      modalBackgroundColor: colors.surfaceElevated,
+      elevation: 0,
+      shape: const RoundedSuperellipseBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppRadii.sheet),
+        ),
       ),
     ),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: dark
-          ? colors.surfaceElevated
-          : const Color(0xFF2C2A27),
+      // 深色场景反过来用浅面？不——snack 在两种外观下都是「屏幕上方的临时层」，
+      // 浅色下用墨面（`#0F0F0F`），深色下用抬高面，都保证其上文字可读。
+      backgroundColor: dark ? colors.surfaceElevated : const Color(0xFF0F0F0F),
       contentTextStyle: AppText.body.copyWith(
-        color: const Color(0xFFF5F3EF),
+        color: dark ? colors.textPrimary : const Color(0xFFECECEC),
       ),
-      actionTextColor: dark ? colors.accent : const Color(0xFFFF9A90),
+      // 动作文字取绿：墨面之上用标志绿（6.0:1），
+      // 深色抬高面（`#3A3A3A`）之上用提亮的 `accentDeep`（4.9:1）。
+      actionTextColor: dark ? colors.accentDeep : colors.accent,
       behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(
+      shape: RoundedSuperellipseBorder(
         borderRadius: BorderRadius.circular(AppRadii.md),
       ),
       elevation: 0,
@@ -135,6 +155,17 @@ ThemeData buildMaterialTheme(
       color: colors.accent,
       linearTrackColor: colors.sunken,
       circularTrackColor: Colors.transparent,
+    ),
+    // 内容页统一用 iOS 侧滑（可手势返回）；播放器这类「整窗接管」的路由
+    // 自己标 `fullscreenDialog: true`。
+    pageTransitionsTheme: const PageTransitionsTheme(
+      builders: <TargetPlatform, PageTransitionsBuilder>{
+        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.windows: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.linux: CupertinoPageTransitionsBuilder(),
+      },
     ),
   );
 }

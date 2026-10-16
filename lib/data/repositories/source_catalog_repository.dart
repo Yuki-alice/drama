@@ -4,7 +4,7 @@ import '../../domain/models/episode.dart';
 import '../services/rust_core.dart';
 import 'catalog_repository.dart';
 
-/// 红果免签轨① 的真实仓库：所有数据经 `RustCore` 的窄 ABI 取得。
+/// 多源目录仓库：所有数据经 `RustCore` 的窄 ABI 按源取得。
 ///
 /// op 契约见 `rust/core/src/lib.rs`：
 /// - `catalog` params `{category, page}` → `{items:[Drama], hasMore, page}`
@@ -13,10 +13,21 @@ import 'catalog_repository.dart';
 /// - `search` params `{keyword}`         → `{items:[Drama], total}`
 /// - `suggest` params `{keyword}`        → `{items:[string]}`
 /// - `detail` params `{id}`              → `{drama:Drama, episodes:[Episode]}`
-class HongguoCatalogRepository implements CatalogRepository {
-  HongguoCatalogRepository(this._core, {this.onStale});
+class SourceCatalogRepository implements CatalogRepository {
+  SourceCatalogRepository(
+    this._core, {
+    this.source = 'hongguo',
+    this.categoryList = HongguoCategories.all,
+    this.onStale,
+  });
 
   final RustCore _core;
+
+  /// 本仓库归属的源（信封 `source`、缓存 key 首段、session 首段同一口径）。
+  final String source;
+
+  /// 本源分类表（`categories()` 原样返回；首页据此建 tab）。
+  final List<DramaCategory> categoryList;
 
   /// 缓存兜底回调：`false` = 本次数据来自网络；`true` = 用旧值兜底
   /// （网络失败或榜单熔断中）。
@@ -26,10 +37,8 @@ class HongguoCatalogRepository implements CatalogRepository {
   /// `data.stale` 里告知本次是否为兜底，这里只把它转成 UI 可见的提示。
   final void Function(bool stale)? onStale;
 
-  static const String _source = 'hongguo';
-
   @override
-  Future<List<DramaCategory>> categories() async => HongguoCategories.all;
+  Future<List<DramaCategory>> categories() async => categoryList;
 
   @override
   Future<CatalogPage> catalog({
@@ -162,7 +171,7 @@ class HongguoCatalogRepository implements CatalogRepository {
     String op, {
     Map<String, Object?>? params,
   }) async {
-    final envelope = await _core.call(op, source: _source, params: params);
+    final envelope = await _core.call(op, source: source, params: params);
     if (envelope['ok'] == true) {
       final data = envelope['data'];
       if (data is Map) {
@@ -193,7 +202,9 @@ class HongguoCatalogRepository implements CatalogRepository {
   }
 
   Drama _drama(Map<String, Object?> json) => Drama(
-    id: json['id'] as String? ?? '',
+        id: json['id'] as String? ?? '',
+        // 源由仓库盖章（响应里不带源；跨源同 id 靠此区分）。
+        source: source,
     title: json['title'] as String? ?? '',
     categoryId: json['categoryId'] as String? ?? '',
     categoryName: json['categoryName'] as String? ?? '',

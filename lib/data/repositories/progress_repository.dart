@@ -16,6 +16,7 @@ class FollowEntry {
     required this.position,
     required this.duration,
     this.totalEpisode = 0,
+    this.source = 'hongguo',
   });
 
   final String id;
@@ -28,8 +29,12 @@ class FollowEntry {
   /// 总集数；`0` = 未知（旧记录或未提供）。
   final int totalEpisode;
 
+  /// 所属源（跨源同 id 是不同条目）。
+  final String source;
+
   factory FollowEntry.fromJson(Map<String, Object?> json) => FollowEntry(
         id: json['id'] as String? ?? '',
+        source: json['source'] as String? ?? 'hongguo',
         title: json['title'] as String? ?? '',
         cover: json['cover'] as String? ?? '',
         episode: (json['episode'] as num?)?.toInt() ?? 1,
@@ -49,6 +54,7 @@ class HistoryEntry {
     required this.episode,
     required this.position,
     required this.duration,
+    this.source = 'hongguo',
   });
 
   final String id;
@@ -56,8 +62,12 @@ class HistoryEntry {
   final Duration position;
   final Duration duration;
 
+  /// 所属源。
+  final String source;
+
   factory HistoryEntry.fromJson(Map<String, Object?> json) => HistoryEntry(
         id: json['id'] as String? ?? '',
+        source: json['source'] as String? ?? 'hongguo',
         episode: (json['episode'] as num?)?.toInt() ?? 1,
         position: Duration(
             seconds: (json['positionSecs'] as num?)?.toInt() ?? 0),
@@ -72,10 +82,12 @@ class ProgressRepository {
   const ProgressRepository(this._core);
 
   final SeriesCoreShim _core;
-
   Future<Map<String, Object?>> _call(
-      String op, Map<String, Object?> params) async {
-    final envelope = await _core.call(op, params: params);
+    String op,
+    Map<String, Object?> params, {
+    String? source,
+  }) async {
+    final envelope = await _core.call(op, source: source, params: params);
     if (envelope['ok'] == true) {
       final data = envelope['data'];
       if (data is Map) return Map<String, Object?>.from(data);
@@ -87,9 +99,10 @@ class ProgressRepository {
   Future<List<T>> _items<T>(
     String op,
     Map<String, Object?> params,
-    T Function(Map<String, Object?>) decode,
-  ) async {
-    final data = await _call(op, params);
+    T Function(Map<String, Object?>) decode, {
+    String? source,
+  }) async {
+    final data = await _call(op, params, source: source);
     final raw = data['items'];
     if (raw is! List) return const [];
     return <T>[
@@ -106,54 +119,67 @@ class ProgressRepository {
     Duration position = Duration.zero,
     Duration duration = Duration.zero,
     int totalEpisode = 0,
+    String source = 'hongguo',
   }) async {
-    await _call(opFollowPut, <String, Object?>{
-      'id': id,
-      if (title.isNotEmpty) 'title': title,
-      if (cover.isNotEmpty) 'cover': cover,
-      'episode': episode,
-      'positionSecs': position.inSeconds,
-      'durationSecs': duration.inSeconds,
-      if (totalEpisode > 0) 'totalEpisode': totalEpisode,
-    });
+    await _call(
+      opFollowPut,
+      <String, Object?>{
+        'id': id,
+        if (title.isNotEmpty) 'title': title,
+        if (cover.isNotEmpty) 'cover': cover,
+        'episode': episode,
+        'positionSecs': position.inSeconds,
+        'durationSecs': duration.inSeconds,
+        if (totalEpisode > 0) 'totalEpisode': totalEpisode,
+      },
+      source: source,
+    );
   }
 
-  Future<void> unfollow(String id) async {
-    await _call(opFollowDel, <String, Object?>{'id': id});
+  Future<void> unfollow(String id, {String source = 'hongguo'}) async {
+    await _call(opFollowDel, <String, Object?>{'id': id}, source: source);
   }
 
-  Future<List<FollowEntry>> follows() =>
-      _items(opFollowList, const <String, Object?>{}, FollowEntry.fromJson);
+  Future<List<FollowEntry>> follows({String? source}) =>
+      _items(opFollowList, const <String, Object?>{}, FollowEntry.fromJson,
+          source: source);
 
   Future<void> reportProgress({
     required String id,
     required int episode,
     required Duration position,
     required Duration duration,
+    String source = 'hongguo',
   }) async {
-    await _call(opHistoryPut, <String, Object?>{
-      'id': id,
-      'episode': episode,
-      'positionSecs': position.inSeconds,
-      'durationSecs': duration.inSeconds,
-    });
+    await _call(
+      opHistoryPut,
+      <String, Object?>{
+        'id': id,
+        'episode': episode,
+        'positionSecs': position.inSeconds,
+        'durationSecs': duration.inSeconds,
+      },
+      source: source,
+    );
   }
 
-  Future<List<HistoryEntry>> history() =>
-      _items(opHistoryGet, const <String, Object?>{}, HistoryEntry.fromJson);
+  Future<List<HistoryEntry>> history({String? source}) =>
+      _items(opHistoryGet, const <String, Object?>{}, HistoryEntry.fromJson,
+          source: source);
 
   /// 单剧续播信息：`historyGet{id}` → 该剧的 [HistoryEntry]；无记录返回 `null`。
   ///
   /// 播放页据此定位上次看到第几集、第几秒；与 [history] 走同一 op 的 `id` 分支。
-  Future<HistoryEntry?> resumeFor(String id) async {
-    final data = await _call(opHistoryGet, <String, Object?>{'id': id});
+  Future<HistoryEntry?> resumeFor(String id, {String? source}) async {
+    final data = await _call(opHistoryGet, <String, Object?>{'id': id},
+        source: source);
     final raw = data['item'];
     if (raw is! Map) return null;
     return HistoryEntry.fromJson(Map<String, Object?>.from(raw));
   }
 
-  Future<void> clearHistory() async {
-    await _call(opHistoryClear, const <String, Object?>{});
+  Future<void> clearHistory({String? source}) async {
+    await _call(opHistoryClear, const <String, Object?>{}, source: source);
   }
 }
 
@@ -186,27 +212,31 @@ final historyListProvider = FutureProvider<List<HistoryEntry>>((ref) async {
 
 /// 当前是否已追剧（详情页按钮态）。`false` 亦用于「核心不可用」——
 /// 此时按钮不显示已追剧态，避免误导。
-final isFollowingProvider = FutureProvider.family<bool, String>((
-  ref,
-  id,
-) async {
-  final holder = ref.watch(rustCoreProvider);
-  if (holder == null) return false;
-  final list = await ProgressRepository(
-    SeriesCoreShim(holder.core),
-  ).follows();
-  return list.any((entry) => entry.id == id);
-});
+final isFollowingProvider =
+    FutureProvider.family<bool, ({String id, String source})>((
+      ref,
+      key,
+    ) async {
+      final holder = ref.watch(rustCoreProvider);
+      if (holder == null) return false;
+      final list = await ProgressRepository(
+        SeriesCoreShim(holder.core),
+      ).follows(source: key.source);
+      return list.any((entry) => entry.id == key.id);
+    });
 
 /// 某剧的续播位置（播放页定位起始集/秒）；无记录返回 `null`。
-final resumeProvider = FutureProvider.family<HistoryEntry?, String>((
-  ref,
-  id,
-) async {
-  final holder = ref.watch(rustCoreProvider);
-  if (holder == null) return null;
-  return ProgressRepository(SeriesCoreShim(holder.core)).resumeFor(id);
-});
+final resumeProvider =
+    FutureProvider.family<HistoryEntry?, ({String id, String source})>((
+      ref,
+      key,
+    ) async {
+      final holder = ref.watch(rustCoreProvider);
+      if (holder == null) return null;
+      return ProgressRepository(
+        SeriesCoreShim(holder.core),
+      ).resumeFor(key.id, source: key.source);
+    });
 
 /// 追剧写入操作。写成功后失效受影响的读 provider，UI 自动刷新。
 ///
@@ -231,6 +261,7 @@ class ProgressActions {
     String cover = '',
     int episode = 1,
     int totalEpisode = 0,
+    String source = 'hongguo',
   }) async {
     await _repositoryOf(ref.read(rustCoreProvider)).follow(
       id: id,
@@ -238,16 +269,17 @@ class ProgressActions {
       cover: cover,
       episode: episode,
       totalEpisode: totalEpisode,
+      source: source,
     );
     ref.invalidate(followListProvider);
-    ref.invalidate(isFollowingProvider(id));
+    ref.invalidate(isFollowingProvider((id: id, source: source)));
   }
 
   /// 取消追剧（幂等）。
-  Future<void> unfollow(WidgetRef ref, String id) async {
-    await _repositoryOf(ref.read(rustCoreProvider)).unfollow(id);
+  Future<void> unfollow(WidgetRef ref, String id, {String source = 'hongguo'}) async {
+    await _repositoryOf(ref.read(rustCoreProvider)).unfollow(id, source: source);
     ref.invalidate(followListProvider);
-    ref.invalidate(isFollowingProvider(id));
+    ref.invalidate(isFollowingProvider((id: id, source: source)));
   }
 
   /// 观看进度上报：同时刷新追剧条目与历史。
@@ -257,37 +289,43 @@ class ProgressActions {
     required int episode,
     required Duration position,
     required Duration duration,
+    String source = 'hongguo',
   }) async {
     await _repositoryOf(ref.read(rustCoreProvider)).reportProgress(
       id: id,
       episode: episode,
       position: position,
       duration: duration,
+      source: source,
     );
     ref.invalidate(historyListProvider);
-    ref.invalidate(resumeProvider(id));
+    ref.invalidate(resumeProvider((id: id, source: source)));
     ref.invalidate(followListProvider);
   }
 
   /// 上报节流状态：同一部剧 [reportWindow] 内只落一次盘。
   DateTime? _lastReportAt;
-  String? _lastReportId;
+  String? _lastReportKey;
 
   /// 是否应跳过本次上报（纯时间判定，便于单测）。
+  ///
+  /// 节流键为（源，剧）：跨源同 id 各算各的窗口。
   bool shouldThrottle(
     String id,
     DateTime now, {
     Duration window = reportWindow,
+    String source = 'hongguo',
   }) {
     final last = _lastReportAt;
-    if (last == null || _lastReportId != id) return false;
+    final key = '$source:$id';
+    if (last == null || _lastReportKey != key) return false;
     return now.difference(last) < window;
   }
 
   /// 记录一次成功上报的时刻。
-  void markReported(String id, DateTime now) {
+  void markReported(String id, DateTime now, {String source = 'hongguo'}) {
     _lastReportAt = now;
-    _lastReportId = id;
+    _lastReportKey = '$source:$id';
   }
 }
 

@@ -79,7 +79,7 @@ void main() {
   });
 
   group('Episode.fromJson 与真源解析口径一致', () {
-    // `HongguoCatalogRepository._episode` 是另一处解析同一批 JSON 的代码，
+    // `SourceCatalogRepository._episode` 是另一处解析同一批 JSON 的代码，
     // 两边字段名/默认值必须一致，否则「详情页能看时长、播放页看不到」。
     test('durationSeconds 解析为 Duration，缺失为 null', () {
       final withDuration = Episode.fromJson(<String, Object?>{

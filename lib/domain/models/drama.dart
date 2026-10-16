@@ -27,10 +27,14 @@ class Drama {
     this.status = DramaStatus.finished,
     this.vip = false,
     this.cover = '',
+    this.source = 'hongguo',
   });
 
   /// 源内唯一 ID。
   final String id;
+
+  /// 所属源（仓库按自身源盖章；跨源同 id 是不同剧目）。
+  final String source;
 
   final String title;
 
@@ -69,8 +73,11 @@ class Drama {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is Drama && runtimeType == other.runtimeType && id == other.id;
+      other is Drama &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          source == other.source;
 
   @override
-  int get hashCode => id.hashCode;
+  int get hashCode => Object.hash(id, source);
 }

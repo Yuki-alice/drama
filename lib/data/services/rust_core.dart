@@ -14,28 +14,36 @@ import 'drama_core_bindings.dart';
 /// 后发的会立刻把先发的判为「迟到」并返回 `CANCELED`，首页随机空白。
 /// 因此按**逻辑流**分 session：只有同一逻辑流内的新请求才取代旧请求。
 ///
+/// session 首段一律是源：同 key 在不同源下是不同逻辑流，切源浏览不会
+/// 把对方在途打成 `CANCELED`。缺省源归主源（与 Rust 侧 key 归一化一致）。
+///
 /// 纯函数，便于单测。
-String logicalStreamFor(String op, Map<String, Object?>? params) {
+String logicalStreamFor(String op, Map<String, Object?>? params, [String? source]) {
+  final src = _sessionToken(
+    (source ?? '').trim().isEmpty ? 'hongguo' : source!.trim(),
+  );
   final args = params ?? const <String, Object?>{};
   String arg(String key) => (args[key] as String?)?.trim() ?? '';
+  late final String stream;
   switch (op) {
     case 'catalog':
       final category = arg('category');
-      return 'catalog:${category.isEmpty ? 'default' : _sessionToken(category)}';
+      stream = 'catalog:${category.isEmpty ? 'default' : _sessionToken(category)}';
     case 'recommend':
-      return 'recommend';
+      stream = 'recommend';
     case 'ranking':
       final board = arg('board');
-      return 'ranking:${board.isEmpty ? 'hot' : _sessionToken(board)}';
+      stream = 'ranking:${board.isEmpty ? 'hot' : _sessionToken(board)}';
     case 'search':
-      return 'search:${_sessionToken(arg('keyword'))}';
+      stream = 'search:${_sessionToken(arg('keyword'))}';
     case 'suggest':
-      return 'suggest:${_sessionToken(arg('keyword'))}';
+      stream = 'suggest:${_sessionToken(arg('keyword'))}';
     case 'detail':
-      return 'detail:${_sessionToken(arg('id'))}';
+      stream = 'detail:${_sessionToken(arg('id'))}';
     default:
-      return _sessionToken(op);
+      stream = _sessionToken(op);
   }
+  return '$src:$stream';
 }
 
 /// session 只允许 `[0-9a-zA-Z-_:.]` 且 ≤128（Rust 侧会校验，非法即 `BAD_REQUEST`）。
@@ -186,7 +194,8 @@ class RustCore {
     }
 
     // 逻辑流 + 该流内单调递增序号：只有同流内的新请求才取代旧在途。
-    final stream = logicalStreamFor(op, params);
+    // 流已按源隔离（见 [logicalStreamFor]），切源不互斥。
+    final stream = logicalStreamFor(op, params, source);
     final sequence = _sequences.update(
       stream,
       (value) => value + 1,

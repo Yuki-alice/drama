@@ -25,6 +25,7 @@
 use std::time::Duration;
 
 use once_cell::sync::Lazy;
+use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 /// 磁盘缓存文件数上限。
@@ -113,6 +114,35 @@ pub fn proxy_url(raw: &str, _referer: &'static str) -> String {
     };
     let token = format!("{}.{}", b64_encode(raw.as_bytes()), sign(raw));
     format!("http://127.0.0.1:{port}/img/{token}")
+}
+
+/// 递归改写 JSON 内所有 `cover` 字段为本机代理 URL（各源复用）。
+///
+/// 空白/相对路径永远不改写（改了就是指向无效上游的坏地址，不如留空）；
+/// 代理失败（端口未绑定等）时保留原值，由 Dart 侧回落占位。
+pub(crate) fn proxy_covers(value: Value, referer: &'static str) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|i| proxy_covers(i, referer))
+                .collect(),
+        ),
+        Value::Object(mut map) => {
+            if let Some(Value::String(raw)) = map.get("cover") {
+                let proxied = proxy_url(raw, referer);
+                if !proxied.is_empty() {
+                    map.insert("cover".to_owned(), Value::String(proxied));
+                }
+            }
+            for (_, child) in map.iter_mut() {
+                let taken = std::mem::take(child);
+                *child = proxy_covers(taken, referer);
+            }
+            Value::Object(map)
+        }
+        other => other,
+    }
 }
 
 /// 校验并还原出 CDN 地址；签名不符 / 解码失败 → `None`。

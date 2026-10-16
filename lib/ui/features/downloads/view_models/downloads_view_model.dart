@@ -33,11 +33,15 @@ class DownloadTask {
     this.done = 0,
     this.speed = 0,
     this.error = '',
+    this.source = 'hongguo',
   });
 
   final String dramaId;
 
   final String dramaTitle;
+
+  /// 所属源（离线播放 `playLocal` 按源查表）。
+  final String source;
 
   /// 1-based 集号。
   final int episode;
@@ -47,7 +51,7 @@ class DownloadTask {
   /// 0.0 ~ 1.0。
   final double progress;
 
-  /// Rust 侧任务 id（`seriesId:episode`），操作（暂停/重试/删除）用。
+  /// Rust 侧任务 id（`source:seriesId:episode`），操作（暂停/重试/删除）用。
   final String id;
 
   /// 资源总字节数（未知为 0）。
@@ -79,18 +83,20 @@ class DownloadGroup {
 /// 下载分组数据：Rust 真实任务按剧分组（`downloadListProvider` 轮询驱动）。
 final downloadGroupsProvider = StreamProvider<List<DownloadGroup>>((ref) {
   final records = ref.watch(downloadListProvider).value ?? const [];
+  // 按（源，剧）分组：跨源同 seriesId 是不同剧，不可并组。
   final groups = <String, List<DownloadRecord>>{};
   for (final record in records) {
-    groups.putIfAbsent(record.seriesId, () => []).add(record);
+    groups.putIfAbsent('${record.source}:${record.seriesId}', () => []).add(record);
   }
   return Stream.value(<DownloadGroup>[
     for (final entry in groups.entries)
       DownloadGroup(
         drama: Drama(
-          id: entry.key,
+          id: entry.value.first.seriesId,
+          source: entry.value.first.source,
           title: entry.value.first.title.isNotEmpty
               ? entry.value.first.title
-              : entry.key,
+              : entry.value.first.seriesId,
           categoryId: '',
           categoryName: '',
           episodeCount: entry.value.fold<int>(
@@ -102,6 +108,7 @@ final downloadGroupsProvider = StreamProvider<List<DownloadGroup>>((ref) {
               id: record.id,
               dramaId: record.seriesId,
               dramaTitle: record.title,
+              source: record.source,
               episode: record.episode,
               status: _statusFrom(record.state),
               progress: record.progress,

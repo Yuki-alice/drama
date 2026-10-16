@@ -25,10 +25,14 @@ class LibraryItem {
     required this.totalEpisode,
     required this.position,
     this.cover = '',
+    this.source = 'hongguo',
   });
 
   final String id;
   final String title;
+
+  /// 所属源（详情/播放按源解析；跨源同 id 是不同剧）。
+  final String source;
 
   /// 封面地址（本机代理 URL）；空串回落渐变占位。
   final String cover;
@@ -81,6 +85,7 @@ final libraryItemsProvider = FutureProvider<List<LibraryItem>>((ref) async {
     for (final entry in follows)
       LibraryItem(
         id: entry.id,
+        source: entry.source,
         title: entry.title.isEmpty ? entry.id : entry.title,
         watchedEpisode: entry.episode,
         totalEpisode: entry.totalEpisode,

@@ -123,11 +123,30 @@ Dart 侧不直接调用它们，而是经 `lib/data/services/rust_core.dart` 的
 
 `init` 幂等；失败不阻断（退化为进程内临时身份 + 纯内存持久化）。
 
+### 已注册源（`version.sources`）
+
+| id | 说明 | caps |
+|---|---|---|
+| `hongguo` | 红果（默认源）：App 签名 + SSR 双轨 | 全开 |
+| `huangguoai` | 黄果 AI（R1 规则化试点）：HTML 抓取 + HLS 直链 | 除 `suggest` 外全开（`catalog` 分类见下） |
+
+> 黄果 `catalog` 的 `category` 只接受 `ai-duanju`（默认）`ai-manju`
+> `ai-huanlian` `ai-mogai`，未知值报 `NOT_FOUND`；`page` 0 起，
+> 站内按 `/{slug}/`、`/{slug}/{N}/` 翻页。`ranking` 只有一个热榜，
+> `board` 忽略。分类页天然有跨页重复条目（站点 editorial 行为），
+> 如需去重由 Dart 按 `id` 做。
+
+> 黄果 `play` 的取流是**加密 HLS 直链**（`auth_key` baked 进 URL，
+> 无需 Referer，播放器侧 AES 由 media_kit 原生处理），因此它的 `proxyUrl`
+> 就是远端 m3u8 而非回环代理——这是规则化源的例外，不是 bug。
+> `auth_key` 会过期，取流结果不做解析缓存，每次现解现用；
+> `quality` 偏好无 ladder 可换，直接忽略。
+
 ### 2.2 目录与详情（读类，均走 Rust 缓存）
 
 | op | 入参 | data | 仲裁 |
 |---|---|---|---|
-| `catalog` | `category`?, `page`?（默认 1） | `{items:[Drama], hasMore, page, stale, ageSecs}` | 是 |
+| `catalog` | `category`?, `page`?（默认 0；0 起，与 `catalogPages` 同一起点） | `{items:[Drama], hasMore, page, stale, ageSecs}` | 是 |
 | `catalogPages` | `category`?, `depth`?（0/省略=跟随水位，上限见下） | `{pages:[[data]], hasMore, depth, stale, ageSecs}` | 是 |
 | `recommend` | — | `{items:[Drama], stale, ageSecs}` | 是 |
 | `ranking` | `board`?（默认 `hot`） | `{items:[Drama], stale, ageSecs}` | 是 |
@@ -139,6 +158,10 @@ Dart 侧不直接调用它们，而是经 `lib/data/services/rust_core.dart` 的
 `stale` / `ageSecs` 由缓存层注入：`stale=true` 表示**当前是缓存兜底数据**
 （网络失败后回退到 ≤24h 的旧值）。UI 应显示轻提示，而不是当作错误。
 
+读类 op 的缓存、分页水位、榜单熔断**全部按源隔离**（key 首段即源 id）：
+切源不会命中别源的缓存，也不会触发别源的熔断。`session` 同样按源隔离，
+同 key 跨源并发不互斥。老缓存文件（无源 key）升级时不再读取。
+
 `catalogPages` 的 `depth` 上限为 `MAX_PAGES_PER_REQUEST`（防误用导致超长串行拉取），
 超出会被静默 clamp。`depth` 省略/传 0 时跟随**已记录的分页水位**（用于重启续载）。
 
@@ -149,8 +172,8 @@ Dart 侧不直接调用它们，而是经 `lib/data/services/rust_core.dart` 的
 | `play` | `id`（必）, `episode`?（默认 1）, `vid`?, `quality`?（默认 0=最高） | `PlaybackPlan` | 是 |
 | `preload` | 同 `play` | `{ready:true, proxyUrl, vid, warmedBytes}` | 是 |
 | `playQuality` | `id`（必）, `vid`（必）, `quality`? | `PlaybackPlan` | 是 |
-| `playLocal` | `id`（必）, `episode`? | `PlaybackPlan`（无完成文件 → `NOT_FOUND`） | 否 |
-| `playFile` | `id`（必） | `PlaybackPlan`（注册本地文件会话） | 否 |
+| `playLocal` | `id`（必）, `episode`?；源走信封 `source`（缺省 `hongguo`） | `PlaybackPlan`（无完成文件 → `NOT_FOUND`） | 否 |
+| `playFile` | `id`（必，不透明任务 id） | `PlaybackPlan`（注册本地文件会话） | 否 |
 
 **`PlaybackPlan` 结构**：
 
@@ -192,19 +215,22 @@ Dart 侧不直接调用它们，而是经 `lib/data/services/rust_core.dart` 的
 
 | op | 入参 | data | 仲裁 |
 |---|---|---|---|
-| `followPut` | `id`（必）, `title`?, `cover`?, `episode`?, `positionSecs`?, `durationSecs`?, `totalEpisode`? | `{id}` | 否 |
+| `followPut` | `id`（必）, `title`?, `cover`?, `episode`?, `positionSecs`?, `durationSecs`?, `totalEpisode`? | `{id, source}` | 否 |
 | `followDel` | `id`（必） | `{id}`（幂等，不存在也算成功） | 否 |
-| `followList` | — | `{items:[FollowEntry]}` | 否 |
-| `historyPut` | `id`（必）, `episode`?, `positionSecs`?, `durationSecs`? | `{id}` | 否 |
-| `historyGet` | `id`? | 带 `id` → `{item:HistoryEntry\|null}`；不带 → `{items:[HistoryEntry]}` | 否 |
-| `historyClear` | — | `{cleared:true}`（不动追剧表） | 否 |
+| `followList` | 信封 `source`?（只看该源；省略看全源） | `{items:[FollowEntry]}` | 否 |
+| `historyPut` | `id`（必）, `episode`?, `positionSecs`?, `durationSecs`? | `{id, source}` | 否 |
+| `historyGet` | `id`?；信封 `source`?（只看该源；省略取首个同名 id） | 带 `id` → `{item:HistoryEntry\|null}`；不带 → `{items:[HistoryEntry]}` | 否 |
+| `historyClear` | 信封 `source`?（只清该源；省略清全源） | `{cleared:true}`（不动追剧表） | 否 |
 
 ```
-FollowEntry  = {id, title, cover, episode, positionSecs, durationSecs, totalEpisode, updatedAtMs}
-HistoryEntry = {id, episode, positionSecs, durationSecs, updatedAtMs}
+FollowEntry  = {id, source, title, cover, episode, positionSecs, durationSecs, totalEpisode, updatedAtMs}
+HistoryEntry = {id, source, episode, positionSecs, durationSecs, updatedAtMs}
 ```
 
-`historyPut` 会**同时**刷新已存在追剧条目的进度；`followList` 按 `updatedAtMs` 倒序。
+写操作（Put/Del）用的都是**信封级 `source`**（缺省 `hongguo`），主键为 `(source, id)`：
+同剧集在不同源下是两条独立记录，互不覆盖。老 `progress.json`（无源字段、
+裸 id 键）首次载入自动迁移归默认源。`historyPut` 会**同时**刷新已存在追剧条目的进度；
+`followList` 按 `updatedAtMs` 倒序。搜索历史是全局的（关键词与源无关），不在此列。
 
 > `FollowEntry.cover` 读出时已按**当前**代理端口改写（端口跨会话会变），
 > 前端直接渲染即可，不要再自己解析 URI。
@@ -224,8 +250,8 @@ HistoryEntry = {id, episode, positionSecs, durationSecs, updatedAtMs}
 
 | op | 入参 | data | 仲裁 |
 |---|---|---|---|
-| `downloadStart` | `seriesId`（必）, `episode`?, `vid`?, `quality`?, `title`?, `cover`? | `DownloadRecord` | 否 |
-| `downloadList` | — | `{items:[DownloadRecord]}` | 否 |
+| `downloadStart` | `seriesId`（必）, `episode`?, `vid`?, `quality`?, `title`?, `cover`?；源走信封 `source`（缺省 `hongguo`） | `DownloadRecord` | 否 |
+| `downloadList` | — | `{tasks:[DownloadRecord], items:[DownloadRecord], parallel, connections, dir}` | 否 |
 | `downloadPause` | `id`（必） | `DownloadRecord` | 否 |
 | `downloadRetry` | `id`（必） | `DownloadRecord` | 否 |
 | `downloadCancel` | `id`（必） | `DownloadRecord` | 否 |
@@ -234,14 +260,18 @@ HistoryEntry = {id, episode, positionSecs, durationSecs, updatedAtMs}
 | `downloadSetConcurrency` | `parallel`（1..=6） | — | 否 |
 
 ```
-DownloadRecord = {id, seriesId, title, cover, episode, vid, quality,
+DownloadRecord = {id, source, seriesId, title, cover, episode, vid, quality,
                   total, done, state, error, speed}
 ```
 
-`id` 形如 `"{seriesId}:{episode}"`。`state` ∈
+`id` 形如 `"{source}:{seriesId}:{episode}"`（任务不透明句柄：pause/retry/cancel/delete/file
+凭此操作，原样回传即可）。`state` ∈
 `queued` `downloading` `paused` `completed` `failed`。
 
-- `downloadStart` **幂等**：同 `id` 已存在则直接返回现有记录，不重复下载。
+- `downloadStart` **幂等**：同（源，剧，集）已存在则直接返回现有记录，不重复下载。
+- 老索引（无源字段、裸 id、旧任务目录）首次载入自动迁移：记录归默认源，
+  磁盘目录搬到新位置；搬迁失败不丢数据（文件留旧处）。
+- `playLocal` 同样按信封 `source` 查表；`playFile` 凭任务 `id` 直接定位。
 - `moveDownloads` 会**先停机再搬**，失败时旧目录原样保留。
 - `downloadDelete` 的 `files=true` 才删磁盘文件。
 

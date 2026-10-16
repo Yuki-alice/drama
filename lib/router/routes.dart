@@ -20,9 +20,18 @@ abstract final class AppRoutes {
   static const String playerPattern = '/player/:id';
 
   /// 详情页路径。
-  static String detail(String id) => '/drama/$id';
+  ///
+  /// `source` 缺省/主源时不拼 query（老路径字节不变，深链兼容）。
+  static String detail(String id, {String source = 'hongguo'}) =>
+      source == 'hongguo' ? '/drama/$id' : '/drama/$id?source=$source';
 
   /// 播放页路径；`episode` 为 1-based 集号。
-  static String player(String id, {int? episode}) =>
-      episode == null ? '/player/$id' : '/player/$id?ep=$episode';
+  static String player(String id, {int? episode, String source = 'hongguo'}) {
+    final base = '/player/$id';
+    final query = <String>[
+      if (episode != null) 'ep=$episode',
+      if (source != 'hongguo') 'source=$source',
+    ];
+    return query.isEmpty ? base : '$base?${query.join('&')}';
+  }
 }

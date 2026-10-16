@@ -10,9 +10,13 @@ use traits::{SourceError, SourceProvider};
 /// 默认源 id。
 pub const DEFAULT_SOURCE_ID: &str = "hongguo";
 
-/// 注册表：P0 只注册 `hongguo`（默认源）。P2 扩展源在此追加即可，引擎与 Dart 侧零改动。
+/// 注册表：`hongguo`（默认源）+ `huangguoai`（R1 规则化试点）。
+/// P2 扩展源在此追加即可，引擎与 Dart 侧零改动。
 static REGISTRY: Lazy<Vec<Arc<dyn SourceProvider>>> = Lazy::new(|| {
-    vec![Arc::new(crate::sources::hongguo::HongguoProvider::new()) as Arc<dyn SourceProvider>]
+    vec![
+        Arc::new(crate::sources::hongguo::HongguoProvider::new()) as Arc<dyn SourceProvider>,
+        Arc::new(crate::sources::huangguo::HuangguoProvider::new()) as Arc<dyn SourceProvider>,
+    ]
 });
 
 /// 按 `source` 取实现：`None` 用默认源；未注册返回 [`SourceError::NotFound`]。

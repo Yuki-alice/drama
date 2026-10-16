@@ -158,8 +158,7 @@ fn category_of(v: &Value) -> (String, String) {
 
 /// 剧卡归一化（字段名为 Dart 契约，勿改）。
 ///
-/// ⚠️ `status`：`series_episode_info.series_status` 的整数字典**未实测确证**（未留字典）。
-/// 按常识取 `1 = 连载(ongoing)`，其余一律 `finished`——**该判定不确定，待 W3 联网校准**。
+/// `status` 与 App 轨统一口径：`1` 为连载中，其余为完结。字典尚未经直播确证，后续以实测为准。
 fn normalize_drama(v: &Value) -> Value {
     let episode_info = v.get("series_episode_info");
     let episode_count = int_field(v, "episode_cnt")
@@ -244,6 +243,9 @@ fn first_section_items(page: &Value) -> Vec<Value> {
 }
 
 /// 分类目录 → `{items:[Drama], hasMore:bool, page:int}`。
+///
+/// `page` 回显请求页号（0 起，与缓存 key 一致）；`hasMore` 按站点
+/// `pageNum/totalPages`（1 起）判定，不受回显口径影响。
 pub fn parse_catalog(data: &Value, requested_page: u32) -> Result<Value, SourceError> {
     let page = find_payload(data, "recommendList")
         .ok_or_else(|| SourceError::Parse("missing recommendList".to_owned()))?;
@@ -260,7 +262,7 @@ pub fn parse_catalog(data: &Value, requested_page: u32) -> Result<Value, SourceE
     let has_more = pagination
         .and_then(|p| int_field(p, "totalPages"))
         .is_some_and(|total| page_num < total);
-    Ok(json!({ "items": items, "hasMore": has_more, "page": page_num }))
+    Ok(json!({ "items": items, "hasMore": has_more, "page": requested_page }))
 }
 
 /// 搜索 → `{items:[Drama], total:int}`（`searchList[].video_data`）。

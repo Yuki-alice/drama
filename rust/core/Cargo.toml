@@ -32,6 +32,8 @@ tokio-util = "0.7"
 # `_ROUTER_DATA` 定位正则 + URL/host 规范化。
 regex = "1"
 url = "2"
+# R1 黄果试点：HTML 抓取（CSS 选择器 over html5ever；ISC 许可，deny allow-list 已覆盖）。
+scraper = "0.27"
 md5 = "0.8.1"
 base64 = "0.23.1"
 aes = "0.9.3"

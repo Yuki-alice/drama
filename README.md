@@ -88,18 +88,42 @@ Material**，因此它直接摆放的 appBar 标题与 bottomBar 标签会继承
 
 ## 设计系统
 
-配色取向：**Apple 的语义结构 + Notion 的暖调中性面**。
+取向：**「ChatGPT 双色 · 玻璃」——OpenAI 灰阶 + 一支标志绿 `#10A37F`**
+（规格见 `outputs/design-prototype-spec.md`）。绿色只表达**状态与进程**，
+主操作仍是墨色胶囊——海报墙上界面不与剧照抢注意力。
 
-- 语义色板 `AppColors` 以 `ThemeExtension` 下发（`AppColors.of(context)` 与 Material
-  组件同源），提供 base / content / elevated / sunken 四级面与三级文字。
-- **强调色只有一支**（品牌绯红）：本应用是彩色海报墙，HIG `color.md` 要求
-  内容色彩丰富时控件取单色外观或选足够区分度的强调色。语义色另有两支
-  （成功/警告），状态另有措辞承载，**不靠颜色单独传达信息**。
-- 全部取值按 WCAG 计算过浅/深/高对比三种上下文，正文 ≥4.5:1、大字与控件 ≥3:1
-  （最紧的一档是三级文字压在 sunken 面上：4.73:1）。改色值前请重算。
-- 不做纯白/纯黑：浅色用暖米白纸面，深色用暖深灰，避免长列表与海报墙刺眼。
-- 封面为不透明内容层；玻璃只出现在功能层（栏/条/卡/弹层），符合 HIG
-  `materials.md`「Don't use Liquid Glass in the content layer」。
+四条纪律：
+
+1. **墨色是唯一重型填充**——主按钮 / 选集格选中一律「墨色胶囊 + 反白字」（配 `onInk`）；
+2. **绿色只做状态与进程**——进度、加载、开关、焦点、选中标记、徽章、链接；
+   不做装饰、不刷大面积；
+3. **绿色小字一律 `accentDeep`**——浅色底上标志绿只到 3.20:1（图形级）；
+   白字也不进绿底做小号；
+4. **玻璃只出现在功能层**——Tab 栏 / 固定顶栏 / 搜索 / 侧栏 / 播放器控件；
+   内容层（海报 / 画面）保持不透明（HIG `materials.md`）。
+
+落地要点：
+
+- 语义色板 `AppColors` 以 `ThemeExtension` 下发（`AppColors.of(context)` 与
+  Material 组件同源）：纸白 / 炭灰 / 浅雾三级面 + ink / graphite / silver 三级文字，
+  深浅两端取 ChatGPT 色号（浅 `#FFFFFF/#F7F7F8/#E5E5E5`，深 `#212121/#2F2F2F/#171717`）。
+- **对比度有实测表，且表本身是测试**（`test/token_contrast_test.dart`）。
+  三级文字浅色端 3.23:1 只能装饰；改色值先跑该测试。
+- **数字与元信息走等宽**（`AppText.mono` / `numeral` / `stat`，SF Mono → Menlo →
+  Roboto Mono），让集号、时间码、榜单序号纵向对齐、读数不跳动。
+- **圆角一律连续曲率**：内容层由 `AppRadii.shape()` 出口，玻璃面用包内建的
+  `LiquidRoundedSuperellipse`，两者同一曲率模型。
+- **Tab 栏选中态是「浮起玻璃镜片」**（白 92% 底 + 柔和投影 + 墨色加粗字）。
+- **固定玻璃顶栏** `GlassTopBar`（`ui/core/widgets/glass_top_bar.dart`）：毛玻璃 +
+  半透明底 + 底部发丝线，内容从下方滚过；支持 leading / title / bottom 槽。
+- 动效三档时长 + 两个曲线在 `AppMotion`；`PressableScale`（按下微缩）、
+  `Reveal`（首屏逐个浮起）、`HairlineProgress`（3px 发丝进度）
+  都消费同一套 token，且全部尊重 `disableAnimations`。
+- 内容层版式词汇表在 `ui/core/widgets/lockups.dart`（榜单行 / 追剧行）；
+  首页信息流卡片在 `ui/features/home/views/home_view.dart`。
+- **封面 Hero**：列表卡片 → 详情页海报的共享元素转场（`CoverHero`，
+  `ui/core/widgets/drama_cover.dart`）；详情路由 `extra` 携带卡片数据，
+  保证转场开始时落点已存在。
 
 ## 平台
 
@@ -148,7 +172,8 @@ FFI 绑定（`lib/data/services/drama_core_bindings.dart`）**为手写并须保
 
 已完成（本轮）：真实封面全链路（Rust 代理 + 签名 + 磁盘缓存 + 端口改写）、
 追剧与观看进度接线（续播 / 历史 / 追剧页 / 我的）、播放页 seek 与预取、
-配色重做（含高对比与深色）。
+多源架构（红果 + 黄果 AI，caps 能力协商）、配色重做（ChatGPT 双色，含高对比与深色）、
+首页 Kazumi 式信息流、搜索页 / 详情页重做（海报模糊背景 + 宽屏双栏）、封面 Hero 转场。
 
 待完成：
 

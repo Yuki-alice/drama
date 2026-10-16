@@ -919,4 +919,30 @@ mod tests {
         decrypt_sample(&key, &iv, &mut data);
         assert_eq!(data, plain);
     }
+
+    /// 解密吞吐基线：1MiB 整样本 CTR（代理逐段解密的热路径）。
+    ///
+    /// 用 `cargo test --release -- --ignored --nocapture` 跑；本机波动大时取多组最小。
+    #[test]
+    #[ignore = "性能测量：需 release"]
+    fn bench_decrypt_sample_throughput() {
+        use std::time::Instant;
+        let key = [7u8; 16];
+        let iv = [3u8; 16];
+        let plain = vec![0x5Au8; 1024 * 1024];
+        const ROUNDS: usize = 50;
+        let mut best = f64::INFINITY;
+        for _ in 0..5 {
+            let mut buf = plain.clone();
+            let start = Instant::now();
+            for _ in 0..ROUNDS {
+                decrypt_sample(&key, &iv, &mut buf);
+            }
+            best = best.min(start.elapsed().as_secs_f64() * 1e6 / ROUNDS as f64);
+        }
+        println!(
+            "decrypt_sample 1MiB: {best:.0}µs/次 ≈ {:.0}MB/s",
+            1.0 / (best / 1e6),
+        );
+    }
 }

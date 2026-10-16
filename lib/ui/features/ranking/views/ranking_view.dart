@@ -4,171 +4,154 @@ import 'package:go_router/go_router.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../../../../data/repositories/catalog_repository.dart';
-import '../../../../data/services/rust_core.dart';
-import '../../../../domain/models/drama.dart';
 import '../../../../router/routes.dart';
+import '../../../core/errors.dart';
+import '../../../core/motion/app_motion.dart';
 import '../../../core/tokens/app_tokens.dart';
+import '../../../core/widgets/app_glass_scaffold.dart';
+import '../../../core/widgets/app_nav_bar.dart';
 import '../../../core/widgets/content_widgets.dart';
-import '../../../core/widgets/drama_cover.dart';
+import '../../../core/widgets/glass_kit.dart';
+import '../../../core/widgets/lockups.dart';
 import '../view_models/ranking_view_model.dart';
 
-/// 榜单：横滑切板 + 带名次的列表。
+/// 榜单。
 ///
-/// 主导航分支页，只返回 body 内容——外壳（AppGlassScaffold / 导航栏）由
-/// AppNavigationShell 统一提供。
+/// 与首页的分工：首页负责「逛」，榜单负责「比」。所以这里第一件事是
+/// **口径切换**（热度 / 上新 / …），先给口径再给名次；名次用大号等宽数字
+/// （数字即视觉），行高压到 64，一屏能读完八条。
 class RankingView extends ConsumerWidget {
   const RankingView({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final colors = AppColors.of(context);
     final selectedBoard = ref.watch(rankingBoardProvider);
     final dramasAsync = ref.watch(rankingListProvider);
-    final boardName = RankingBoards.all
-        .firstWhere((board) => board.id == selectedBoard)
-        .name;
+    final boardName =
+        RankingBoards.all.firstWhere((board) => board.id == selectedBoard).name;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: <Widget>[
-        // 板切换：玻璃 chip 独立 own-layer，置于 body 顶层而非玻璃卡内。
-        SizedBox(
-          height: 52,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.gutter),
-            itemCount: RankingBoards.all.length,
-            separatorBuilder: (context, index) =>
-                const SizedBox(width: AppSpacing.sm),
-            itemBuilder: (context, index) {
-              final board = RankingBoards.all[index];
-              return Center(
-                child: GlassChip(
-                  label: board.name,
-                  selected: board.id == selectedBoard,
+    return CustomScrollView(
+      slivers: <Widget>[
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: AppSpacing.pageH,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                const GlassContentTopInset(extra: AppSpacing.sm),
+                PageHead(
+                  title: '榜单',
+                  trailingText: dramasAsync.value == null
+                      ? null
+                      : '${dramasAsync.value!.length} 条',
+                  actions: <Widget>[
+                    GlassIconAction(
+                      icon: Icons.search_rounded,
+                      semanticLabel: '搜索',
+                      onPressed: () => context.push(AppRoutes.search),
+                    ),
+                  ],
+                ),
+                // 口径切换：8 个板以内用分段控件，超过走可滚动变体。
+                GlassSegmentedControl.scrollable(
+                  height: 40,
+                  segments: <GlassSegment>[
+                    for (final board in RankingBoards.all)
+                      GlassSegment(label: board.name, id: board.id),
+                  ],
+                  selectedIndex: RankingBoards.all.indexWhere(
+                    (board) => board.id == selectedBoard,
+                  ),
+                  onSegmentSelected: (index) => ref
+                      .read(rankingBoardProvider.notifier)
+                      .select(RankingBoards.all[index].id),
                   useOwnLayer: true,
-                  onTap: () =>
-                      ref.read(rankingBoardProvider.notifier).select(board.id),
-                  labelStyle: AppText.callout.copyWith(
-                    color: board.id == selectedBoard
-                        ? colors.accent
-                        : colors.textSecondary,
-                    fontWeight: FontWeight.w600,
+                  selectedTextStyle: AppText.callout.copyWith(
+                    color: AppColors.of(context).textPrimary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  unselectedTextStyle: AppText.callout.copyWith(
+                    color: AppColors.of(context).textSecondary,
                   ),
                 ),
-              );
-            },
+                const SizedBox(height: AppSpacing.md),
+              ],
+            ),
           ),
         ),
-        SectionHeader(title: boardName),
-        Expanded(
-          child: dramasAsync.when(
-            data: (dramas) => dramas.isEmpty
-                ? const EmptyView(message: '该榜单暂无剧集')
-                : ListView.builder(
-                    padding: const EdgeInsets.only(bottom: AppSpacing.xl),
-                    itemCount: dramas.length,
-                    itemBuilder: (context, index) => _RankingRow(
-                      rank: index + 1,
-                      drama: dramas[index],
-                      onTap: () =>
-                          context.push(AppRoutes.detail(dramas[index].id)),
-                    ),
+
+        // 口径说明 + 发丝分隔：名次表的语境，不是装饰。
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: AppSpacing.pageH,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Text(
+                  '$boardName · 每小时更新',
+                  style: AppText.mono.copyWith(
+                    color: AppColors.of(context).textSecondary,
                   ),
-            loading: () => const LoadingView(),
-            error: (error, _) => ErrorView(
-              message: _errorMessage(error),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                Divider(color: AppColors.of(context).divider, height: 1),
+              ],
+            ),
+          ),
+        ),
+
+        dramasAsync.when(
+          data: (dramas) => dramas.isEmpty
+              ? const SliverToBoxAdapter(
+                  child: EmptyView(
+                    message: '该榜单暂无剧集',
+                    icon: Icons.leaderboard_outlined,
+                    hint: '换个口径看看',
+                  ),
+                )
+              : SliverPadding(
+                  padding: AppSpacing.pageH,
+                  sliver: SliverList.separated(
+                    itemCount: dramas.length,
+                    separatorBuilder: (context, index) => Divider(
+                      color: AppColors.of(context).divider,
+                      height: 1,
+                    ),
+                    itemBuilder: (context, index) {
+                      final drama = dramas[index];
+                      return Reveal(
+                        index: index,
+                        child: RankRow(
+                          drama: drama,
+                          rank: index + 1,
+                          onTap: () => context.push(
+                            AppRoutes.detail(drama.id, source: drama.source),
+                            // 携带卡片数据供详情页立即渲染海报头（Hero 落点）。
+                            extra: drama,
+                          ),
+                          trailing: Icon(
+                            Icons.chevron_right_rounded,
+                            size: 20,
+                            color: AppColors.of(context).textDisabled,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+          loading: () => const SliverToBoxAdapter(
+            child: LoadingView(label: '正在加载榜单'),
+          ),
+          error: (error, _) => SliverToBoxAdapter(
+            child: ErrorView(
+              message: errorMessage(error),
               onRetry: () => ref.invalidate(rankingListProvider),
             ),
           ),
         ),
+
+        const SliverNavBarBottomInset(),
       ],
-    );
-  }
-}
-
-/// 统一错误文案（[RustCoreException] 带错误码，其余直接 `toString`）。
-String _errorMessage(Object error) =>
-    error is RustCoreException ? '${error.msg}（${error.code}）' : '$error';
-
-/// 单条名次行：序号 + 海报 + 标题/元信息（整行普通 Row，可点进详情）。
-class _RankingRow extends StatelessWidget {
-  const _RankingRow({
-    required this.rank,
-    required this.drama,
-    required this.onTap,
-  });
-
-  final int rank;
-  final Drama drama;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    final isTop = rank == 1;
-
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.gutter,
-          vertical: AppSpacing.sm,
-        ),
-        child: Row(
-          children: <Widget>[
-            SizedBox(
-              width: 28,
-              child: Text(
-                '$rank',
-                textAlign: TextAlign.center,
-                style: (isTop ? AppText.headline : AppText.body).copyWith(
-                  color: isTop ? colors.accent : colors.textSecondary,
-                  fontWeight: isTop ? FontWeight.w800 : FontWeight.w600,
-                ),
-              ),
-            ),
-            const SizedBox(width: AppSpacing.md),
-            SizedBox(
-              width: 56,
-              child: DramaCover(
-                seed: drama.coverSeed,
-                cover: drama.cover,
-                title: drama.title,
-                aspectRatio: 0.75,
-                radius: AppRadii.md,
-                showTitleOverlay: false,
-              ),
-            ),
-            const SizedBox(width: AppSpacing.md),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  Text(
-                    drama.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.body.copyWith(
-                      color: colors.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${drama.categoryName} · 共 ${drama.episodeCount} 集 · '
-                    '${drama.status.label}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.caption.copyWith(color: colors.textTertiary),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

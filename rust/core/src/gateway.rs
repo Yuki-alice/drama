@@ -31,6 +31,8 @@ const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// 首读探测长度（moov 一般在前部；不够再取尾）。
 const PROBE_LEN: u64 = 2 * 1024 * 1024;
 /// 单次响应解密上限（播放器通常只要几百 KiB~几 MiB）。
+/// 实测 AES-CTR 约 5.8GB/s（`decrypt::bench_decrypt_sample_throughput`），
+/// 32MiB 解密约 6ms——该上限约束的是单次响应内存，不是 CPU。
 const MAX_DECRYPT_SPAN: u64 = 32 * 1024 * 1024;
 /// 全量 GET 下发窗口（流式，不一次性缓冲）。
 const STREAM_WINDOW: u64 = 4 * 1024 * 1024;

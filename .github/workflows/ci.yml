@@ -44,3 +44,34 @@ jobs:
         run: |
           cargo clippy --manifest-path rust/core/Cargo.toml --locked --all-targets -- -D warnings
           cargo fmt --manifest-path rust/core/Cargo.toml --check
+
+      - name: FFI ABI check (header vs hand-written bindings)
+        run: dart tool/check_abi.dart
+
+      - name: Rust supply chain (cargo-deny)
+        run: |
+          cargo install cargo-deny --locked --version 0.20.2
+          cargo deny check --manifest-path rust/core/Cargo.toml
+
+      - name: Rust target portability (non-Android)
+        run: |
+          rustup target add \
+            x86_64-pc-windows-msvc \
+            x86_64-apple-darwin aarch64-apple-darwin \
+            aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+            x86_64-unknown-linux-gnu
+          for t in x86_64-pc-windows-msvc \
+              x86_64-apple-darwin aarch64-apple-darwin \
+              aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+              x86_64-unknown-linux-gnu; do
+            cargo check --manifest-path rust/core/Cargo.toml --locked --target "$t"
+          done
+          # 不在此列：Android 四个 ABI（openssl-sys 交叉构建脚本需要 NDK，
+          # 由 hook 真机/APK 构建覆盖，后续补 APK 构建任务）；
+          # aarch64-linux-gnu（x64 主机交叉需要 sysroot，非交付目标）。
+
+      - name: Release symbols (drama_request/drama_free exported)
+        run: |
+          cargo build --manifest-path rust/core/Cargo.toml --locked --release --lib
+          nm -D --defined-only rust/core/target/release/libdrama_core.so | grep -q ' drama_request$'
+          nm -D --defined-only rust/core/target/release/libdrama_core.so | grep -q ' drama_free$'

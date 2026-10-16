@@ -12,12 +12,17 @@ import '../ui/core/tokens/glass_tier.dart';
 /// - `brightnessResolver: Theme.maybeBrightnessOf`——MaterialApp 下必需，
 ///   否则 `ThemeMode` 与系统亮度不一致时玻璃的阴影/边框会丢失；
 /// - `adaptiveQuality: true`——插入 `GlassAdaptiveScope`，档位随设备能力钳制；
-/// - `GlassTheme`——按 [resolveGlassTier] 给出三档玻璃 token。
-class DramaApp extends ConsumerWidget {
+/// - `GlassTheme`——按 [resolveGlassTier] 给出玻璃 token。
+class DramaApp extends ConsumerStatefulWidget {
   const DramaApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DramaApp> createState() => _DramaAppState();
+}
+
+class _DramaAppState extends ConsumerState<DramaApp> {
+  @override
+  Widget build(BuildContext context) {
     final appearance = ref.watch(appearanceProvider);
     final router = ref.watch(appRouterProvider);
     final glassTier = resolveGlassTier(appearance);
@@ -41,7 +46,7 @@ class DramaApp extends ConsumerWidget {
         final media = MediaQuery.of(context);
         return MediaQuery(
           data: media.copyWith(
-            // 大字模式（F-09）：不改动系统缩放时保持原样。
+            // 大字模式：不改动系统缩放时保持原样。
             textScaler: appearance.textScale == 1.0
                 ? media.textScaler
                 : TextScaler.linear(appearance.textScale),

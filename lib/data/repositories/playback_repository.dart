@@ -130,15 +130,17 @@ class PlaybackRepository {
     required int episode,
     String? vid,
     int quality = 0,
+    String source = 'hongguo',
   }) async {
     final offline = await localPlanOrNull(
       seriesId: seriesId,
       episode: episode,
+      source: source,
     );
     if (offline != null) return offline;
     final envelope = await _core.call(
       'play',
-      source: 'hongguo',
+      source: source,
       params: <String, Object?>{
         'id': seriesId,
         'episode': episode,
@@ -163,10 +165,12 @@ class PlaybackRepository {
   Future<PlaybackPlan?> localPlanOrNull({
     required String seriesId,
     required int episode,
+    String source = 'hongguo',
   }) async {
     try {
       final envelope = await _core.call(
         'playLocal',
+        source: source,
         params: <String, Object?>{'id': seriesId, 'episode': episode},
       );
       if (envelope['ok'] != true) return null;
@@ -192,10 +196,11 @@ class PlaybackRepository {
     required String seriesId,
     required String vid,
     required int quality,
+    String source = 'hongguo',
   }) async {
     final envelope = await _core.call(
       'playQuality',
-      source: 'hongguo',
+      source: source,
       params: <String, Object?>{
         'id': seriesId,
         'vid': vid,
@@ -220,6 +225,7 @@ class PlaybackRepository {
     required String seriesId,
     required int episode,
     int quality = 0,
+    String source = 'hongguo',
   }) async {
     try {
       // 下一集已在本地：预取立即返回本地代理地址，
@@ -227,11 +233,12 @@ class PlaybackRepository {
       final offline = await localPlanOrNull(
         seriesId: seriesId,
         episode: episode,
+        source: source,
       );
       if (offline != null) return offline.proxyUrl;
       final envelope = await _core.call(
         'preload',
-        source: 'hongguo',
+        source: source,
         params: <String, Object?>{
           'id': seriesId,
           'episode': episode,
@@ -281,6 +288,20 @@ class SeriesCoreShim implements CoreCaller {
   }) => _core.call(op, source: source, params: params, timeout: timeout);
 }
 
+/// 取流仓库 provider（**视图不得自己 new 仓库**）。
+///
+/// 此前播放页在 `State` 里 `PlaybackRepository(SeriesCoreShim(holder.core))`、
+/// 详情页在视图里 `DownloadRepository(...)`——同一项目两种做法，
+/// 换核心实现时这两处会漏改。现在统一由 provider 注入，视图只 `ref.read`。
+///
+/// 核心不可用时**抛 [StateError]**（而不是像目录那样回退 mock）：
+/// 没有核心就没有可播的地址，造假地址比报错更糟。
+final playbackRepositoryProvider = Provider<PlaybackRepository>((ref) {
+  final holder = ref.watch(rustCoreProvider);
+  if (holder == null) throw StateError('Rust 核心不可用，无法解析播放');
+  return PlaybackRepository(SeriesCoreShim(holder.core));
+});
+
 /// 取流 provider：按（剧，集）解析；切集自动重解。
 /// Rust 侧无核心时抛 [StateError]（调用方走错误态，不静默回退假地址）。
 ///
@@ -288,7 +309,7 @@ class SeriesCoreShim implements CoreCaller {
 /// watch 它意味着用户在设置里改清晰度后，正在播放的集也会重新解析——
 /// 这是想要的行为（改设置立刻生效），代价只是重新取一次流。
 final playPlanProvider =
-    FutureProvider.family<PlaybackPlan, ({String id, int episode})>((
+    FutureProvider.family<PlaybackPlan, ({String id, int episode, String source})>((
       ref,
       key,
     ) async {
@@ -299,11 +320,12 @@ final playPlanProvider =
       final quality = ref.watch(
         playbackSettingsProvider.select((s) => s.qualityParam),
       );
-      final repository = PlaybackRepository(SeriesCoreShim(holder.core));
+      final repository = ref.watch(playbackRepositoryProvider);
       return repository.resolve(
         seriesId: key.id,
         episode: key.episode,
         quality: quality,
+        source: key.source,
       );
     });
 
@@ -312,7 +334,7 @@ final playPlanProvider =
 /// 提前把 moov 解析与 CDN 首字节做完，用户点「下一集」时打开即播。
 /// 只在有下一集时才发起。
 final preloadNextProvider =
-    FutureProvider.family<String?, ({String id, int episode, int total})>((
+    FutureProvider.family<String?, ({String id, int episode, int total, String source})>((
       ref,
       key,
     ) async {
@@ -322,10 +344,11 @@ final preloadNextProvider =
       final quality = ref.watch(
         playbackSettingsProvider.select((s) => s.qualityParam),
       );
-      final repository = PlaybackRepository(SeriesCoreShim(holder.core));
+      final repository = ref.watch(playbackRepositoryProvider);
       return repository.preload(
         seriesId: key.id,
         episode: key.episode + 1,
         quality: quality,
+        source: key.source,
       );
     });
