@@ -9,7 +9,6 @@ members = [
     "crates/drama-gateway",
     "crates/drama-source-hongguo",
     "crates/drama-download",
-    "crates/drama-lan",
     "crates/drama-engine",
     "crates/drama-cli",
 ]
@@ -31,7 +30,6 @@ drama-rules = { path = "crates/drama-rules" }
 drama-gateway = { path = "crates/drama-gateway" }
 drama-source-hongguo = { path = "crates/drama-source-hongguo" }
 drama-download = { path = "crates/drama-download" }
-drama-lan = { path = "crates/drama-lan" }
 drama-engine = { path = "crates/drama-engine" }
 
 # ── 外部依赖 ──────────────────────────────────────────────────
@@ -70,9 +68,6 @@ sha2 = "0.11.1"
 cbc = { version = "0.2.1", features = ["block-padding"] }
 # 规则扩展源的作者态格式（YAML），分发态为规范化 JSON。
 serde_yaml_ng = "0.10"
-# LAN：mDNS 发现 + 自签证书。
-mdns-sd = "0.21"
-rcgen = "0.14"
 
 [profile.release]
 lto = true

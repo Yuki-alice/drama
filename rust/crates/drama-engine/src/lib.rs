@@ -72,6 +72,8 @@ impl Engine {
             drama_store::cache::global().attach(dirs.catalog_file());
             drama_store::library::global().attach(dirs.library_file());
         }
+        // 下载器通过回调拿取流能力（避免 download → source 的依赖环）。
+        drama_download::engine::set_resolver(Box::new(resolve_for_download));
         Engine {
             builtin: drama_source_hongguo::HongguoProvider::new(),
             store: drama_rules::store::global_store(),
@@ -349,6 +351,27 @@ impl Engine {
             "searchHistoryList" => self.op_search_list(request),
             "searchHistoryDel" => self.op_search_del(request),
             "searchHistoryClear" => self.op_search_clear(request),
+
+            // ── 下载 ──────────────────────────────────────────
+            "downloadStart" => download_result(drama_download::start(
+                request.source.as_deref().unwrap_or(BUILTIN),
+                &request.params,
+            )),
+            "downloadList" => download_result(drama_download::list()),
+            "downloadPause" => download_result(drama_download::pause(&request.params)),
+            "downloadRetry" => download_result(drama_download::retry(&request.params)),
+            "downloadCancel" => download_result(drama_download::cancel(&request.params)),
+            "downloadDelete" => download_result(drama_download::delete(&request.params)),
+            "downloadSetConcurrency" => {
+                download_result(drama_download::set_concurrency(&request.params))
+            }
+            "playFile" => download_result(drama_download::play_file(&request.params)),
+            "playLocal" => download_result(drama_download::play_local(
+                request.source.as_deref().unwrap_or(BUILTIN),
+                &request.params,
+            )),
+            "moveDownloads" => download_result(drama_download::move_downloads(&request.params)),
+            "storage" => self.op_storage(),
 
             // ── 缓存 ──────────────────────────────────────────
             "cacheClear" => store_io_result(drama_store::cache::global().clear()),
@@ -717,6 +740,28 @@ impl Engine {
         }
     }
 
+    /// 下载目录占用与剩余空间。
+    fn op_storage(&self) -> Response {
+        let Some(dir) = drama_download::download_dir() else {
+            return Response::err(&DramaError::Storage("下载目录未初始化".to_owned()));
+        };
+        let mut bytes = 0u64;
+        let mut files = 0u64;
+        for entry in walkdir(&dir) {
+            if let Ok(meta) = entry.metadata()
+                && meta.is_file()
+            {
+                bytes += meta.len();
+                files += 1;
+            }
+        }
+        ok(serde_json::json!({
+            "directory": dir.to_string_lossy(),
+            "bytes": bytes,
+            "files": files,
+        }))
+    }
+
     fn op_sources(&self) -> Response {
         ok(Value::Array(
             self.all_sources()
@@ -798,6 +843,53 @@ impl Engine {
     }
 }
 
+/// 取流回调实现：engine 把「源解析」递给下载器。
+///
+/// 依赖方向：`engine → source` 与 `engine → download`，
+/// 而 `download` 只认识这个函数指针，不认识源。
+fn resolve_for_download(
+    source: &str,
+    series_id: &str,
+    episode: u32,
+    vid: &str,
+    quality: i64,
+) -> Result<drama_download::engine::ResolvedRef, DramaError> {
+    let provider = global().provider(Some(source))?;
+    let vid = if vid.is_empty() {
+        let detail = provider.detail(series_id)?;
+        detail
+            .episodes
+            .iter()
+            .find(|e| e.index == episode)
+            .and_then(|e| e.vid.clone())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| DramaError::Parse("分集缺少视频 ID".to_owned()))?
+    } else {
+        vid.to_owned()
+    };
+    let media = provider.play(PlayRequest {
+        series_id: series_id.to_owned(),
+        episode,
+        vid: Some(vid.clone()),
+        quality,
+    })?;
+    Ok(drama_download::engine::ResolvedRef {
+        vid,
+        url: media.url,
+        referer: media.referer,
+        key_hex: media.key_hex,
+        quality: media.quality,
+    })
+}
+
+/// 下载结果包装。
+fn download_result(result: Result<Value, DramaError>) -> Response {
+    match result {
+        Ok(value) => ok(value),
+        Err(e) => Response::err(&e),
+    }
+}
+
 /// 目录页的 wire 形态（`items` + `hasMore`）。
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -832,14 +924,39 @@ fn parse_play_request(params: &Value) -> Result<PlayRequest, DramaError> {
     })
 }
 
-/// 当前用户（单用户模式固定 default；`user` 参数可覆盖）。
-fn current_user(request: &Request) -> &str {
-    request
-        .params
-        .get("user")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(drama_store::users::ADMIN_ID)
+/// 递归列出目录下的文件（上限 20 万条目，防病态目录卡死）。
+fn walkdir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if out.len() > 200_000 {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(path),
+                Ok(kind) if kind.is_file() => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// 单用户标识。
+///
+/// 本项目**不做多用户**（产品决定）：追剧/进度/搜索历史只有一个归属。
+/// 仍保留这个常量而不是把 `user` 参数从存储层删掉，是因为存储层一旦
+/// 去掉分区，将来想加就又要迁移一遍数据。
+const SINGLE_USER: &str = "local";
+
+/// 当前用户（固定单用户）。
+fn current_user(_request: &Request) -> &str {
+    SINGLE_USER
 }
 
 /// 存储结果包装（`()` / `WriteError` → wire）。

@@ -1,4 +1,9 @@
-//! 持久化层：目录缓存、追剧、观看进度、搜索历史、设置、用户权限。
+//! 持久化层：目录缓存、追剧、观看进度、搜索历史、设置。
+//!
+//! **单用户**：本项目不做多用户/PIN/权限（产品决定）。因此
+//! 追剧与进度直接落一份，没有「换个用户看不到别人的追剧」这层。
+//! `library` 模块的 API 仍带 `user` 参数，但引擎层固定传同一个值——
+//! 这样将来若真要加多用户，存储层不必改。
 //!
 //! ## 落盘纪律（比原实现严格）
 //!
@@ -26,14 +31,12 @@ pub mod library;
 pub mod lockfile;
 pub mod paths;
 pub mod settings;
-pub mod users;
 
 pub use atomic::{read_json, write_atomic, write_json_atomic};
 pub use cache::{CatalogCache, CacheStats, CachedValue};
 pub use library::{Follow, HistoryItem, Library};
 pub use paths::DataDirs;
 pub use settings::{PlaybackPrefs, ResourceSettings};
-pub use users::{Profile, UserStore};
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -58,7 +61,6 @@ pub fn set_data_dirs(dirs: DataDirs) {
     *dirs_slot().lock().expect("data dirs poisoned") = normalized;
     cache::reset_for_data_dir();
     library::reset_for_data_dir();
-    users::reset_for_data_dir();
 }
 
 /// 清除数据目录（回到纯内存模式）；供测试与生命周期收尾使用。
@@ -66,7 +68,6 @@ pub fn clear_data_dirs() {
     *dirs_slot().lock().expect("data dirs poisoned") = None;
     cache::reset_for_data_dir();
     library::reset_for_data_dir();
-    users::reset_for_data_dir();
 }
 
 /// 当前数据目录（未初始化时 `None`，调用方退化为内存模式）。

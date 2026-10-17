@@ -23,8 +23,8 @@ pub mod limiter;
 pub mod proxy;
 
 pub use client::{
-    DESKTOP_UA, HttpClient, MediaResponse, RequestSpec, USER_AGENT_VALUE, fetch_json,
-    fetch_json_custom, fetch_text, fetch_text_throttled, probe_playable,
+    DESKTOP_UA, HttpClient, MediaResponse, RequestSpec, USER_AGENT_VALUE, download_client,
+    fetch_json, fetch_json_custom, fetch_text, fetch_text_throttled, probe_playable,
 };
 pub use error::{HttpError, HttpErrorKind};
 pub use limiter::{LimiterSettings, Priority};

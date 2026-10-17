@@ -15,7 +15,6 @@ drama-rules.workspace = true
 drama-gateway.workspace = true
 drama-source-hongguo.workspace = true
 drama-download.workspace = true
-drama-lan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

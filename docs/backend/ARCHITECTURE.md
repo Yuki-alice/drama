@@ -25,16 +25,16 @@
 ```
                     drama-cli            （验收入口，不依赖 Flutter）
                         │
-                  drama-engine           （源注册、调度、仲裁、FFI、缓存策略）
+                     core                （薄 FFI 门面，无业务逻辑）
+                        │
+                  drama-engine           （源注册、调度、仲裁、缓存策略）
         ┌───────────────┼───────────────┬──────────────────┐
- drama-source-hongguo  drama-rules   drama-download      drama-lan
+ drama-source-hongguo  drama-rules   drama-download   drama-gateway
         │               │               │                  │
-        └───────┬───────┴───────┬───────┘                  │
-            drama-gateway    drama-store ───────────────────┘
+        └───────┬───────┴───────┬───────┴──────────────────┘
+             drama-net      drama-store
                 │               │
-             drama-net ─────────┘
-                │
-            drama-types
+            drama-types ────────┘
 ```
 
 **规则**：箭头只能向上。`drama-types` 是唯一的叶子，它**不含 IO**——
@@ -140,7 +140,24 @@ cargo run -p drama-cli -- source-validate --file ./my-source.yaml
 CLI 直接驱动 engine 的 `dispatch`，与 FFI 走**同一条路径**——
 如果 CLI 能用，FFI 就能用。这条约束防止「CLI 走捷径，FFI 才暴露 bug」。
 
-## 七、尚未决定的事
+## 七、明确不在范围内
+
+按产品决定，以下两块**不做**：
+
+| 能力 | 原因 |
+|---|---|
+| 局域网互联（mDNS 发现、TLS 直连、追剧/进度同步、推送续播） | 前提是「多设备」与「配对 UI」，而当前产品首要平台是单机安卓；配对协议本身是安全边界，不该由后端单方面决定 |
+| 本地多用户 / 管理员 PIN / 按用户分配源与下载权限 | 单机单人场景下没有收益，却引入「换个用户看不到我的追剧」这类风险 |
+
+因此：
+
+- `drama-lan` crate 已删除，`lan` op 已从契约表移除（**不留空位**——
+  留一个永远返回 `UNSUPPORTED` 的 op 只会让前端误以为「以后会有」）；
+- `drama-store` 不再有 `users` 模块；追剧/进度/搜索历史只有一份；
+- 存储层的 `user` 参数保留但引擎固定传同一个值，
+  将来若真要加多用户，不必再迁移一遍数据。
+
+## 八、尚未决定的事
 
 - **规则源签名**：目前计划是内容哈希 + 官方仓库公钥签名，但公钥分发方式未定。
   在定下来之前，规则源安装只做**结构校验**，不做来源认证；UI 需要明示「第三方规则」。

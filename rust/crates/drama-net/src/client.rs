@@ -499,6 +499,23 @@ impl HttpClient {
     }
 }
 
+/// 下载专用客户端：**无总超时**（长媒体不能被掐断），只保留连接超时。
+///
+/// 与 [`HttpClient::media`] 的区别：这里直接给下载器用，
+/// 它自己要按 `Range` 逐段拉并处理 `Content-Range` 校验。
+pub fn download_client() -> &'static reqwest::Client {
+    static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+        reqwest::Client::builder()
+            .user_agent(USER_AGENT_VALUE)
+            .connect_timeout(CONNECT_TIMEOUT)
+            // 下载器自己做续传与超时判定，不设总超时。
+            .redirect(reqwest::redirect::Policy::limited(MAX_MEDIA_REDIRECTS))
+            .build()
+            .expect("build download client")
+    });
+    &CLIENT
+}
+
 /// 提取 host（用于冷却表 key）。
 fn host_of(url: &str) -> Result<String, HttpError> {
     let parsed = url::Url::parse(url)

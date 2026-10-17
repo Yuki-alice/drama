@@ -10,6 +10,8 @@ description = "下载调度、续传、HLS、索引、本地播放计划"
 [dependencies]
 drama-types.workspace = true
 drama-net.workspace = true
+url.workspace = true
+reqwest.workspace = true
 drama-store.workspace = true
 drama-gateway.workspace = true
 serde.workspace = true
