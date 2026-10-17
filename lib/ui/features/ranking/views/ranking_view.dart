@@ -1,25 +1,30 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 import '../../../../data/repositories/catalog_repository.dart';
 import '../../../../router/routes.dart';
 import '../../../core/errors.dart';
+import '../../../core/layout/breakpoints.dart';
 import '../../../core/motion/app_motion.dart';
 import '../../../core/tokens/app_tokens.dart';
-import '../../../core/widgets/app_glass_scaffold.dart';
+import '../../../core/widgets/app_fixed_top_bar.dart';
+import '../../../core/widgets/app_glass_surface.dart';
 import '../../../core/widgets/app_nav_bar.dart';
 import '../../../core/widgets/content_widgets.dart';
-import '../../../core/widgets/glass_kit.dart';
 import '../../../core/widgets/lockups.dart';
+import '../../../core/widgets/source_sheet.dart';
 import '../view_models/ranking_view_model.dart';
 
-/// 榜单。
+/// 榜单：**数字即视觉**。
 ///
-/// 与首页的分工：首页负责「逛」，榜单负责「比」。所以这里第一件事是
-/// **口径切换**（热度 / 上新 / …），先给口径再给名次；名次用大号等宽数字
-/// （数字即视觉），行高压到 64，一屏能读完八条。
+/// - 固定顶栏（`榜单` + 切换源 / 筛选两枚圆钮）+ **常驻副行**（日/周/月用
+///   文字标签的选中态，不是分段控件：榜单的主角是名次，维度切换不该比它更重）；
+/// - **限宽 760 居中**，否则宽屏上剧名贴左、热度贴右，中间空一大片；
+/// - 序号大号等宽粗体，前三名墨黑、其余银灰；行间只 0.5px 发丝线；
+/// - 底部留白加厚（浮起的 Tab 条是浮起的，不留白会把最后一行压住）。
 class RankingView extends ConsumerWidget {
   const RankingView({super.key});
 
@@ -27,131 +32,125 @@ class RankingView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final selectedBoard = ref.watch(rankingBoardProvider);
     final dramasAsync = ref.watch(rankingListProvider);
-    final boardName =
-        RankingBoards.all.firstWhere((board) => board.id == selectedBoard).name;
+    final boardIndex = RankingBoards.all.indexWhere(
+      (board) => board.id == selectedBoard,
+    );
+    final boardName = RankingBoards.all[boardIndex < 0 ? 0 : boardIndex].name;
+    final count = dramasAsync.value?.length;
 
-    return CustomScrollView(
-      slivers: <Widget>[
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: AppSpacing.pageH,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                const GlassContentTopInset(extra: AppSpacing.sm),
-                PageHead(
-                  title: '榜单',
-                  trailingText: dramasAsync.value == null
-                      ? null
-                      : '${dramasAsync.value!.length} 条',
-                  actions: <Widget>[
-                    GlassIconAction(
-                      icon: Icons.search_rounded,
-                      semanticLabel: '搜索',
-                      onPressed: () => context.push(AppRoutes.search),
-                    ),
-                  ],
-                ),
-                // 口径切换：8 个板以内用分段控件，超过走可滚动变体。
-                GlassSegmentedControl.scrollable(
-                  height: 40,
-                  segments: <GlassSegment>[
-                    for (final board in RankingBoards.all)
-                      GlassSegment(label: board.name, id: board.id),
-                  ],
-                  selectedIndex: RankingBoards.all.indexWhere(
-                    (board) => board.id == selectedBoard,
-                  ),
-                  onSegmentSelected: (index) => ref
-                      .read(rankingBoardProvider.notifier)
-                      .select(RankingBoards.all[index].id),
-                  useOwnLayer: true,
-                  selectedTextStyle: AppText.callout.copyWith(
-                    color: AppColors.of(context).textPrimary,
-                    fontWeight: FontWeight.w700,
-                  ),
-                  unselectedTextStyle: AppText.callout.copyWith(
-                    color: AppColors.of(context).textSecondary,
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.md),
-              ],
-            ),
-          ),
-        ),
+    return Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        CustomScrollView(
+          slivers: <Widget>[
+            const SliverFixedTopBarInset(hasSubBar: true),
 
-        // 口径说明 + 发丝分隔：名次表的语境，不是装饰。
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: AppSpacing.pageH,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                Text(
-                  '$boardName · 每小时更新',
+            // 口径说明（名次表的语境，不是装饰）。
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: _hpad(context).copyWith(top: 2, bottom: 10),
+                child: Text(
+                  count == null ? boardName : '$boardName · 共 $count 部',
                   style: AppText.mono.copyWith(
+                    fontSize: 12.5,
                     color: AppColors.of(context).textSecondary,
                   ),
                 ),
-                const SizedBox(height: AppSpacing.sm),
-                Divider(color: AppColors.of(context).divider, height: 1),
-              ],
+              ),
             ),
-          ),
-        ),
 
-        dramasAsync.when(
-          data: (dramas) => dramas.isEmpty
-              ? const SliverToBoxAdapter(
-                  child: EmptyView(
-                    message: '该榜单暂无剧集',
-                    icon: Icons.leaderboard_outlined,
-                    hint: '换个口径看看',
-                  ),
-                )
-              : SliverPadding(
-                  padding: AppSpacing.pageH,
-                  sliver: SliverList.separated(
-                    itemCount: dramas.length,
-                    separatorBuilder: (context, index) => Divider(
-                      color: AppColors.of(context).divider,
-                      height: 1,
+            dramasAsync.when(
+              data: (dramas) => dramas.isEmpty
+                  ? const SliverToBoxAdapter(
+                      child: EmptyState(
+                        icon: Icons.leaderboard_outlined,
+                        title: '该榜单暂无剧集',
+                        description: '换个口径，或者回到发现页看看。',
+                      ),
+                    )
+                  : SliverPadding(
+                      padding: _hpad(context),
+                      sliver: SliverList.builder(
+                        itemCount: dramas.length,
+                        itemBuilder: (context, index) {
+                          final drama = dramas[index];
+                          return Reveal(
+                            index: index,
+                            child: RankRow(
+                              drama: drama,
+                              rank: index + 1,
+                              onTap: () => context.push(
+                                AppRoutes.detail(
+                                  drama.id,
+                                  source: drama.source,
+                                ),
+                                // 携带卡片数据供详情页立即渲染海报头（Hero 落点）。
+                                extra: drama,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
                     ),
-                    itemBuilder: (context, index) {
-                      final drama = dramas[index];
-                      return Reveal(
-                        index: index,
-                        child: RankRow(
-                          drama: drama,
-                          rank: index + 1,
-                          onTap: () => context.push(
-                            AppRoutes.detail(drama.id, source: drama.source),
-                            // 携带卡片数据供详情页立即渲染海报头（Hero 落点）。
-                            extra: drama,
-                          ),
-                          trailing: Icon(
-                            Icons.chevron_right_rounded,
-                            size: 20,
-                            color: AppColors.of(context).textDisabled,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+              loading: () =>
+                  const SliverToBoxAdapter(child: LoadingView(label: '正在加载榜单')),
+              error: (error, _) => SliverToBoxAdapter(
+                child: ErrorView(
+                  message: errorMessage(error),
+                  onRetry: () => ref.invalidate(rankingListProvider),
                 ),
-          loading: () => const SliverToBoxAdapter(
-            child: LoadingView(label: '正在加载榜单'),
-          ),
-          error: (error, _) => SliverToBoxAdapter(
-            child: ErrorView(
-              message: errorMessage(error),
-              onRetry: () => ref.invalidate(rankingListProvider),
+              ),
+            ),
+
+            SliverToBoxAdapter(
+              child: SizedBox(height: tabPageBottomInset(context) + 34),
+            ),
+          ],
+        ),
+
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: FixedTopBar(
+            title: '榜单',
+            actions: <Widget>[
+              AppPlainRoundButton(
+                icon: Icons.swap_horiz_rounded,
+                semanticLabel: '切换内容源',
+                onPressed: () => showSourceSheet(context, ref),
+              ),
+              AppPlainRoundButton(
+                icon: Icons.tune_rounded,
+                semanticLabel: '按条件筛选',
+                onPressed: () =>
+                    context.push(AppRoutes.search, extra: SearchEntry.filters),
+              ),
+            ],
+            subBar: TextTabsBar(
+              labels: <String>[
+                for (final board in RankingBoards.all) board.name,
+              ],
+              selectedIndex: boardIndex < 0 ? 0 : boardIndex,
+              onSelected: (index) => ref
+                  .read(rankingBoardProvider.notifier)
+                  .select(RankingBoards.all[index].id),
             ),
           ),
         ),
-
-        const SliverNavBarBottomInset(),
       ],
     );
   }
+}
+
+/// 列表类内容的居中留白（限宽 760）。宽屏上必须限宽，否则一行会被拉散。
+EdgeInsets _hpad(BuildContext context) {
+  final windowWidth = MediaQuery.sizeOf(context).width;
+  final gutter = Breakpoints.gutter(Breakpoints.classify(windowWidth));
+  // 用 LayoutBuilder 拿不到 sliver 的宽度，这里按窗口宽推导：
+  // 内容区 = 窗口宽 − 侧栏占位，再被 760 封顶。
+  final sizeClass = Breakpoints.classify(windowWidth);
+  final contentWidth = windowWidth - Breakpoints.railPlaceholder(sizeClass);
+  final pad = math.max(gutter, (contentWidth - 760) / 2);
+  return EdgeInsets.symmetric(horizontal: pad);
 }

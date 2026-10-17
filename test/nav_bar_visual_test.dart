@@ -6,7 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 /// 底栏在 compact 下的渲染 + 布局冒烟（无需 libmpv，可在 CI 跑）。
 void main() {
   testWidgets('compact 底栏四个目的地都渲染且不带错误样式', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(390, 700));
+    tester.view.physicalSize = const Size(390, 700);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(
       MaterialApp(
         theme: buildMaterialTheme(Brightness.light),
@@ -29,18 +31,19 @@ void main() {
       );
       expect(icons, findsWidgets, reason: '目的地「${d.label}」的图标没渲染');
     }
-    await tester.binding.setSurfaceSize(null);
   });
 
   testWidgets('底栏在大字号下不溢出', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(390, 700));
+    tester.view.physicalSize = const Size(390, 700);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(
       MaterialApp(
         theme: buildMaterialTheme(Brightness.light),
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            textScaler: const TextScaler.linear(1.3),
-          ),
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.3)),
           child: child!,
         ),
         home: Scaffold(
@@ -55,6 +58,5 @@ void main() {
     await tester.pump();
     // Flutter 的溢出会通过 exception 报出（RenderFlex overflowed）。
     expect(tester.takeException(), isNull, reason: '大字模式下底栏溢出');
-    await tester.binding.setSurfaceSize(null);
   });
 }

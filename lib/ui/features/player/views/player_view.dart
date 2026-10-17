@@ -144,11 +144,11 @@ class _PlayerViewState extends ConsumerState<PlayerView> {
   }
 
   Widget _backAction() => GlassIconAction(
-        icon: Icons.keyboard_arrow_down_rounded,
-        semanticLabel: '收起播放器',
-        tint: AppColors.of(context).onMedia,
-        onPressed: () => context.pop(),
-      );
+    icon: Icons.keyboard_arrow_down_rounded,
+    semanticLabel: '收起播放器',
+    tint: AppColors.of(context).onMedia,
+    onPressed: () => context.pop(),
+  );
 
   /// 外层壳：沉浸黑底 + 版式路由。
   Widget _shell(
@@ -495,7 +495,8 @@ class _PlayerChromeState extends State<_PlayerChrome> {
                       for (final option in plan.qualityOptions)
                         OutlinePill(
                           label: option.label,
-                          selected: option.height ==
+                          selected:
+                              option.height ==
                               (controller.qualityOverride ?? plan.quality),
                           height: 36,
                           onTap: plan.offline
@@ -917,7 +918,8 @@ class _ActionRail extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final following = ref
+    final following =
+        ref
             .watch(
               isFollowingProvider((
                 id: controller.seriesId,
@@ -1124,7 +1126,8 @@ class _ProgressBarState extends State<_ProgressBar> {
           final total = durationSnap.data ?? Duration.zero;
           final position = positionSnap.data ?? Duration.zero;
           final totalMs = total.inMilliseconds;
-          final fraction = _dragFraction ??
+          final fraction =
+              _dragFraction ??
               (totalMs > 0 ? position.inMilliseconds / totalMs : 0.0);
 
           return LayoutBuilder(
@@ -1135,17 +1138,17 @@ class _ProgressBarState extends State<_ProgressBar> {
                   _dragging = true;
                   _dragFraction =
                       (details.localPosition.dx / constraints.maxWidth).clamp(
-                    0.0,
-                    1.0,
-                  );
+                        0.0,
+                        1.0,
+                      );
                 });
               },
               onHorizontalDragUpdate: (details) => setState(() {
                 _dragFraction =
                     (details.localPosition.dx / constraints.maxWidth).clamp(
-                  0.0,
-                  1.0,
-                );
+                      0.0,
+                      1.0,
+                    );
               }),
               onHorizontalDragEnd: (_) {
                 final target = _dragFraction;
@@ -1169,8 +1172,9 @@ class _ProgressBarState extends State<_ProgressBar> {
                   child: HairlineProgress(
                     fraction: fraction,
                     height: _dragging ? 5 : widget.height,
-                    // 进度 = 状态，用标志绿；轨道保持画面层的白 25%。
-                    color: colors.accent,
+                    // 进度 = 状态；它**坐在画面上**，所以永远是白，
+                    // 不随浅色/深色外观切换（视频是唯一有资格被折射的东西）。
+                    color: colors.onMedia,
                     track: colors.hairlineTrack,
                   ),
                 ),
@@ -1247,33 +1251,33 @@ class _StreamError extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ColoredBox(
-        color: Colors.black.withValues(alpha: .72),
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(AppSpacing.xl),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text(
-                  message,
-                  textAlign: TextAlign.center,
-                  style: AppText.callout.copyWith(color: Colors.white70),
-                ),
-                const SizedBox(height: AppSpacing.md),
-                OutlinedButton(
-                  onPressed: onRetry,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    side: const BorderSide(color: Colors.white38),
-                    shape: const StadiumBorder(),
-                  ),
-                  child: const Text('重试'),
-                ),
-              ],
+    color: Colors.black.withValues(alpha: .72),
+    child: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.xl),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: AppText.callout.copyWith(color: Colors.white70),
             ),
-          ),
+            const SizedBox(height: AppSpacing.md),
+            OutlinedButton(
+              onPressed: onRetry,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: const BorderSide(color: Colors.white38),
+                shape: const StadiumBorder(),
+              ),
+              child: const Text('重试'),
+            ),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 }
 
 /// 选集格（48×44：可点区达标，选中用墨底反白）。

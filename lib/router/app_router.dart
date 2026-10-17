@@ -78,7 +78,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       // 二级页：push 出来，隐藏主导航并使用 iOS 式转场。
       GoRoute(
         path: AppRoutes.search,
-        pageBuilder: (context, state) => _page(const SearchView()),
+        pageBuilder: (context, state) => _page(
+          SearchView(
+            // 发现页顶栏的「筛选」钮直接带 `SearchEntry.filters` 进来，
+            // 打开同一个筛选 sheet。
+            initialEntry: state.extra == SearchEntry.filters
+                ? SearchEntry.filters
+                : SearchEntry.plain,
+          ),
+        ),
       ),
       GoRoute(
         path: AppRoutes.detailPattern,
@@ -136,12 +144,12 @@ class _AppErrorView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AppGlassScaffold(
-        title: '页面不存在',
-        body: Center(
-          child: ErrorView(
-            message: detail ?? '未找到该页面',
-            onRetry: () => context.go(AppRoutes.home),
-          ),
-        ),
-      );
+    title: '页面不存在',
+    body: Center(
+      child: ErrorView(
+        message: detail ?? '未找到该页面',
+        onRetry: () => context.go(AppRoutes.home),
+      ),
+    ),
+  );
 }

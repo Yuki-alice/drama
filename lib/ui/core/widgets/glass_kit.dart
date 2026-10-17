@@ -40,14 +40,14 @@ class GlassSurfaceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GlassCard(
-        width: width,
-        height: height,
-        padding: padding ?? const EdgeInsets.all(AppSpacing.lg),
-        shape: LiquidRoundedSuperellipse(borderRadius: radius),
-        useOwnLayer: true,
-        quality: quality,
-        child: child,
-      );
+    width: width,
+    height: height,
+    padding: padding ?? const EdgeInsets.all(AppSpacing.lg),
+    shape: LiquidRoundedSuperellipse(borderRadius: radius),
+    useOwnLayer: true,
+    quality: quality,
+    child: child,
+  );
 }
 
 /// 图标 + 文字的玻璃动作按钮。
@@ -97,8 +97,12 @@ class GlassActionButton extends StatelessWidget {
         Icon(icon, size: 18, color: filled ? colors.onInk : color),
         const SizedBox(width: AppSpacing.sm),
         Flexible(
-          child: Text(label,
-              maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: labelStyle,
+          ),
         ),
       ],
     );
@@ -199,24 +203,23 @@ class GlassCapsuleGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GlassContainer(
-        padding: padding,
-        shape: const LiquidOval(),
-        useOwnLayer: true,
-        quality: GlassQuality.standard,
-        child: axis == Axis.horizontal
-            ? Row(mainAxisSize: MainAxisSize.min, children: children)
-            : Column(mainAxisSize: MainAxisSize.min, children: children),
-      );
+    padding: padding,
+    shape: const LiquidOval(),
+    useOwnLayer: true,
+    quality: GlassQuality.standard,
+    child: axis == Axis.horizontal
+        ? Row(mainAxisSize: MainAxisSize.min, children: children)
+        : Column(mainAxisSize: MainAxisSize.min, children: children),
+  );
 }
 
-/// 墨色胶囊（黑底白字）——**重型填充**：色板里的主操作色。
+/// 墨色胶囊（墨底反白字）——**唯一的重型填充**：色板里的主操作形态。
 ///
 /// 用在不需要玻璃质感、只要求「这是主操作」的地方（详情页的「开始观看」、
 /// 追剧行的「继续看」）。播放器场景请用 [GlassActionButton] 的玻璃形态，
 /// 因为那里底下是画面，实心墨块会盖掉内容。
 ///
-/// 绿色（[AppColors.accent]）是状态色，**不用作主操作填充**——主操作与
-/// ChatGPT 现行的黑色主按钮同构，保持黑白。
+/// 主操作是墨色、不是彩色——无彩色界面里「最重」的表达就是墨底反白字。
 class InkPill extends StatelessWidget {
   const InkPill({
     super.key,
@@ -271,10 +274,12 @@ class InkPill extends StatelessWidget {
                     Icon(icon, size: dense ? 15 : 17, color: colors.onInk),
                     const SizedBox(width: AppSpacing.xs + 2),
                   ],
-                  Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: style),
+                  Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: style,
+                  ),
                 ],
               ),
             ),
@@ -285,9 +290,12 @@ class InkPill extends StatelessWidget {
   }
 }
 
-/// 描边胶囊（次级操作 / 筛选未选中态）。
+/// 描边胶囊（次级操作 / 筛选选中态）。
 ///
-/// 发丝描边 + 无填充：在内容层里表达「可点」但不抢注意力。
+/// 未选中：内容面 + 发丝描边——在内容层里表达「可点」但不抢注意力。
+/// 选中：**墨色填充 + 反白字**（[AppColors.textPrimary] + [AppColors.onInk]）——
+/// 无彩色色板下唯一的「重型填充」表达选中。
+///
 /// [onTap] 为 null 时进入**禁用态**（文字与描边一起弱化，且语义上
 /// 标记为 disabled）——离线文件的清晰度切换就是这一档。
 class OutlinePill extends StatelessWidget {
@@ -315,14 +323,12 @@ class OutlinePill extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
     final disabled = onTap == null;
-    // 选中是**状态**，用绿：文字/图标取可承载小字的 accentDeep，
-    // 底与描边取标志绿（图形级对比度）。
     final textColor = disabled
         ? colors.textDisabled
-        : (selected ? colors.accentDeep : colors.textPrimary);
+        : (selected ? colors.onInk : colors.textPrimary);
     final iconColor = disabled
         ? colors.textDisabled
-        : (selected ? colors.accentDeep : colors.textSecondary);
+        : (selected ? colors.onInk : colors.textSecondary);
 
     return Semantics(
       button: true,
@@ -332,13 +338,12 @@ class OutlinePill extends StatelessWidget {
       child: SizedBox(
         height: height,
         child: Material(
-          // 选中 = 绿色浅底 + 绿色描边 + 深绿文字（状态确认）；
-          // 未选中 = 内容面 + 发丝描边。
-          color: selected ? colors.accentSubtle : colors.contentSurface,
+          // 选中 = 墨色填充；未选中 = 内容面 + 发丝描边。
+          color: selected ? colors.textPrimary : colors.surfaceElevated,
           shape: StadiumBorder(
             side: BorderSide(
-              color: selected ? colors.accent : colors.divider,
-              width: selected ? 1.5 : 1,
+              color: selected ? colors.textPrimary : colors.divider,
+              width: 1,
             ),
           ),
           clipBehavior: Clip.antiAlias,

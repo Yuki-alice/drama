@@ -13,14 +13,14 @@ import '../../../core/theme/appearance_controller.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/tokens/glass_tier.dart';
 import '../../../core/widgets/app_glass_scaffold.dart';
+import '../../../core/widgets/app_glass_surface.dart';
 import '../../../core/widgets/glass_kit.dart';
-import '../../../core/widgets/lockups.dart';
 
 /// 设置页。
 ///
 /// 二级页，`AppGlassScaffold` 包整页。玻璃不嵌套：外观分组的玻璃开关 / chips
 /// 一律直接落在 body（纯色底），绝不塞进 `GlassSurfaceCard`
-/// ——玻璃套玻璃会静默降质；分组标题用 `SectionHead.paged`，普通行用 `InkWell`。
+/// ——玻璃套玻璃会静默降质；分组标题用 `SectionLabel.paged`，普通行用 `InkWell`。
 class SettingsView extends ConsumerWidget {
   const SettingsView({super.key});
 
@@ -44,7 +44,7 @@ class SettingsView extends ConsumerWidget {
         padding: const EdgeInsets.only(bottom: AppSpacing.xxl),
         children: <Widget>[
           // ── 外观（接到真实设置，持久化） ────────────────────────
-          const SectionHead.paged(title: '外观'),
+          const SectionLabel(text: '外观', paged: true),
           _ChipField(
             label: '主题',
             options: const <String>['跟随系统', '浅色', '深色'],
@@ -81,7 +81,7 @@ class SettingsView extends ConsumerWidget {
           ),
 
           // ── 播放（接到真实偏好，持久化；播放页读同一份） ────────
-          const SectionHead.paged(title: '播放'),
+          const SectionLabel(text: '播放', paged: true),
           _ChipField(
             label: '默认清晰度',
             options: PlaybackSettings.labels,
@@ -91,18 +91,20 @@ class SettingsView extends ConsumerWidget {
           _SwitchRow(
             label: '自动连播下一集',
             value: playback.autoPlayNext,
-            onChanged:
-                ref.read(playbackSettingsProvider.notifier).setAutoPlayNext,
+            onChanged: ref
+                .read(playbackSettingsProvider.notifier)
+                .setAutoPlayNext,
           ),
           _SwitchRow(
             label: '进入播放页立即播放',
             value: playback.autoPlayOnOpen,
-            onChanged:
-                ref.read(playbackSettingsProvider.notifier).setAutoPlayOnOpen,
+            onChanged: ref
+                .read(playbackSettingsProvider.notifier)
+                .setAutoPlayOnOpen,
           ),
 
           // ── 下载（并发数接到 Rust 真实设置；目录可搬迁） ───────────
-          const SectionHead.paged(title: '下载'),
+          const SectionLabel(text: '下载', paged: true),
           _ChipField(
             label: '同时下载任务数',
             options: _concurrencyOptions,
@@ -131,7 +133,7 @@ class SettingsView extends ConsumerWidget {
           ),
 
           // ── 存储 ───────────────────────────────────────────────
-          const SectionHead.paged(title: '存储'),
+          const SectionLabel(text: '存储', paged: true),
           _TappableRow(
             label: '清除缓存',
             value: '目录缓存',
@@ -139,7 +141,7 @@ class SettingsView extends ConsumerWidget {
           ),
 
           // ── 关于 ───────────────────────────────────────────────
-          const SectionHead.paged(title: '关于'),
+          const SectionLabel(text: '关于', paged: true),
           _TappableRow(
             label: '关于本应用',
             onTap: () => context.push(AppRoutes.about),
@@ -228,8 +230,10 @@ Future<void> _editDownloadDir(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          const Text('填入目标目录的绝对路径；已下载的分集会一并搬迁，'
-              '目标下若已有同名文件则中止（不会覆盖已有数据）。'),
+          const Text(
+            '填入目标目录的绝对路径；已下载的分集会一并搬迁，'
+            '目标下若已有同名文件则中止（不会覆盖已有数据）。',
+          ),
           const SizedBox(height: AppSpacing.md),
           TextField(
             controller: controller,
@@ -286,10 +290,10 @@ const List<ThemeMode> _themeModes = <ThemeMode>[
 ];
 
 int _themeModeIndex(ThemeMode mode) => switch (mode) {
-      ThemeMode.system => 0,
-      ThemeMode.light => 1,
-      ThemeMode.dark => 2,
-    };
+  ThemeMode.system => 0,
+  ThemeMode.light => 1,
+  ThemeMode.dark => 2,
+};
 
 // ── 行 / 字段组件（普通控件，非玻璃，故可安全放入 body） ───────────────
 
@@ -326,7 +330,8 @@ class _SwitchRow extends StatelessWidget {
             onChanged: onChanged,
             useOwnLayer: true,
             quality: GlassQuality.standard,
-            activeColor: colors.accent,
+            // 无彩色色板：开关的「开」= 墨色（唯一的重型填充），没有第二支颜色。
+            activeColor: colors.textPrimary,
             semanticLabel: label,
           ),
         ],

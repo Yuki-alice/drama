@@ -35,3 +35,15 @@ abstract final class AppRoutes {
     return query.isEmpty ? base : '$base?${query.join('&')}';
   }
 }
+
+/// 进入搜索页的意图（路由 `extra`）。
+///
+/// 发现页顶栏的「筛选」圆钮与搜索页共用同一个筛选 sheet——从发现页进来时
+/// 直接把 sheet 打开，省掉「先进搜索页再点筛选」那一步。
+enum SearchEntry {
+  /// 普通进入（引导态）。
+  plain,
+
+  /// 直接打开「按条件筛选」sheet。
+  filters,
+}

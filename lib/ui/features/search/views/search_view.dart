@@ -4,772 +4,344 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
+import '../../../../data/repositories/catalog_providers.dart';
 import '../../../../domain/models/drama.dart';
 import '../../../../router/routes.dart';
-import '../../../core/motion/app_motion.dart';
+import '../../../core/layout/breakpoints.dart';
 import '../../../core/tokens/app_tokens.dart';
-import '../../../core/widgets/content_widgets.dart';
-import '../../../core/widgets/drama_cover.dart';
-import '../../../core/widgets/glass_kit.dart';
-import '../../../core/widgets/glass_top_bar.dart';
+import '../../../core/widgets/app_glass_surface.dart';
 import '../../../core/widgets/lockups.dart';
-import '../../ranking/view_models/ranking_view_model.dart';
+import '../../../core/widgets/source_sheet.dart';
 import '../view_models/search_view_model.dart';
 
-/// 搜索范围（结果过滤口径，客户端本地过滤）。
-enum _Scope {
-  all('全部'),
-  ongoing('连载中'),
-  finished('完结');
-
-  const _Scope(this.label);
-
-  final String label;
-
-  bool matches(Drama drama) => switch (this) {
-        _Scope.all => true,
-        _Scope.ongoing => drama.status == DramaStatus.ongoing,
-        _Scope.finished => drama.status == DramaStatus.finished,
-      };
-}
-
-/// 页面模式：引导 / 输入中（联想）/ 结果。
-enum _Mode { guide, suggesting, results }
-
-/// 搜索页（布局对齐 Kazumi `search_page.dart`，材质换液态玻璃）。
+/// 搜索：**筛选优先**（对齐 Kazumi，无热门趋势）。
 ///
-/// 三段结构：
-/// 1. **固定玻璃顶栏**：返回圆钮 + 标题 + 常驻玻璃搜索框（`GlassSearchBar`
-///    自带玻璃质感与清除钮；框与栏体同在一次毛玻璃罩里，不构成玻璃套玻璃）；
-/// 2. **引导态**（未提交查询）：最近搜索（Kazumi 的「管理/清空」列表行）
-///    + 热门趋势（榜单缓存，命中零网络）；
-/// 3. **结果态**：「搜索结果」头（计数 + 范围菜单）+ Kazumi 网格公式
-///    （列数 = ⌊宽/180⌋、封面 0.7、标题两行、元信息行）+ 底部状态行。
-///
-/// 输入未提交时显示**联想行**（原设计的「猜你想搜」在空查询下永远是空态，
-/// 联想词只有输入中才存在——所以它属于这一段而不是引导态）。
+/// - **无导航**（push 进来的子页），所以搜索框左侧自带一枚返回圆钮
+///   （浅雾底，不是玻璃——它在纯色上）；
+/// - 搜索框是 44px **浅雾底圆角槽**，随内容滚动，因此不能用玻璃；
+/// - 引导态只做两件事：「按条件筛选」主入口 + 最近搜索；
+/// - 结果态：「搜索结果」+ 计数 + 排序 chip + 筛选钮（有筛选时带 Badge）
+///   + 一行筛选摘要；网格**复用发现的密度公式**，视觉语言不换挡；
+/// - 内容最大宽：引导态 760、结果态 1120，居中留白。
 class SearchView extends ConsumerStatefulWidget {
-  const SearchView({super.key});
+  const SearchView({super.key, this.initialEntry = SearchEntry.plain});
+
+  /// 从发现页「筛选」钮进来时直接打开筛选 sheet。
+  final SearchEntry initialEntry;
 
   @override
   ConsumerState<SearchView> createState() => _SearchViewState();
 }
 
 class _SearchViewState extends ConsumerState<SearchView> {
-  /// 输入防抖时长（300ms）。
-  static const Duration _debounceDelay = Duration(milliseconds: 300);
-
-  /// 顶栏内搜索槽高度：40 框 + 8 底距。与顶栏 `bottom` 实测一致。
-  static const double _searchSlotHeight = 48;
-
   final TextEditingController _controller = TextEditingController();
-  final FocusNode _focus = FocusNode();
   Timer? _debounce;
-  _Scope _scope = _Scope.all;
-  bool _managingRecent = false;
+  final _SearchFilters _filters = _SearchFilters();
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialEntry == SearchEntry.filters) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _openFilters();
+      });
+    }
+  }
 
   @override
   void dispose() {
     _debounce?.cancel();
     _controller.dispose();
-    _focus.dispose();
     super.dispose();
   }
 
-  /// 输入变化：中文输入法 composing 期间不请求，其余走 300ms 防抖。
+  /// 输入防抖 300ms：这才叫「联想」，不是每敲一个字打一次网络。
   void _onChanged(String value) {
-    if (_controller.value.composing.isValid) return;
     _debounce?.cancel();
-    _debounce = Timer(_debounceDelay, () {
-      if (!mounted) return;
-      unawaited(ref.read(searchProvider.notifier).onQueryChanged(value));
+    _debounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) ref.read(searchProvider.notifier).onQueryChanged(value);
     });
   }
 
-  /// 填入并立即提交（回车 / 点击联想 / 点击最近搜索）。
-  void _fillAndSubmit(String keyword) {
+  void _submit(String value) {
     _debounce?.cancel();
-    _controller.value = TextEditingValue(
-      text: keyword,
-      selection: TextSelection.collapsed(offset: keyword.length),
-    );
-    _focus.unfocus();
-    unawaited(ref.read(searchProvider.notifier).submit(keyword));
-  }
-
-  _Mode _modeOf(SearchState state) {
-    if (state.query.trim().isEmpty) return _Mode.guide;
-    return state.submitted ? _Mode.results : _Mode.suggesting;
+    _controller.text = value;
+    ref.read(searchProvider.notifier).submit(value);
   }
 
   @override
   Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
     final state = ref.watch(searchProvider);
-    final colors = AppColors.of(context);
-    final mode = _modeOf(state);
+    final results = _filters.narrow(state.results);
+    final maxWidth = state.submitted ? 1120.0 : 760.0;
+    final sizeClass = Breakpoints.classify(MediaQuery.sizeOf(context).width);
+    final hpad = _hpad(sizeClass, maxWidth);
+    final bottomPad = AppSpacing.xxl + MediaQuery.paddingOf(context).bottom;
 
-    return Scaffold(
-      backgroundColor: colors.background,
-      body: Stack(
-        fit: StackFit.expand,
-        children: <Widget>[
-          // ── 滚动内容（从固定顶栏下方穿过） ───────────────────────
-          LayoutBuilder(
-            builder: (context, constraints) {
-              // 内容宽度与 Kazumi 同式：引导 760、结果 1120，居中收边。
-              final horizontal = constraints.maxWidth >= 700 ? 32.0 : 20.0;
-              final contentWidth = math.min(
-                mode == _Mode.guide ? 760.0 : 1120.0,
-                constraints.maxWidth - horizontal * 2,
-              );
-              final inset = (constraints.maxWidth - contentWidth) / 2;
-              return CustomScrollView(
-                keyboardDismissBehavior:
-                    ScrollViewKeyboardDismissBehavior.onDrag,
-                slivers: <Widget>[
-                  const SliverGlassTopBarInset(
-                    bottomHeight: _searchSlotHeight,
-                  ),
-                  SliverPadding(
-                    padding: EdgeInsets.fromLTRB(inset, 0, inset, 24),
-                    sliver: SliverMainAxisGroup(
-                      slivers: _sliversFor(state, mode),
-                    ),
-                  ),
-                  SliverToBoxAdapter(
-                    child: SizedBox(
-                      height:
-                          MediaQuery.paddingOf(context).bottom + AppSpacing.xxl,
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-
-          // ── 固定液态玻璃顶栏（返回 + 标题 + 搜索框槽） ────────────
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: GlassTopBar(
-              title: '搜索',
-              leading: GlassIconAction(
-                icon: Icons.chevron_left_rounded,
-                semanticLabel: '返回',
-                onPressed: () => context.pop(),
-              ),
-              bottom: Padding(
-                padding: const EdgeInsetsDirectional.fromSTEB(
-                  AppSpacing.gutter,
-                  0,
-                  AppSpacing.gutter,
-                  AppSpacing.sm,
-                ),
-                child: GlassSearchBar(
-                  controller: _controller,
-                  focusNode: _focus,
-                  placeholder: '剧名、题材',
-                  autofocus: true,
-                  useOwnLayer: true,
-                  height: 40,
-                  onChanged: _onChanged,
-                  onSubmitted: _fillAndSubmit,
-                  textStyle: AppText.body.copyWith(color: colors.textPrimary),
-                  placeholderStyle: AppText.body.copyWith(
-                    color: colors.textSecondary,
-                  ),
-                  clearButtonSemanticLabel: '清空',
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  List<Widget> _sliversFor(SearchState state, _Mode mode) => switch (mode) {
-        _Mode.guide => _guideSlivers(state),
-        _Mode.suggesting => _suggestingSlivers(state),
-        _Mode.results => _resultSlivers(state),
-      };
-
-  // ── 引导态 ──────────────────────────────────────────────────────
-
-  List<Widget> _guideSlivers(SearchState state) {
-    final recent = state.recentSearches;
-    return <Widget>[
-      if (recent.isNotEmpty) ...<Widget>[
-        SliverToBoxAdapter(
-          child: _RecentHeader(
-            managing: _managingRecent,
-            onToggleManage: () =>
-                setState(() => _managingRecent = !_managingRecent),
-            onClearAll: () => ref.read(searchProvider.notifier).clearRecent(),
-          ),
-        ),
-        SliverList.separated(
-          itemCount: recent.length,
-          itemBuilder: (context, index) => _RecentRow(
-            keyword: recent[index],
-            managing: _managingRecent,
-            onTap: () => _fillAndSubmit(recent[index]),
-            onDelete: () => _deleteRecent(recent[index]),
-          ),
-          separatorBuilder: (context, index) =>
-              const SizedBox(height: AppSpacing.xs),
-        ),
-        const SliverToBoxAdapter(child: SizedBox(height: AppSpacing.xl)),
-      ],
-      SliverToBoxAdapter(
-        child: SectionHead(
-          title: '热门趋势',
-          subtitle: '此刻最多人在看',
-          padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-        ),
-      ),
-      // 盒子组件：必须包进 SliverToBoxAdapter 才能进 sliver 列表
-      // （`SliverMainAxisGroup` 只接受 RenderSliver 子节点）。
-      SliverToBoxAdapter(child: _HotList(onPick: _fillAndSubmit)),
-    ];
-  }
-
-  /// 删一条最近搜索（notifier 无单删入口，本地过滤后回写整表）。
-  ///
-  /// 词表上限 8 条且纯内存：重建整表比给 notifier 加一个单删方法便宜。
-  void _deleteRecent(String keyword) {
-    final next = ref
-        .read(searchProvider)
-        .recentSearches
-        .where((item) => item != keyword)
-        .toList(growable: false);
-    ref.read(searchProvider.notifier).setRecent(next);
-  }
-
-  // ── 输入中（联想） ──────────────────────────────────────────────
-
-  List<Widget> _suggestingSlivers(SearchState state) {
-    final query = state.query.trim();
-    return <Widget>[
-      if (state.searching)
-        const SliverToBoxAdapter(
-          child: Padding(
-            padding: EdgeInsets.symmetric(vertical: AppSpacing.lg),
-            child: LoadingView(
-              padding: EdgeInsets.zero,
-              label: '正在联想',
-            ),
-          ),
-        )
-      else ...<Widget>[
-        SliverToBoxAdapter(
-          child: _SuggestionRow(
-            text: '搜索「$query」',
-            onTap: () => _fillAndSubmit(query),
-            strong: true,
-          ),
-        ),
-        for (final suggestion in state.suggestions)
-          SliverToBoxAdapter(
-            child: _SuggestionRow(
-              text: suggestion,
-              onTap: () => _fillAndSubmit(suggestion),
-            ),
-          ),
-        if (state.suggestions.isEmpty)
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.only(top: AppSpacing.lg),
-              child: Text(
-                '输入剧名或题材，回车开始搜索',
-                style: AppText.callout.copyWith(
-                  color: AppColors.of(context).textTertiary,
-                ),
-              ),
-            ),
-          ),
-      ],
-    ];
-  }
-
-  // ── 结果态 ──────────────────────────────────────────────────────
-
-  List<Widget> _resultSlivers(SearchState state) {
-    final colors = AppColors.of(context);
-    final results = state.results.where(_scope.matches).toList();
-    final hidden = state.results.length - results.length;
-
-    return <Widget>[
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: AppSpacing.lg),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return Material(
+      // 本页是 push 出来的子页，没有 Scaffold；`TextField` 与语义都需要一个
+      // Material 祖先（同时装上前景文本样式，避免继承 MaterialApp 的
+      // 「缺少 Material 祖先」兜底样式：红字 + 黄色双下划线）。
+      type: MaterialType.transparency,
+      child: ColoredBox(
+        color: colors.background,
+        child: SafeArea(
+          bottom: false,
+          child: ListView(
+            padding: EdgeInsets.zero,
             children: <Widget>[
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      '搜索结果',
-                      style: AppText.title.copyWith(color: colors.textPrimary),
+              const SizedBox(height: AppSpacing.md),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: hpad),
+                child: Row(
+                  children: <Widget>[
+                    AppPlainRoundButton(
+                      icon: Icons.arrow_back_ios_new_rounded,
+                      iconSize: 16,
+                      semanticLabel: '返回',
+                      onPressed: () => context.pop(),
                     ),
-                  ),
-                  _ScopeMenu(
-                    value: _scope,
-                    onChanged: (scope) => setState(() => _scope = scope),
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSpacing.xs),
-              Text(
-                state.searching
-                    ? '正在搜索…'
-                    : '${results.length} 部匹配「${state.query}」'
-                        '${hidden > 0 ? ' · 范围过滤 $hidden 部' : ''}',
-                style: AppText.mono.copyWith(
-                  fontSize: 11.5,
-                  color: colors.textSecondary,
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(child: _buildField(state, colors)),
+                  ],
                 ),
               ),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: hpad),
+                child: state.submitted
+                    ? _ResultsHead(
+                        count: results.length,
+                        sortLabel: _SearchFilters.sortLabels[_filters.sort],
+                        active: _filters.isActive,
+                        summary: _filters.summary(),
+                        onSort: _openSortMenu,
+                        onFilters: _openFilters,
+                      )
+                    : _GuideBody(
+                        suggestions: state.suggestions,
+                        query: state.query,
+                        searching: state.searching,
+                        recent: state.recentSearches,
+                        colors: colors,
+                        onFilters: _openFilters,
+                        onPick: _submit,
+                        onRemoveRecent: _removeRecent,
+                        onClearRecent: () =>
+                            ref.read(searchProvider.notifier).clearRecent(),
+                      ),
+              ),
+              if (state.submitted)
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: hpad),
+                  child: _ResultGrid(items: results, innerWidth: _innerWidth),
+                ),
+              SizedBox(height: bottomPad),
             ],
           ),
         ),
       ),
-      if (state.searching)
-        const SliverToBoxAdapter(
-          child: LoadingView(label: '正在搜索'),
-        )
-      else if (results.isEmpty)
-        SliverToBoxAdapter(
-          child: EmptyView(
-            message: '没有匹配「${state.query}」的剧目',
-            icon: Icons.search_off_rounded,
-            hint: _scope == _Scope.all ? '换个说法试试' : '试试切到「全部」范围',
-            action: _scope == _Scope.all
-                ? null
-                : OutlinePill(
-                    label: '查看全部范围',
-                    onTap: () => setState(() => _scope = _Scope.all),
-                  ),
-          ),
-        )
-      else
-        _ResultGrid(
-          dramas: results,
-          query: state.query,
-          onTap: (drama) => context.push(
-            AppRoutes.detail(drama.id, source: drama.source),
-            // 携带卡片数据供详情页立即渲染海报头（Hero 落点）。
-            extra: drama,
+    );
+  }
+
+  double _hpad(WindowSizeClass sizeClass, double maxWidth) {
+    final gutter = Breakpoints.gutter(sizeClass);
+    final contentWidth =
+        MediaQuery.sizeOf(context).width -
+        Breakpoints.railPlaceholder(sizeClass);
+    return math.max(gutter, (contentWidth - maxWidth) / 2);
+  }
+
+  double get _innerWidth {
+    final sizeClass = Breakpoints.classify(MediaQuery.sizeOf(context).width);
+    final contentWidth =
+        MediaQuery.sizeOf(context).width -
+        Breakpoints.railPlaceholder(sizeClass);
+    return math.min(contentWidth, 1120) - 2 * _hpad(sizeClass, 1120);
+  }
+
+  Widget _buildField(SearchState state, AppColors colors) => Container(
+    height: 44,
+    padding: const EdgeInsets.symmetric(horizontal: 12),
+    decoration: BoxDecoration(
+      color: colors.sunken,
+      borderRadius: BorderRadius.circular(13),
+    ),
+    child: Row(
+      children: <Widget>[
+        Icon(Icons.search, size: 17, color: colors.textSecondary),
+        const SizedBox(width: 9),
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            onChanged: _onChanged,
+            onSubmitted: _submit,
+            textInputAction: TextInputAction.search,
+            style: AppText.body.copyWith(color: colors.textPrimary),
+            decoration: InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              hintText: '搜索剧名、题材',
+              hintStyle: AppText.body.copyWith(color: colors.textTertiary),
+            ),
           ),
         ),
-      if (!state.searching && results.isNotEmpty)
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: AppSpacing.xxl),
-            child: Center(
-              child: Text(
-                '已显示全部 ${results.length} 部',
-                style: AppText.caption.copyWith(color: colors.textTertiary),
+        if (state.query.isNotEmpty)
+          GestureDetector(
+            onTap: () {
+              _controller.clear();
+              ref.read(searchProvider.notifier).clear();
+            },
+            child: Icon(Icons.close, size: 18, color: colors.textTertiary),
+          ),
+      ],
+    ),
+  );
+
+  Future<void> _openSortMenu() async {
+    final value = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Padding(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: AppGlassSurface(
+          radius: AppRadii.sheet,
+          blur: 26,
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.all(AppSpacing.sm),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  for (var i = 0; i < _SearchFilters.sortLabels.length; i++)
+                    _SheetRow(
+                      label: _SearchFilters.sortLabels[i],
+                      selected: i == _filters.sort,
+                      onTap: () => Navigator.of(sheetContext).pop(i),
+                    ),
+                ],
               ),
             ),
           ),
         ),
-    ];
+      ),
+    );
+    if (value != null && mounted) setState(() => _filters.sort = value);
+  }
+
+  /// 筛选 sheet：题材（多选）/ 状态 / 集数 / 排序 / 内容源。
+  Future<void> _openFilters() async {
+    // sheet 直接在草稿上改，应用时把草稿覆盖回本状态。
+    final draft = _filters.copy();
+    final applied = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => _FilterSheet(
+        draft: draft,
+        currentSource: ref.read(searchProvider).source,
+      ),
+    );
+    if (applied != true || !mounted) return;
+
+    final switchSource =
+        draft.source != null && draft.source != ref.read(searchProvider).source;
+    setState(() => _filters.overrideWith(draft));
+    if (switchSource) {
+      await ref.read(searchProvider.notifier).selectSource(draft.source!);
+    }
+    // 题材选中时用题材词去查（源站的搜索只吃关键词）。
+    _submit(
+      _filters.tags.isNotEmpty ? _filters.tags.join(' ') : _controller.text,
+    );
+  }
+
+  void _removeRecent(String word) {
+    final current = ref.read(searchProvider).recentSearches;
+    ref.read(searchProvider.notifier).setRecent(<String>[
+      for (final item in current)
+        if (item != word) item,
+    ]);
   }
 }
 
-/// 最近搜索区头：标题 + 清空（管理态）/ 管理·完成。
-class _RecentHeader extends StatelessWidget {
-  const _RecentHeader({
-    required this.managing,
-    required this.onToggleManage,
-    required this.onClearAll,
+/// 「搜索结果」头：标题 + 计数 + 排序菜单 + 筛选钮（可带 Badge）+ 摘要行。
+class _ResultsHead extends StatelessWidget {
+  const _ResultsHead({
+    required this.count,
+    required this.sortLabel,
+    required this.active,
+    required this.summary,
+    required this.onSort,
+    required this.onFilters,
   });
 
-  final bool managing;
-  final VoidCallback onToggleManage;
-  final VoidCallback onClearAll;
+  final int count;
+  final String sortLabel;
+  final bool active;
+  final String summary;
+  final VoidCallback onSort;
+  final VoidCallback onFilters;
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
     return Padding(
-      padding: const EdgeInsets.only(top: AppSpacing.sm, bottom: AppSpacing.sm),
-      child: Row(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Expanded(
-            child: Text(
-              '最近搜索',
-              style: AppText.title.copyWith(color: colors.textPrimary),
-            ),
-          ),
-          if (managing) ...<Widget>[
-            _LinkText(label: '清空', onTap: onClearAll),
-            const SizedBox(width: AppSpacing.md),
-          ],
-          _LinkText(label: managing ? '完成' : '管理', onTap: onToggleManage),
-        ],
-      ),
-    );
-  }
-}
-
-/// 最近搜索行（Kazumi ListTile 版式）：历史图标 + 词 + 右上箭头（管理态为删除）。
-class _RecentRow extends StatelessWidget {
-  const _RecentRow({
-    required this.keyword,
-    required this.managing,
-    required this.onTap,
-    required this.onDelete,
-  });
-
-  final String keyword;
-  final bool managing;
-  final VoidCallback onTap;
-  final VoidCallback onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    return Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppRadii.md),
-        child: SizedBox(
-          height: AppSpacing.minTapTarget,
-          child: Row(
+          Row(
             children: <Widget>[
-              Icon(
-                Icons.history_rounded,
-                size: 22,
-                color: colors.textSecondary,
-              ),
-              const SizedBox(width: AppSpacing.md),
               Expanded(
                 child: Text(
-                  keyword,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.body.copyWith(color: colors.textPrimary),
-                ),
-              ),
-              if (managing)
-                IconButton(
-                  tooltip: '删除这条搜索记录',
-                  onPressed: onDelete,
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.close_rounded, size: 20),
-                )
-              else
-                Icon(
-                  Icons.north_west_rounded,
-                  size: 18,
-                  color: colors.textTertiary,
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 联想行：搜索图标 + 词（首行为直接提交当前输入）。
-class _SuggestionRow extends StatelessWidget {
-  const _SuggestionRow({
-    required this.text,
-    required this.onTap,
-    this.strong = false,
-  });
-
-  final String text;
-  final VoidCallback onTap;
-  final bool strong;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    return Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppRadii.md),
-        child: SizedBox(
-          height: AppSpacing.minTapTarget,
-          child: Row(
-            children: <Widget>[
-              Icon(
-                strong ? Icons.search_rounded : Icons.north_east_rounded,
-                size: 20,
-                color: strong ? colors.accentDeep : colors.textSecondary,
-              ),
-              const SizedBox(width: AppSpacing.md),
-              Expanded(
-                child: Text(
-                  text,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  '搜索结果',
                   style: AppText.body.copyWith(
+                    fontSize: 15,
                     color: colors.textPrimary,
-                    fontWeight: strong ? FontWeight.w600 : FontWeight.w400,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
+              _SortChip(label: sortLabel, onTap: onSort),
+              const SizedBox(width: AppSpacing.sm),
+              AppPlainRoundButton(
+                icon: Icons.tune_rounded,
+                semanticLabel: '筛选',
+                showBadge: active,
+                onPressed: onFilters,
+              ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 热门趋势：前 6 条榜单（缓存命中零网络）。
-class _HotList extends ConsumerWidget {
-  const _HotList({required this.onPick});
-
-  final ValueChanged<String> onPick;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colors = AppColors.of(context);
-    final ranking = ref.watch(rankingListProvider);
-    return ranking.when(
-      data: (dramas) => Column(
-        children: <Widget>[
-          for (var i = 0; i < dramas.length && i < 6; i++)
-            Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-              child: Reveal(
-                index: i,
-                child: RankRow(
-                  drama: dramas[i],
-                  rank: i + 1,
-                  onTap: () => onPick(dramas[i].title),
-                ),
-              ),
-            ),
-        ],
-      ),
-      loading: () => const LoadingView(
-        padding: EdgeInsets.symmetric(vertical: AppSpacing.lg),
-        label: '正在加载热门',
-      ),
-      // 趋势是增强项：失败就不显示，不打断搜索主功能。
-      error: (_, _) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
-        child: Text(
-          '热门趋势暂不可用',
-          style: AppText.callout.copyWith(color: colors.textTertiary),
-        ),
-      ),
-    );
-  }
-}
-
-/// 结果头右侧的范围菜单（Kazumi 排序菜单的位置）。
-class _ScopeMenu extends StatelessWidget {
-  const _ScopeMenu({required this.value, required this.onChanged});
-
-  final _Scope value;
-  final ValueChanged<_Scope> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    return PopupMenuButton<_Scope>(
-      tooltip: '筛选范围',
-      initialValue: value,
-      onSelected: onChanged,
-      itemBuilder: (context) => <PopupMenuEntry<_Scope>>[
-        for (final scope in _Scope.values)
-          CheckedPopupMenuItem<_Scope>(
-            value: scope,
-            checked: scope == value,
-            child: Text(scope.label),
-          ),
-      ],
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.sm,
-          vertical: AppSpacing.sm,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Text(
-              value.label,
-              style: AppText.callout.copyWith(color: colors.textSecondary),
-            ),
-            const SizedBox(width: AppSpacing.xs),
-            Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 18,
+          const SizedBox(height: 2),
+          Text(
+            '$count 部剧集',
+            style: AppText.mono.copyWith(
+              fontSize: 11.5,
               color: colors.textSecondary,
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 搜索结果网格（Kazumi `_SearchResultGrid` 的公式）。
-///
-/// 列数 = max(2, ⌊可用宽/180⌋)；单格高度 = 封面(0.7) + 标题(实测两行)
-/// + 元信息(实测) + 三处间距。标题/元信息高度按当前 textScaler 实测，
-/// 大字模式（1.3×）下不裁字、不跳版。
-class _ResultGrid extends StatelessWidget {
-  const _ResultGrid({
-    required this.dramas,
-    required this.query,
-    required this.onTap,
-  });
-
-  final List<Drama> dramas;
-  final String query;
-  final ValueChanged<Drama> onTap;
-
-  static const double _coverAspectRatio = 0.7;
-  static const double _titleSpacing = 10;
-  static const double _metadataSpacing = 4;
-  static const double _footerGap = 6;
-  static const double _gap = 12;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    final titleStyle = AppText.body.copyWith(
-      color: colors.textPrimary,
-      fontWeight: FontWeight.w600,
-      height: 1.4,
-    );
-    final metaStyle = AppText.mono.copyWith(
-      fontSize: 11.5,
-      color: colors.textSecondary,
-    );
-
-    return SliverLayoutBuilder(
-      builder: (context, constraints) {
-        final width = constraints.crossAxisExtent;
-        final columns = math.max(2, (width / 180).floor());
-        final cardWidth = (width - (columns - 1) * _gap) / columns;
-        final titleHeight = _measuredHeight(
-          context,
-          '剧目\n剧目',
-          titleStyle,
-        );
-        final metadataHeight = math.max(
-          14,
-          _measuredHeight(context, '已完结 · 0000 集', metaStyle),
-        );
-
-        return SliverGrid.builder(
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: columns,
-            crossAxisSpacing: _gap,
-            mainAxisSpacing: 20,
-            mainAxisExtent: cardWidth / _coverAspectRatio +
-                titleHeight +
-                metadataHeight +
-                _titleSpacing +
-                _metadataSpacing +
-                _footerGap,
           ),
-          itemCount: dramas.length,
-          itemBuilder: (context, index) => _ResultCard(
-            drama: dramas[index],
-            query: query,
-            titleHeight: titleHeight,
-            titleStyle: titleStyle,
-            metaStyle: metaStyle,
-            onTap: () => onTap(dramas[index]),
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// 结果卡：封面 0.7 + 标题两行 + 元信息行。
-class _ResultCard extends StatelessWidget {
-  const _ResultCard({
-    required this.drama,
-    required this.query,
-    required this.titleHeight,
-    required this.titleStyle,
-    required this.metaStyle,
-    required this.onTap,
-  });
-
-  final Drama drama;
-  final String query;
-  final double titleHeight;
-  final TextStyle titleStyle;
-  final TextStyle metaStyle;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final meta = <String>[
-      drama.status.label,
-      if (drama.episodeCount > 0) '${drama.episodeCount} 集',
-    ].join(' · ');
-
-    return PressableScale(
-      scale: .96,
-      borderRadius: AppRadii.lg,
-      onTap: onTap,
-      semanticLabel: '${drama.title}，$meta',
-      semanticHint: '双击查看详情',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          AspectRatio(
-            aspectRatio: _ResultGrid._coverAspectRatio,
-            child: CoverHero(
-              source: drama.source,
-              id: drama.id,
-              child: DramaCover(
-                seed: drama.coverSeed,
-                cover: drama.cover,
-                title: drama.title,
-                radius: AppRadii.lg,
-                showTitleOverlay: false,
-                fill: true,
+          if (active && summary.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 6),
+            Text(
+              summary,
+              style: AppText.caption.copyWith(
+                fontSize: 11.5,
+                color: colors.textSecondary,
               ),
             ),
-          ),
-          const SizedBox(height: _ResultGrid._titleSpacing),
-          SizedBox(
-            height: titleHeight,
-            child: Text.rich(
-              _highlight(drama.title, query, titleStyle),
-              style: titleStyle,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(height: _ResultGrid._metadataSpacing),
-          Text(
-            meta,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: metaStyle,
-          ),
+          ],
         ],
       ),
     );
   }
 }
 
-/// 小号绿色链接文字（行内动作，非玻璃控件）。
-class _LinkText extends StatelessWidget {
-  const _LinkText({required this.label, required this.onTap});
+/// 排序 chip（浅雾底胶囊 + 排序图标）。
+class _SortChip extends StatelessWidget {
+  const _SortChip({required this.label, required this.onTap});
 
   final String label;
   final VoidCallback onTap;
@@ -777,21 +349,467 @@ class _LinkText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
-    return PressableScale(
-      scale: .94,
-      onTap: onTap,
-      semanticLabel: label,
-      child: SizedBox(
-        height: AppSpacing.minTapTarget,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
-          child: Align(
-            alignment: AlignmentDirectional.center,
+    return Semantics(
+      button: true,
+      label: '排序：$label',
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 13),
+          decoration: BoxDecoration(
+            color: colors.sunken,
+            borderRadius: BorderRadius.circular(AppRadii.capsule),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(Icons.sort_rounded, size: 14, color: colors.textSecondary),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: AppText.caption.copyWith(
+                  fontSize: 12.5,
+                  color: colors.textSecondary,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 引导态：按条件筛选入口 + 最近搜索（**没有热门趋势**）。
+///
+/// 输入未提交时改为联想行（首行「搜索『词』」直接提交）。
+class _GuideBody extends StatelessWidget {
+  const _GuideBody({
+    required this.suggestions,
+    required this.query,
+    required this.searching,
+    required this.recent,
+    required this.colors,
+    required this.onFilters,
+    required this.onPick,
+    required this.onRemoveRecent,
+    required this.onClearRecent,
+  });
+
+  final List<String> suggestions;
+  final String query;
+  final bool searching;
+  final List<String> recent;
+  final AppColors colors;
+  final VoidCallback onFilters;
+  final ValueChanged<String> onPick;
+  final ValueChanged<String> onRemoveRecent;
+  final VoidCallback onClearRecent;
+
+  @override
+  Widget build(BuildContext context) {
+    final trimmed = query.trim();
+
+    if (trimmed.isNotEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          const SizedBox(height: AppSpacing.sm),
+          _RecentRow(
+            icon: Icons.search_rounded,
+            word: '搜索「$trimmed」',
+            colors: colors,
+            onTap: () => onPick(trimmed),
+          ),
+          for (final word in suggestions)
+            if (word != trimmed)
+              _RecentRow(
+                icon: Icons.north_west_rounded,
+                word: word,
+                colors: colors,
+                onTap: () => onPick(word),
+              ),
+          if (searching)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
+              child: Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: colors.textTertiary,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        const SizedBox(height: AppSpacing.sm),
+        // 「按条件筛选」是引导态的主入口。
+        Semantics(
+          button: true,
+          label: '按条件筛选',
+          child: GestureDetector(
+            onTap: onFilters,
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: colors.sunken,
+                borderRadius: BorderRadius.circular(AppRadii.lg),
+              ),
+              child: Row(
+                children: <Widget>[
+                  Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: colors.background,
+                      borderRadius: BorderRadius.circular(AppRadii.thumbnail),
+                    ),
+                    child: Icon(
+                      Icons.tune_rounded,
+                      size: 17,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(width: 13),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Text(
+                          '按条件筛选',
+                          style: AppText.body.copyWith(
+                            fontSize: 14.5,
+                            color: colors.textPrimary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '题材、状态、集数与排序',
+                          style: AppText.caption.copyWith(
+                            fontSize: 11.5,
+                            color: colors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    Icons.chevron_right,
+                    size: 16,
+                    color: colors.textTertiary,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+
+        if (recent.isNotEmpty) ...<Widget>[
+          Row(
+            children: <Widget>[
+              const Expanded(child: SectionLabel(text: '最近搜索')),
+              GestureDetector(
+                onTap: onClearRecent,
+                child: Padding(
+                  padding: const EdgeInsets.only(
+                    top: 22,
+                    left: AppSpacing.sm,
+                    bottom: 10,
+                  ),
+                  child: Text(
+                    '清空',
+                    style: AppText.caption.copyWith(
+                      fontSize: 12.5,
+                      color: colors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          for (final word in recent)
+            _RecentRow(
+              icon: Icons.history_rounded,
+              word: word,
+              colors: colors,
+              onTap: () => onPick(word),
+              onRemove: () => onRemoveRecent(word),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _RecentRow extends StatelessWidget {
+  const _RecentRow({
+    required this.icon,
+    required this.word,
+    required this.colors,
+    this.onTap,
+    this.onRemove,
+  });
+
+  final IconData icon;
+  final String word;
+  final AppColors colors;
+  final VoidCallback? onTap;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    behavior: HitTestBehavior.opaque,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 11),
+      child: Row(
+        children: <Widget>[
+          Icon(icon, size: 19, color: colors.textTertiary),
+          const SizedBox(width: 11),
+          Expanded(
             child: Text(
-              label,
-              style: AppText.callout.copyWith(
-                color: colors.accentDeep,
-                fontWeight: FontWeight.w600,
+              word,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.body.copyWith(
+                fontSize: 14.5,
+                color: colors.textPrimary,
+              ),
+            ),
+          ),
+          if (onRemove != null)
+            GestureDetector(
+              onTap: onRemove,
+              child: Icon(Icons.close, size: 17, color: colors.textTertiary),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// 结果网格：**复用发现的密度公式**，视觉语言不换挡。
+class _ResultGrid extends StatelessWidget {
+  const _ResultGrid({required this.items, required this.innerWidth});
+
+  final List<Drama> items;
+  final double innerWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    if (items.isEmpty) {
+      return const EmptyState(
+        icon: Icons.search_off_rounded,
+        title: '没有找到相关剧集',
+        description: '换个词，或者用按条件筛选试试。',
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: FeedGrid.delegate(innerWidth),
+          itemCount: items.length,
+          itemBuilder: (context, index) => DramaPosterCard(
+            drama: items[index],
+            onTap: () => context.push(
+              AppRoutes.detail(items[index].id, source: items[index].source),
+              extra: items[index],
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: AppSpacing.xl),
+          child: Center(
+            child: Text(
+              '已经看到全部结果',
+              style: AppText.caption.copyWith(
+                fontSize: 11.5,
+                color: AppColors.of(context).textTertiary,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 筛选 sheet。
+class _FilterSheet extends ConsumerStatefulWidget {
+  const _FilterSheet({required this.draft, required this.currentSource});
+
+  final _SearchFilters draft;
+  final String currentSource;
+
+  @override
+  ConsumerState<_FilterSheet> createState() => _FilterSheetState();
+}
+
+class _FilterSheetState extends ConsumerState<_FilterSheet> {
+  static const List<String> tags = <String>[
+    '都市',
+    '甜宠',
+    '霸总',
+    '重生',
+    '古装',
+    '虐恋',
+    '爽文',
+    '逆袭',
+    '穿越',
+    '职场',
+    '医术',
+    '校园',
+  ];
+  static const List<String> status = <String>['全部', '连载中', '已完结'];
+  static const List<String> eps = <String>[
+    '全部',
+    '30 集以内',
+    '30-60 集',
+    '60-100 集',
+    '100 集以上',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    final draft = widget.draft;
+    final sources = ref.watch(availableSourcesProvider).value;
+
+    return Padding(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      child: AppGlassSurface(
+        radius: AppRadii.sheet,
+        blur: 26,
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          '筛选',
+                          style: AppText.headline.copyWith(
+                            color: colors.textPrimary,
+                          ),
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () => setState(draft.reset),
+                        child: Text(
+                          '重置',
+                          style: AppText.callout.copyWith(
+                            color: colors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  _Group(
+                    label: '题材（可多选）',
+                    children: <Widget>[
+                      for (final tag in tags)
+                        _Chip(
+                          label: tag,
+                          selected: draft.tags.contains(tag),
+                          onTap: () => setState(() {
+                            if (!draft.tags.remove(tag)) draft.tags.add(tag);
+                          }),
+                        ),
+                    ],
+                  ),
+                  _Group(
+                    label: '状态',
+                    children: <Widget>[
+                      for (var i = 0; i < status.length; i++)
+                        _Chip(
+                          label: status[i],
+                          selected: draft.status == i,
+                          onTap: () => setState(() => draft.status = i),
+                        ),
+                    ],
+                  ),
+                  _Group(
+                    label: '集数',
+                    children: <Widget>[
+                      for (var i = 0; i < eps.length; i++)
+                        _Chip(
+                          label: eps[i],
+                          selected: draft.eps == i,
+                          onTap: () => setState(() => draft.eps = i),
+                        ),
+                    ],
+                  ),
+                  _Group(
+                    label: '排序',
+                    children: <Widget>[
+                      for (var i = 0; i < _SearchFilters.sortLabels.length; i++)
+                        _Chip(
+                          label: _SearchFilters.sortLabels[i],
+                          selected: draft.sort == i,
+                          onTap: () => setState(() => draft.sort = i),
+                        ),
+                    ],
+                  ),
+                  if (sources != null && sources.isNotEmpty)
+                    _Group(
+                      label: '内容源',
+                      children: <Widget>[
+                        for (final source in sources)
+                          _Chip(
+                            label: sourceLabel(source.id),
+                            selected:
+                                (draft.source ?? widget.currentSource) ==
+                                source.id,
+                            onTap: () =>
+                                setState(() => draft.source = source.id),
+                          ),
+                      ],
+                    ),
+                  const SizedBox(height: AppSpacing.sm),
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: _FootButton(
+                          label: '取消',
+                          filled: false,
+                          onTap: () => Navigator.of(context).pop(false),
+                        ),
+                      ),
+                      const SizedBox(width: AppSpacing.sm),
+                      Expanded(
+                        child: _FootButton(
+                          label: '应用筛选',
+                          filled: true,
+                          onTap: () => Navigator.of(context).pop(true),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                ],
               ),
             ),
           ),
@@ -801,38 +819,256 @@ class _LinkText extends StatelessWidget {
   }
 }
 
-/// 按 textScaler 实测文字高度（Kazumi 同款做法：大字模式不跳版）。
-double _measuredHeight(BuildContext context, String text, TextStyle style) {
-  final painter = TextPainter(
-    text: TextSpan(text: text, style: style),
-    textDirection: Directionality.of(context),
-    textScaler: MediaQuery.textScalerOf(context),
-    locale: Localizations.maybeLocaleOf(context),
-  )..layout();
-  final height = painter.height.ceilToDouble();
-  painter.dispose();
-  return height;
+class _Group extends StatelessWidget {
+  const _Group({required this.label, required this.children});
+
+  final String label;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.xl),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            label,
+            style: AppText.caption.copyWith(
+              fontSize: 12,
+              color: colors.textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 9),
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.sm,
+            children: children,
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-/// 把命中的那段字加粗 + 加下划线（不用颜色标记命中，见 lockups 同款注释）。
-InlineSpan _highlight(String text, String query, TextStyle style) {
-  final index = text.toLowerCase().indexOf(query.toLowerCase());
-  if (index < 0 || query.isEmpty) {
-    return TextSpan(text: text, style: style);
-  }
-  return TextSpan(
-    style: style,
-    children: <InlineSpan>[
-      TextSpan(text: text.substring(0, index)),
-      TextSpan(
-        text: text.substring(index, index + query.length),
-        style: style.copyWith(
-          fontWeight: FontWeight.w800,
-          decoration: TextDecoration.underline,
-          decorationThickness: 2,
+/// 筛选 chip：未选中 = 浅雾底石墨字；选中 = 墨色填充 + 反白字。
+class _Chip extends StatelessWidget {
+  const _Chip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 13),
+          decoration: BoxDecoration(
+            color: selected ? colors.textPrimary : colors.sunken,
+            borderRadius: BorderRadius.circular(AppRadii.capsule),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: AppText.caption.copyWith(
+                fontSize: 12.5,
+                color: selected ? colors.onInk : colors.textSecondary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
         ),
       ),
-      TextSpan(text: text.substring(index + query.length)),
-    ],
-  );
+    );
+  }
+}
+
+class _FootButton extends StatelessWidget {
+  const _FootButton({
+    required this.label,
+    required this.filled,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool filled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          height: 44,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: filled ? colors.textPrimary : Colors.transparent,
+            borderRadius: BorderRadius.circular(AppRadii.capsule),
+            border: filled
+                ? null
+                : Border.all(color: colors.divider, width: .5),
+          ),
+          child: Text(
+            label,
+            style: AppText.body.copyWith(
+              color: filled ? colors.onInk : colors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// sheet 里的一行（排序菜单用）。
+class _SheetRow extends StatelessWidget {
+  const _SheetRow({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: AppSpacing.minTapTarget,
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+        alignment: AlignmentDirectional.centerStart,
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: Text(
+                label,
+                style: AppText.body.copyWith(
+                  color: colors.textPrimary,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+            ),
+            if (selected)
+              Icon(Icons.check_rounded, size: 18, color: colors.textPrimary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 搜索页的筛选状态（**视图局部状态**：它只影响结果列表的排列与收窄，
+/// 不进仓库——源站的搜索接口只吃关键词）。
+class _SearchFilters {
+  _SearchFilters();
+
+  /// 排序选项刻意只用能真正兑现的三档：源站的「热度 / 最新」不可得，
+  /// 摆出来却不能排序，比没有这个菜单更糟。
+  static const List<String> sortLabels = <String>['默认排序', '集数多', '集数少'];
+
+  final Set<String> tags = <String>{};
+
+  /// 0 全部 / 1 连载中 / 2 已完结。
+  int status = 0;
+
+  /// 0 全部 / 1 ≤30 / 2 30-60 / 3 60-100 / 4 >100。
+  int eps = 0;
+
+  int sort = 0;
+
+  /// 选中的搜索源；null = 沿用当前源。
+  String? source;
+
+  bool get isActive => tags.isNotEmpty || status > 0 || eps > 0;
+
+  _SearchFilters copy() => _SearchFilters()
+    ..tags.addAll(tags)
+    ..status = status
+    ..eps = eps
+    ..sort = sort
+    ..source = source;
+
+  /// 用 sheet 的草稿覆盖本状态。
+  void overrideWith(_SearchFilters other) {
+    tags
+      ..clear()
+      ..addAll(other.tags);
+    status = other.status;
+    eps = other.eps;
+    sort = other.sort;
+    source = other.source;
+  }
+
+  void reset() {
+    tags.clear();
+    status = 0;
+    eps = 0;
+    sort = 0;
+    source = null;
+  }
+
+  /// 一行筛选摘要（有筛选生效时展示在计数下方）。
+  String summary() {
+    final parts = <String>[
+      ...tags,
+      if (status > 0) const <String>['', '连载中', '已完结'][status],
+      if (eps > 0)
+        const <String>['', '30 集以内', '30-60 集', '60-100 集', '100 集以上'][eps],
+      sortLabels[sort],
+    ];
+    return parts.join(' · ');
+  }
+
+  /// 客户端收窄：状态与集数可以就地判定。
+  List<Drama> narrow(List<Drama> input) {
+    Iterable<Drama> out = input;
+    if (status == 1) {
+      out = out.where((drama) => drama.status == DramaStatus.ongoing);
+    } else if (status == 2) {
+      out = out.where((drama) => drama.status == DramaStatus.finished);
+    }
+    if (eps > 0) {
+      out = out.where((drama) {
+        final count = drama.episodeCount;
+        return switch (eps) {
+          1 => count > 0 && count <= 30,
+          2 => count > 30 && count <= 60,
+          3 => count > 60 && count <= 100,
+          4 => count > 100,
+          _ => true,
+        };
+      });
+    }
+    final list = out.toList();
+    if (sort == 1) {
+      list.sort((a, b) => b.episodeCount.compareTo(a.episodeCount));
+    } else if (sort == 2) {
+      list.sort((a, b) => a.episodeCount.compareTo(b.episodeCount));
+    }
+    return list;
+  }
 }

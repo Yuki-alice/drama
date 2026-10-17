@@ -3,8 +3,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/app_glass_scaffold.dart';
+import '../../../core/widgets/app_glass_surface.dart';
 import '../../../core/widgets/glass_kit.dart';
-import '../../../core/widgets/lockups.dart';
 
 /// 关于页（二级页）。
 ///
@@ -31,7 +31,7 @@ class AboutView extends StatelessWidget {
           const SizedBox(height: AppSpacing.lg),
 
           // ── 免责声明 ───────────────────────────────────────────
-          const SectionHead.paged(title: '免责声明'),
+          const SectionLabel(text: '免责声明', paged: true),
           Padding(
             padding: AppSpacing.pageH,
             child: Column(
@@ -67,14 +67,14 @@ class AboutView extends StatelessWidget {
           ),
 
           // ── 开源许可 ───────────────────────────────────────────
-          const SectionHead.paged(title: '开源许可'),
+          const SectionLabel(text: '开源许可', paged: true),
           _TappableRow(
             label: '查看开源许可',
             onTap: () => _showPlaceholderDialog(context, '开源许可'),
           ),
 
           // ── 联系方式 ───────────────────────────────────────────
-          const SectionHead.paged(title: '联系方式'),
+          const SectionLabel(text: '联系方式', paged: true),
           const _ValueRow(label: '联系邮箱', value: 'support@example.com'),
         ],
       ),
@@ -101,7 +101,7 @@ class _AppIdentity extends StatelessWidget {
           child: Icon(
             Icons.local_fire_department,
             size: 48,
-            color: colors.accent,
+            color: colors.textPrimary,
           ),
         ),
         const SizedBox(height: AppSpacing.lg),

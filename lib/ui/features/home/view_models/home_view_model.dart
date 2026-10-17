@@ -25,10 +25,10 @@ class HomeSourceNotifier extends Notifier<String> {
 
 /// 源对应的首页默认分类（真实源的首个内容分类；未知源退回 `recommend`）。
 String homeDefaultCategoryOf(String source) => switch (source) {
-      'hongguo' => 'real-drama',
-      'huangguoai' => 'ai-duanju',
-      _ => 'recommend',
-    };
+  'hongguo' => 'real-drama',
+  'huangguoai' => 'ai-duanju',
+  _ => 'recommend',
+};
 
 /// 当前源对应的目录仓库。
 ///
@@ -77,26 +77,24 @@ class HomeFeed {
     bool? loadingMore,
     String? error,
     bool clearError = false,
-  }) =>
-      HomeFeed(
-        items: items,
-        hasMore: hasMore,
-        loadedPages: loadedPages,
-        loadingMore: loadingMore ?? this.loadingMore,
-        loadMoreError: clearError ? null : (error ?? loadMoreError),
-      );
+  }) => HomeFeed(
+    items: items,
+    hasMore: hasMore,
+    loadedPages: loadedPages,
+    loadingMore: loadingMore ?? this.loadingMore,
+    loadMoreError: clearError ? null : (error ?? loadMoreError),
+  );
 
   /// 追加一页（成功路径）。
   HomeFeed append(
     List<Drama> more, {
     required bool hasMore,
     required int loadedPages,
-  }) =>
-      HomeFeed(
-        items: <Drama>[...items, ...more],
-        hasMore: hasMore,
-        loadedPages: loadedPages,
-      );
+  }) => HomeFeed(
+    items: <Drama>[...items, ...more],
+    hasMore: hasMore,
+    loadedPages: loadedPages,
+  );
 }
 
 /// 首页目录流：源变化 → 自动重建重取；触底 → [loadMore] 追加。
@@ -122,9 +120,7 @@ class HomeFeedNotifier extends AsyncNotifier<HomeFeed> {
       return const HomeFeed(items: <Drama>[], hasMore: false, loadedPages: 0);
     }
     return HomeFeed(
-      items: <Drama>[
-        for (final page in pages) ...page.items,
-      ],
+      items: <Drama>[for (final page in pages) ...page.items],
       hasMore: pages.last.hasMore, // 以最后一页为准
       loadedPages: pages.length,
     );
@@ -143,8 +139,9 @@ class HomeFeedNotifier extends AsyncNotifier<HomeFeed> {
     final repository = ref.read(homeRepositoryProvider(source));
     // 保留旧列表、仅标记追加中，避免整页闪（不触发 AsyncLoading）。
     // 同时清掉上一次的错误：重试期间不该继续显示「上次失败了」。
-    state =
-        AsyncData(current.markLoadMore(loadingMore: true, clearError: true));
+    state = AsyncData(
+      current.markLoadMore(loadingMore: true, clearError: true),
+    );
     try {
       final page = await repository.catalog(
         categoryId: homeDefaultCategoryOf(source),
@@ -158,8 +155,9 @@ class HomeFeedNotifier extends AsyncNotifier<HomeFeed> {
         ),
       );
     } catch (error) {
-      final message =
-          error is RustCoreException ? '${error.msg}（${error.code}）' : '$error';
+      final message = error is RustCoreException
+          ? '${error.msg}（${error.code}）'
+          : '$error';
       state = AsyncData(
         current.markLoadMore(loadingMore: false, error: message),
       );

@@ -14,12 +14,12 @@ import '../../../../domain/models/episode.dart';
 import '../../../../router/routes.dart';
 import '../../../core/errors.dart';
 import '../../../core/motion/app_motion.dart';
+import '../../../core/theme/cover_palette.dart';
 import '../../../core/tokens/app_tokens.dart';
+import '../../../core/widgets/app_glass_surface.dart';
 import '../../../core/widgets/content_widgets.dart';
 import '../../../core/widgets/drama_cover.dart';
 import '../../../core/widgets/glass_kit.dart';
-import '../../../core/widgets/glass_top_bar.dart';
-import '../../../core/widgets/lockups.dart';
 import '../view_models/detail_view_model.dart';
 
 /// 详情页（版式对齐参考截图：窄屏单栏、宽屏双栏）。
@@ -77,10 +77,7 @@ class _DetailViewState extends ConsumerState<DetailView> {
       data: (detail) => _body(context, drama: detail.drama, detail: detail),
       // 卡片数据在（列表进入）：先渲染海报头，选集区等数据。
       loading: () => initial == null
-          ? _statusScaffold(
-              context,
-              const LoadingView(label: '正在加载剧集详情'),
-            )
+          ? _statusScaffold(context, const LoadingView(label: '正在加载剧集详情'))
           : _body(context, drama: initial, detail: null),
       error: (error, _) {
         if (initial != null) {
@@ -97,7 +94,8 @@ class _DetailViewState extends ConsumerState<DetailView> {
                 ErrorView(
                   message: errorMessage(error),
                   onRetry: () => ref.invalidate(
-                      detailProvider((id: widget.id, source: widget.source))),
+                    detailProvider((id: widget.id, source: widget.source)),
+                  ),
                 ),
               );
       },
@@ -142,16 +140,15 @@ class _DetailViewState extends ConsumerState<DetailView> {
               final wide = constraints.maxWidth >= _kWideBreakpoint;
               return ListView(
                 padding: EdgeInsetsDirectional.only(
-                  top: glassTopBarClearance(context) + AppSpacing.sm,
+                  // 顶栏三枚玻璃圆钮浮在模糊海报上，内容从它们下方开始。
+                  top: MediaQuery.paddingOf(context).top + 68,
                   bottom: MediaQuery.paddingOf(context).bottom + AppSpacing.xxl,
                 ),
                 children: <Widget>[
                   Center(
                     child: ConstrainedBox(
                       // 宽屏收 1080 防拉伸；窄屏收 720（平板竖窗也能读）。
-                      constraints: BoxConstraints(
-                        maxWidth: wide ? 1080 : 720,
-                      ),
+                      constraints: BoxConstraints(maxWidth: wide ? 1080 : 720),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
                           horizontal: AppSpacing.lg,
@@ -187,28 +184,41 @@ class _DetailViewState extends ConsumerState<DetailView> {
             },
           ),
 
-          // ── 顶：固定玻璃栏（返回 + 分享 + 更多） ───────────────
+          // ── 顶：三枚玻璃圆钮浮在模糊海报上 ─────────────────────
+          // 全 App 玻璃效果最好的位置——底下真的有东西可折射。
+          // 本页不显示任何导航（Tab 条与侧栏一起撤掉），返回靠左上角圆钮。
           Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: GlassTopBar(
-              leading: GlassIconAction(
-                icon: Icons.arrow_back_ios_new_rounded,
-                semanticLabel: '返回',
-                onPressed: () => context.pop(),
-              ),
-              actions: <Widget>[
-                GlassIconAction(
+            top: MediaQuery.paddingOf(context).top + 8,
+            left: AppSpacing.gutter,
+            right: AppSpacing.gutter,
+            child: Row(
+              children: <Widget>[
+                AppGlassRoundButton(
+                  icon: Icons.arrow_back_ios_new_rounded,
+                  semanticLabel: '返回',
+                  // 贴左上：圆盘左缘落在 gutter 上，与下方海报/文字的左缘对齐。
+                  anchor: VisualAnchor.topLeft,
+                  onPressed: () => context.pop(),
+                ),
+                const Spacer(),
+                AppGlassRoundButton(
                   icon: Icons.ios_share_rounded,
                   semanticLabel: '分享',
+                  anchor: VisualAnchor.topRight,
                   onPressed: () => _notify(context, '分享尚未接入'),
                 ),
-                GlassIconAction(
-                  icon: Icons.more_horiz_rounded,
-                  semanticLabel: '更多',
-                  onPressed: () => unawaited(
-                    _showMoreSheet(context, drama, detail),
+                // 两个 44×44 命中区在这里重叠 2pt：圆盘 34 贴在命中区右上，
+                // 命中区「多出来的 10pt 留白」落在圆盘左侧，所以相邻两个按钮的
+                // 命中区必须重叠 (44−34) − 8 = 2，圆盘之间才是原型的 8。
+                // 换成 `SizedBox(width: 8)` 会把圆盘间距抬到 18。
+                Transform.translate(
+                  offset: const Offset(-2, 0),
+                  child: AppGlassRoundButton(
+                    icon: Icons.more_horiz_rounded,
+                    semanticLabel: '更多',
+                    anchor: VisualAnchor.topRight,
+                    onPressed: () =>
+                        unawaited(_showMoreSheet(context, drama, detail)),
                   ),
                 ),
               ],
@@ -219,7 +229,9 @@ class _DetailViewState extends ConsumerState<DetailView> {
     );
   }
 
-  /// 无卡片数据的加载/错误态（深链进入）：纯色底 + 玻璃顶栏。
+  /// 无卡片数据的加载/错误态（深链进入）：纯色底 + 一枚返回圆钮。
+  ///
+  /// 这里**不用玻璃**：底下是纯色画布，没有可折射的东西（玻璃只会发灰）。
   Widget _statusScaffold(BuildContext context, Widget child) {
     final colors = AppColors.of(context);
     return Scaffold(
@@ -229,21 +241,18 @@ class _DetailViewState extends ConsumerState<DetailView> {
         children: <Widget>[
           ListView(
             padding: EdgeInsets.only(
-              top: glassTopBarClearance(context) + AppSpacing.md,
+              top: MediaQuery.paddingOf(context).top + 68,
             ),
             children: <Widget>[child],
           ),
           Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: GlassTopBar(
-              title: '剧集详情',
-              leading: GlassIconAction(
-                icon: Icons.arrow_back_ios_new_rounded,
-                semanticLabel: '返回',
-                onPressed: () => context.pop(),
-              ),
+            top: MediaQuery.paddingOf(context).top + 8,
+            left: AppSpacing.gutter,
+            child: AppPlainRoundButton(
+              icon: Icons.arrow_back_ios_new_rounded,
+              semanticLabel: '返回',
+              anchor: VisualAnchor.topLeft,
+              onPressed: () => context.pop(),
             ),
           ),
         ],
@@ -434,18 +443,14 @@ class _DetailViewState extends ConsumerState<DetailView> {
 
   // ── 行为（沿用既有实现，仅入参适配渐进渲染） ────────────────────
 
-  void _retryDetail() => ref.invalidate(
-        detailProvider((id: widget.id, source: widget.source)),
-      );
+  void _retryDetail() =>
+      ref.invalidate(detailProvider((id: widget.id, source: widget.source)));
 
   /// 选集/主操作：锁定集必须**明示**原因，不得静默失败。
   void _playEpisode(Episode? episode) {
     final index = episode?.index ?? _resumeEpisodeOr1();
     if (episode != null && episode.locked) {
-      _notify(
-        context,
-        '第 ${episode.index} 集需 App 授权（公开轨仅覆盖可试看集）',
-      );
+      _notify(context, '第 ${episode.index} 集需 App 授权（公开轨仅覆盖可试看集）');
       return;
     }
     context.push(
@@ -454,8 +459,9 @@ class _DetailViewState extends ConsumerState<DetailView> {
   }
 
   int _resumeEpisodeOr1() {
-    final resume =
-        ref.read(resumeProvider((id: widget.id, source: widget.source))).value;
+    final resume = ref
+        .read(resumeProvider((id: widget.id, source: widget.source)))
+        .value;
     return resume?.episode ?? 1;
   }
 
@@ -500,9 +506,7 @@ class _DetailViewState extends ConsumerState<DetailView> {
   ) async {
     final messenger = ScaffoldMessenger.of(context);
     if (detail == null) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('剧集还没加载完，稍后再试')),
-      );
+      messenger.showSnackBar(const SnackBar(content: Text('剧集还没加载完，稍后再试')));
       return;
     }
     try {
@@ -519,9 +523,7 @@ class _DetailViewState extends ConsumerState<DetailView> {
         cover: drama.cover,
         source: widget.source,
       );
-      messenger.showSnackBar(
-        SnackBar(content: Text('已加入下载：第 $episode 集')),
-      );
+      messenger.showSnackBar(SnackBar(content: Text('已加入下载：第 $episode 集')));
     } catch (error) {
       messenger.showSnackBar(
         SnackBar(content: Text('下载失败：${errorMessage(error)}')),
@@ -585,52 +587,79 @@ class _DetailViewState extends ConsumerState<DetailView> {
 
 /// 元信息行：`已完结 · 全 82 集`。
 String _metaLine(Drama drama) => <String>[
-      drama.status.label,
-      if (drama.episodeCount > 0) '全 ${drama.episodeCount} 集',
-    ].join(' · ');
+  drama.status.label,
+  if (drama.episodeCount > 0) '全 ${drama.episodeCount} 集',
+].join(' · ');
 
 // ── 背景：海报高斯模糊 ────────────────────────────────────────────
 
-/// 整页背景：海报放大 + 高斯模糊 + 可读性罩层。
+/// 整页背景：**封面取色**。海报放大 1.15 + 高斯模糊 52 + 径向氛围色，
+/// 向下 58% 渐隐回界面底色。
 ///
-/// 罩层分三段：顶部 52% 背景色（保住文字对比）→ 渐隐到纯色 → 纯色。
-/// 效果与参考截图一致：上半页看得出「这是哪部剧的色调」，下半页是干净底。
-class _PosterBackdrop extends StatelessWidget {
+/// 界面色板是无彩色的，颜色的唯一来源是封面：氛围色由封面主色提取
+/// （见 `cover_palette.dart`），这里同时叠一层放大模糊的封面本身，
+/// 让上半页看得出「这是哪部剧的色调」，下半页是干净底（选集/简介坐在实底上，
+/// 不会出现「文字压在花图上」）。
+class _PosterBackdrop extends ConsumerWidget {
   const _PosterBackdrop({required this.drama});
 
   final Drama drama;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = AppColors.of(context);
+    final dark = colors.brightness == Brightness.dark;
+    final palette =
+        ref
+            .watch(
+              coverPaletteProvider((cover: drama.cover, seed: drama.coverSeed)),
+            )
+            .value ??
+        CoverPalette.neutral;
+
     return RepaintBoundary(
       child: ColoredBox(
         color: colors.background,
         child: Stack(
           fit: StackFit.expand,
           children: <Widget>[
-            // 放大 1.18 再模糊：模糊会把边缘「吃」透明，放大一圈补回来。
+            // 放大 1.15 再模糊：模糊会把边缘「吃」透明，放大一圈补回来。
             ClipRect(
               child: ImageFiltered(
-                imageFilter: ImageFilter.blur(sigmaX: 36, sigmaY: 36),
+                imageFilter: ImageFilter.blur(sigmaX: 52, sigmaY: 52),
                 child: Transform.scale(
-                  scale: 1.18,
+                  scale: 1.15,
                   child: _CoverFill(drama: drama),
                 ),
               ),
             ),
+            // 径向氛围色（封面主色）——「颜色唯一来源是封面」的落点。
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  center: const Alignment(0, -1),
+                  radius: 1.2,
+                  colors: <Color>[
+                    palette.c1.withValues(alpha: .34),
+                    palette.c1.withValues(alpha: 0),
+                  ],
+                  stops: const <double>[0, .68],
+                ),
+              ),
+            ),
+            // 可读性罩层：顶部压深 → 58% 处渐隐回界面底色。
             DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   colors: <Color>[
-                    colors.background.withValues(alpha: .52),
-                    colors.background.withValues(alpha: .52),
+                    dark ? const Color(0x9E000000) : const Color(0x6B000000),
+                    dark ? const Color(0x4D000000) : const Color(0x29000000),
                     colors.background,
                     colors.background,
                   ],
-                  stops: const <double>[0, .34, .58, 1],
+                  stops: const <double>[0, .22, .58, 1],
                 ),
               ),
             ),
@@ -649,13 +678,13 @@ class _CoverFill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DramaCover(
-        seed: drama.coverSeed,
-        cover: drama.cover,
-        title: drama.title,
-        radius: 0,
-        showTitleOverlay: false,
-        fill: true,
-      );
+    seed: drama.coverSeed,
+    cover: drama.cover,
+    title: drama.title,
+    radius: 0,
+    showTitleOverlay: false,
+    fill: true,
+  );
 }
 
 // ── 窄屏组件 ─────────────────────────────────────────────────────
@@ -673,7 +702,7 @@ class _CompactHeader extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Container(
-          width: 112,
+          width: 118,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(AppRadii.lg),
             boxShadow: <BoxShadow>[
@@ -685,7 +714,7 @@ class _CompactHeader extends StatelessWidget {
             ],
           ),
           child: AspectRatio(
-            aspectRatio: 2 / 3,
+            aspectRatio: 3 / 4,
             child: CoverHero(
               source: drama.source,
               id: drama.id,
@@ -1016,7 +1045,7 @@ class _EpisodeSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         if (compact)
-          SectionHead(title: '选集', subtitle: '共 $total 集')
+          SectionLabel(text: '选集 · 共 $total 集', top: AppSpacing.lg)
         else
           Padding(
             padding: const EdgeInsets.only(
@@ -1031,10 +1060,7 @@ class _EpisodeSection extends StatelessWidget {
                     style: AppText.title.copyWith(color: colors.textPrimary),
                   ),
                 ),
-                _LinkButton(
-                  label: '下载管理',
-                  onTap: onManageDownloads,
-                ),
+                _LinkButton(label: '下载管理', onTap: onManageDownloads),
                 if (hasGroups) ...<Widget>[
                   const SizedBox(width: AppSpacing.sm),
                   _GroupPager(
@@ -1050,17 +1076,26 @@ class _EpisodeSection extends StatelessWidget {
             ),
           ),
         if (hasGroups && compact) ...<Widget>[
-          ChipStrip(
-            padding: EdgeInsets.zero,
-            children: <Widget>[
-              for (final group in groups!.groups)
-                OutlinePill(
-                  label: group.label,
-                  selected: group.index == activeGroup,
-                  height: 36,
-                  onTap: () => onGroupChanged(group.index),
-                ),
-            ],
+          // 分组胶囊：水平滚动（长剧分组多，不换行堆叠）。
+          SizedBox(
+            height: 52,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: groups!.groups.length,
+              separatorBuilder: (context, index) =>
+                  const SizedBox(width: AppSpacing.sm),
+              itemBuilder: (context, index) {
+                final group = groups!.groups[index];
+                return Center(
+                  child: OutlinePill(
+                    label: group.label,
+                    selected: group.index == activeGroup,
+                    height: 36,
+                    onTap: () => onGroupChanged(group.index),
+                  ),
+                );
+              },
+            ),
           ),
           const SizedBox(height: AppSpacing.md),
         ],
@@ -1113,22 +1148,22 @@ class _EpisodeStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        height: 66,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          itemCount: episodes.length,
-          separatorBuilder: (context, index) =>
-              const SizedBox(width: AppSpacing.sm),
-          itemBuilder: (context, index) {
-            final episode = episodes[index];
-            return _EpisodeChip(
-              episode: episode,
-              current: episode.index == current,
-              onTap: () => onEpisodeTap(episode),
-            );
-          },
-        ),
-      );
+    height: 66,
+    child: ListView.separated(
+      scrollDirection: Axis.horizontal,
+      itemCount: episodes.length,
+      separatorBuilder: (context, index) =>
+          const SizedBox(width: AppSpacing.sm),
+      itemBuilder: (context, index) {
+        final episode = episodes[index];
+        return _EpisodeChip(
+          episode: episode,
+          current: episode.index == current,
+          onTap: () => onEpisodeTap(episode),
+        );
+      },
+    ),
+  );
 }
 
 /// 集卡：集号 + 集标题（窄屏横条与宽屏网格共用同一张卡）。
@@ -1147,8 +1182,9 @@ class _EpisodeChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
     final foreground = current ? colors.onInk : colors.textPrimary;
-    final label =
-        episode.locked ? '第 ${episode.index} 集，需授权' : '第 ${episode.index} 集';
+    final label = episode.locked
+        ? '第 ${episode.index} 集，需授权'
+        : '第 ${episode.index} 集';
     return Semantics(
       button: true,
       selected: current,
@@ -1226,30 +1262,30 @@ class _EpisodeGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
-        builder: (context, constraints) {
-          final columns = math.max(3, (constraints.maxWidth / 150).floor());
-          return GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: EdgeInsets.zero,
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: columns,
-              mainAxisSpacing: AppSpacing.sm,
-              crossAxisSpacing: AppSpacing.sm,
-              mainAxisExtent: 64,
-            ),
-            itemCount: episodes.length,
-            itemBuilder: (context, index) {
-              final episode = episodes[index];
-              return _EpisodeChip(
-                episode: episode,
-                current: episode.index == current,
-                onTap: () => onEpisodeTap(episode),
-              );
-            },
+    builder: (context, constraints) {
+      final columns = math.max(3, (constraints.maxWidth / 150).floor());
+      return GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: EdgeInsets.zero,
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: columns,
+          mainAxisSpacing: AppSpacing.sm,
+          crossAxisSpacing: AppSpacing.sm,
+          mainAxisExtent: 64,
+        ),
+        itemCount: episodes.length,
+        itemBuilder: (context, index) {
+          final episode = episodes[index];
+          return _EpisodeChip(
+            episode: episode,
+            current: episode.index == current,
+            onTap: () => onEpisodeTap(episode),
           );
         },
       );
+    },
+  );
 }
 
 /// 分组翻页（参考截图的 `< 1-10 / 24 >`）。
@@ -1325,7 +1361,7 @@ class _SynopsisSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const SectionHead(title: '简介'),
+        const SectionLabel(text: '简介'),
         _Synopsis(text: text),
       ],
     );
@@ -1397,7 +1433,7 @@ class _TagSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const SectionHead(title: '题材'),
+        const SectionLabel(text: '题材'),
         Wrap(
           spacing: AppSpacing.sm,
           runSpacing: AppSpacing.sm,
@@ -1457,7 +1493,8 @@ class _LinkButton extends StatelessWidget {
             child: Text(
               label,
               style: AppText.callout.copyWith(
-                color: colors.accentDeep,
+                // 行内动作文字：无彩色色板下链接靠字重与墨色表达，不靠颜色。
+                color: colors.textPrimary,
                 fontWeight: FontWeight.w600,
               ),
             ),

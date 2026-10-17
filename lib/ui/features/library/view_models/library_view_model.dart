@@ -3,17 +3,33 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../data/repositories/catalog_providers.dart';
 import '../../../../data/repositories/progress_repository.dart';
 
-/// 追剧库分档：0 想看 / 1 在看 / 2 已看 / 3 有更新。
-final libraryTabProvider = NotifierProvider<LibraryTabNotifier, int>(
+/// 追剧库的三档（原型：在看 / 已看完 / 全部）。
+///
+/// 与 [filterByTab] 的四个**内部桶**（想看 / 在看 / 已看 / 有更新）区分开：
+/// 那四个桶是判定口径，这里是页面上的三档展示。设计上「想看」（加追未开看）
+/// 不再单独成档，而是并进「全部」——一屏只回答一个问题：我在追什么。
+enum LibraryTab {
+  /// 已开看、尚有未看集数。
+  watching,
+
+  /// 已看到最后一集。
+  finished,
+
+  /// 库里的全部条目（含加追未开看的）。
+  all,
+}
+
+/// 追剧页当前分档。
+final libraryTabProvider = NotifierProvider<LibraryTabNotifier, LibraryTab>(
   LibraryTabNotifier.new,
 );
 
-class LibraryTabNotifier extends Notifier<int> {
+class LibraryTabNotifier extends Notifier<LibraryTab> {
   @override
-  int build() => 0;
+  LibraryTab build() => LibraryTab.watching;
 
   /// 切换到指定档位。
-  void select(int index) => state = index;
+  void select(LibraryTab tab) => state = tab;
 }
 
 /// 追剧库条目：由 Rust `followList` 的真实记录派生。
@@ -27,6 +43,9 @@ class LibraryItem {
     this.cover = '',
     this.source = 'hongguo',
   });
+
+  /// 单集平均分钟数（短剧 2–4 分钟）。累计时长按它估值，界面上以「约」呈现。
+  static const int minutesPerEpisode = 3;
 
   final String id;
   final String title;
@@ -49,12 +68,10 @@ class LibraryItem {
   /// 是否**一集都没看过**：位置为 0 且仍在第一集。
   ///
   /// 加追时写入 `episode=1, positionSecs=0`，故这等价于「加入追剧但未开看」。
-  bool get isPlanned =>
-      watchedEpisode <= 1 && position == Duration.zero;
+  bool get isPlanned => watchedEpisode <= 1 && position == Duration.zero;
 
   /// 是否已看完：总集数已知且已看到（或超过）最后一集。
-  bool get isFinished =>
-      totalEpisode > 0 && watchedEpisode >= totalEpisode;
+  bool get isFinished => totalEpisode > 0 && watchedEpisode >= totalEpisode;
 
   /// 是否「在看」：已开看、且尚有未看集数。
   bool get isWatching => !isPlanned && !isFinished;
@@ -120,10 +137,18 @@ List<LibraryItem> filterByTab(List<LibraryItem> items, int tab) {
   ];
 }
 
+/// 按页面三档过滤：复用 [filterByTab] 的内部桶。
+List<LibraryItem> filterByLibraryTab(List<LibraryItem> items, LibraryTab tab) =>
+    switch (tab) {
+      LibraryTab.watching => filterByTab(items, 1),
+      LibraryTab.finished => filterByTab(items, 2),
+      LibraryTab.all => items,
+    };
+
 /// 当前分档下的条目（视图消费）。
 final visibleLibraryItemsProvider = FutureProvider<List<LibraryItem>>((
   ref,
 ) async {
   final items = await ref.watch(libraryItemsProvider.future);
-  return filterByTab(items, ref.watch(libraryTabProvider));
+  return filterByLibraryTab(items, ref.watch(libraryTabProvider));
 });

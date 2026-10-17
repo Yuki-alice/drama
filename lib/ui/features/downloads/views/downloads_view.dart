@@ -8,9 +8,9 @@ import '../../../core/format.dart';
 import '../../../core/layout/breakpoints.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/app_glass_scaffold.dart';
+import '../../../core/widgets/app_glass_surface.dart';
 import '../../../core/widgets/content_widgets.dart';
 import '../../../core/widgets/glass_kit.dart';
-import '../../../core/widgets/lockups.dart';
 import '../view_models/downloads_view_model.dart';
 
 /// 下载管理页（W1 纯 UI 外壳 / mock 数据）。
@@ -112,13 +112,12 @@ class _Stat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Column(
-        children: <Widget>[
-          Text(value, style: AppText.title.copyWith(color: colors.textPrimary)),
-          const SizedBox(height: AppSpacing.xs),
-          Text(label,
-              style: AppText.caption.copyWith(color: colors.textSecondary)),
-        ],
-      );
+    children: <Widget>[
+      Text(value, style: AppText.title.copyWith(color: colors.textPrimary)),
+      const SizedBox(height: AppSpacing.xs),
+      Text(label, style: AppText.caption.copyWith(color: colors.textSecondary)),
+    ],
+  );
 }
 
 /// 单部剧的下载分组（标题 + 普通任务行）。
@@ -130,20 +129,21 @@ class _DownloadGroupSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          SectionHead.paged(
-            title: group.drama.title,
-            action: '已完成 ${group.completedCount}/${group.tasks.length}',
-            onAction: () => context.push(
-              AppRoutes.detail(group.drama.id, source: group.drama.source),
-              // 携带卡片数据供详情页立即渲染海报头（Hero 落点）。
-              extra: group.drama,
-            ),
-          ),
-          for (final task in group.tasks) _TaskRow(task: task, colors: colors),
-        ],
-      );
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: <Widget>[
+      SectionLabel(
+        text: group.drama.title,
+        paged: true,
+        action: '已完成 ${group.completedCount}/${group.tasks.length}',
+        onAction: () => context.push(
+          AppRoutes.detail(group.drama.id, source: group.drama.source),
+          // 携带卡片数据供详情页立即渲染海报头（Hero 落点）。
+          extra: group.drama,
+        ),
+      ),
+      for (final task in group.tasks) _TaskRow(task: task, colors: colors),
+    ],
+  );
 }
 
 /// 单条任务行（集号 + 状态 + 进度 + 大小/速度 + 操作，全部为普通控件）。
@@ -161,7 +161,8 @@ class _TaskRow extends ConsumerWidget {
     final barColor = switch (task.status) {
       DownloadStatus.queued => colors.divider,
       DownloadStatus.paused => colors.textTertiary,
-      _ => colors.accent,
+      // 无彩色色板：进行中用墨色（状态靠灰度与字重表达）。
+      _ => colors.textPrimary,
     };
     final detail = _detailLine(task);
 
@@ -170,12 +171,12 @@ class _TaskRow extends ConsumerWidget {
       // 误触会被当成「什么都点不动」。
       onTap: task.status == DownloadStatus.completed
           ? () => context.push(
-                AppRoutes.player(
-                  task.dramaId,
-                  episode: task.episode,
-                  source: task.source,
-                ),
-              )
+              AppRoutes.player(
+                task.dramaId,
+                episode: task.episode,
+                source: task.source,
+              ),
+            )
           : null,
       child: Padding(
         padding: const EdgeInsets.symmetric(
@@ -249,41 +250,41 @@ class _TaskRow extends ConsumerWidget {
 
 /// 首行文案：状态 + 进度百分比（已完成不显示百分比，改由副行给体积）。
 String _statusLine(DownloadTask task) => switch (task.status) {
-      DownloadStatus.downloading ||
-      DownloadStatus.paused ||
-      DownloadStatus.queued =>
-        '${task.status.label} · ${(task.progress * 100).round()}%',
-      _ => task.status.label,
-    };
+  DownloadStatus.downloading ||
+  DownloadStatus.paused ||
+  DownloadStatus.queued =>
+    '${task.status.label} · ${(task.progress * 100).round()}%',
+  _ => task.status.label,
+};
 
 /// 副行：下载中给「已下/总量 · 速率」，失败给原因，已完成给体积。
 ///
 /// 失败原因一律显示——Rust 的错误串（如“解析/网络”）是用户唯一能拿到的线索，
 /// 隐藏它只会得到「点了下载没反应」的观感。
 String _detailLine(DownloadTask task) => switch (task.status) {
-      DownloadStatus.downloading => <String>[
-          '${formatBytes(task.done)} / ${formatBytes(task.total)}',
-          formatSpeed(task.speed),
-        ].where((part) => part.isNotEmpty).join(' · '),
-      DownloadStatus.completed => formatBytes(task.total),
-      DownloadStatus.failed => task.error.isEmpty ? '下载失败，点右侧重试' : task.error,
-      _ => task.total > 0 ? formatBytes(task.total) : '',
-    };
+  DownloadStatus.downloading => <String>[
+    '${formatBytes(task.done)} / ${formatBytes(task.total)}',
+    formatSpeed(task.speed),
+  ].where((part) => part.isNotEmpty).join(' · '),
+  DownloadStatus.completed => formatBytes(task.total),
+  DownloadStatus.failed => task.error.isEmpty ? '下载失败，点右侧重试' : task.error,
+  _ => task.total > 0 ? formatBytes(task.total) : '',
+};
 
 /// 任务行右侧操作的图标（按状态切换语义）。
 IconData _actionIcon(DownloadStatus status) => switch (status) {
-      DownloadStatus.downloading => Icons.pause,
-      DownloadStatus.paused => Icons.play_arrow,
-      DownloadStatus.failed => Icons.refresh,
-      DownloadStatus.completed => Icons.delete_outline,
-      DownloadStatus.queued => Icons.close,
-    };
+  DownloadStatus.downloading => Icons.pause,
+  DownloadStatus.paused => Icons.play_arrow,
+  DownloadStatus.failed => Icons.refresh,
+  DownloadStatus.completed => Icons.delete_outline,
+  DownloadStatus.queued => Icons.close,
+};
 
 /// 任务行右侧操作的提示文案。
 String _actionLabel(DownloadStatus status) => switch (status) {
-      DownloadStatus.downloading => '暂停',
-      DownloadStatus.paused => '继续',
-      DownloadStatus.failed => '重试',
-      DownloadStatus.completed => '删除',
-      DownloadStatus.queued => '取消',
-    };
+  DownloadStatus.downloading => '暂停',
+  DownloadStatus.paused => '继续',
+  DownloadStatus.failed => '重试',
+  DownloadStatus.completed => '删除',
+  DownloadStatus.queued => '取消',
+};

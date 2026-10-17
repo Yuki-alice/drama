@@ -6,15 +6,15 @@ import '../tokens/app_tokens.dart';
 /// 设计系统对 `GlassScaffold` 的封装（页面骨架）。
 ///
 /// 统一四件事，避免每个页面重复：
-/// 1. 背景：**纯色底**（浅色纸白 / 深色炭灰，见 [AppColors.background]）。
-///    旧版的「主视觉渐变换色」已移除——背景是纯色，复杂度和视觉噪声都更低；
+/// 1. 背景：**纯色底**（浅色纸白 / 深色炭灰，见 [AppColors.background]）；
 /// 2. 状态栏：`GlassStatusBarStyle.auto` 跟随玻璃亮度级联；
 /// 3. Material 透明度修正：`Material(type: MaterialType.transparency)`
 ///    消除 `MaterialApp` 下 `Text` 的兜底错误样式（红字 + 黄色双下划线）；
 /// 4. 沉浸档：`immersive: true` 时背景为纯黑、不参与内容染色（播放器用）。
 ///
-/// **不提供 `title` 的第二种写法**：各主导航页自行给出固定顶栏
-/// （见 `GlassTopBar`），顶栏是页面的一部分，不由外壳代持。
+/// **四个 Tab 页不走这里**：它们各有一条常驻玻璃顶栏（`FixedTopBar`）+
+/// 底部浮起 Tab 条 / 侧栏，由 `AppNavigationShell` 直接摆放。
+/// 这里给**二级页**（设置 / 关于 / 免责 / 下载 / 错误页）用。
 class AppGlassScaffold extends StatelessWidget {
   const AppGlassScaffold({
     super.key,
@@ -64,7 +64,8 @@ class AppGlassScaffold extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
-    final hasBar = title != null ||
+    final hasBar =
+        title != null ||
         leading != null ||
         actions != null ||
         appBarBottom != null;
@@ -113,21 +114,4 @@ class AppGlassScaffold extends StatelessWidget {
     // （它们由 GlassScaffold 直接摆放，不在 body 的 Material 之下）。
     return Material(type: MaterialType.transparency, child: scaffold);
   }
-}
-
-/// 滚动页在 `extendBody: true` 时所需的顶部留白（安全区 + AppBar 高度）。
-class GlassContentTopInset extends StatelessWidget {
-  const GlassContentTopInset({
-    super.key,
-    this.appBarHeight = 44,
-    this.extra = 0,
-  });
-
-  final double appBarHeight;
-  final double extra;
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-        height: MediaQuery.paddingOf(context).top + appBarHeight + extra,
-      );
 }

@@ -3,22 +3,23 @@ import 'package:go_router/go_router.dart';
 
 import '../ui/core/layout/breakpoints.dart';
 import '../ui/core/tokens/app_tokens.dart';
-import '../ui/core/widgets/app_glass_scaffold.dart';
 import '../ui/core/widgets/app_nav_bar.dart';
-import '../ui/core/widgets/glass_kit.dart';
 import 'routes.dart';
 
 /// 自适应导航外壳。
 ///
-/// - compact（手机）：底部 `GlassTabBar.bottom`（iOS 26 浮起玻璃镜片选中态）；
-/// - medium / expanded（平板横屏 / 桌面）：左侧**浮动玻璃侧栏** + 内容区。
+/// - compact（手机）：底部**浮起玻璃胶囊** Tab 条（距底 16 / 左右内缩 14 / 高 60）；
+/// - medium / expanded（平板 / 桌面）：左侧**浮起玻璃侧栏**（一片浮起的圆角
+///   玻璃，不是竖切到底的颜色块），内容从它右侧让开。
 ///
 /// 由 `StatefulShellRoute.indexedStack` 驱动，分支切换保留各自滚动位置。
 ///
-/// **`extendBody: true`**：内容出血到玻璃栏之下（设计规范要求「下一行海报在
-/// 玻璃 Tab 栏下穿透」）。代价是各滚动页必须自己在尾部留出
-/// [kNavBarBottomInset]，否则最后一行会被栏永久遮住——这个常量就在
-/// `app_nav_bar.dart` 里，与栏的实际高度同源。
+/// **导航只出现在四个 Tab 页**：搜索 / 详情 / 播放器是 push 在 shell 之外的
+/// 子页，天然不显示导航（返回靠各自左上角的圆钮）。这里只负责四个 Tab 页。
+///
+/// **内容出血到玻璃之下**：两种档位都用 `Stack`，页面铺满整屏、栏浮在其上，
+/// 因此滚动时海报从玻璃下方经过（折射对象成立）。代价是各滚动页必须自己在
+/// 尾部留出 [tabPageBottomInset]，否则最后一行会被栏遮住。
 class AppNavigationShell extends StatelessWidget {
   const AppNavigationShell({super.key, required this.navigationShell});
 
@@ -41,82 +42,85 @@ class AppNavigationShell extends StatelessWidget {
     );
   }
 
-  /// 手机档：只有一层玻璃 Scaffold，页面只交出一条滚动视图。
-  ///
-  /// 顶栏**不设标题**：各页把大标题放进滚动内容里（`PageHead`），
-  /// 滚上去才收窄——这是 iOS 26 的两段式读法。顶栏只留各页自己的动作，
-  /// 因此这里不传 `title`（各页在自己的 `PageHead` 里给）。
-  Widget _compact(BuildContext context, int index) => AppGlassScaffold(
-    extendBody: true,
-    contentAwareBrightness: true,
-    bottomBar: AppBottomNavBar(selectedIndex: index, onSelected: _goBranch),
-    body: navigationShell,
-  );
+  /// 手机档：内容铺满整屏，浮起 Tab 条浮在底部。
+  Widget _compact(BuildContext context, int index) {
+    final colors = AppColors.of(context);
+    final padding = MediaQuery.paddingOf(context);
+    return _ShellSurface(
+      background: colors.background,
+      children: <Widget>[
+        Positioned.fill(child: navigationShell),
+        Positioned(
+          left: AppBottomNavBar.sideInset,
+          right: AppBottomNavBar.sideInset,
+          bottom: padding.bottom + AppBottomNavBar.bottomInset,
+          child: AppBottomNavBar(
+            selectedIndex: index,
+            onSelected: _goBranch,
+            destinations: kMainDestinations,
+          ),
+        ),
+      ],
+    );
+  }
 
-  /// 宽屏档：浮动玻璃侧栏 + 内容区。
-  ///
-  /// 侧栏自身是玻璃；内容区**不加额外的玻璃卡**（玻璃不嵌套），
-  /// 只做最大宽度约束防拉伸。
-  Widget _wide(BuildContext context, int index) => AppGlassScaffold(
-    extendBody: true,
-    contentAwareBrightness: true,
-    body: Padding(
-      padding: const EdgeInsetsDirectional.fromSTEB(
-        AppSpacing.gutter,
-        0,
-        AppSpacing.gutter,
-        0,
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          // 侧栏上下都留出安全区，避免贴住刘海与 Dock。
-          Padding(
-            padding: EdgeInsetsDirectional.only(
-              top: MediaQuery.paddingOf(context).top + AppSpacing.sm,
-              bottom: AppSpacing.lg,
-            ),
-            child: AppSideRail(
-              selectedIndex: index,
-              onSelected: _goBranch,
-              onSearch: () => _openSearch(context),
-              footer: Builder(
-                builder: (context) => _RailFooter(
-                  onSettings: () => context.push(AppRoutes.settings),
-                ),
-              ),
-            ),
+  /// 宽屏档：浮起玻璃侧栏 + 内容区（内容从侧栏右侧让开）。
+  Widget _wide(BuildContext context, int index) {
+    final size = Breakpoints.classify(MediaQuery.sizeOf(context).width);
+    final colors = AppColors.of(context);
+    final padding = MediaQuery.paddingOf(context);
+    final railWidth = Breakpoints.railWidth(size);
+    final placeholder = Breakpoints.railPlaceholder(size);
+    final expanded = size == WindowSizeClass.expanded;
+
+    return _ShellSurface(
+      background: colors.background,
+      children: <Widget>[
+        // 内容区从侧栏右侧让开（侧栏本身浮在画布上、不参与内容布局）。
+        Positioned(
+          left: placeholder,
+          top: 0,
+          right: 0,
+          bottom: 0,
+          child: navigationShell,
+        ),
+        Positioned(
+          left: AppSpacing.railInset,
+          top: padding.top + AppSpacing.railInset,
+          bottom: padding.bottom + AppSpacing.railInset,
+          child: AppSideRail(
+            selectedIndex: index,
+            onSelected: _goBranch,
+            width: railWidth,
+            showBrand: expanded,
+            onSearch: () => _openSearch(context),
+            onSettings: () => context.push(AppRoutes.settings),
           ),
-          const SizedBox(width: AppSpacing.lg),
-          Expanded(
-            child: ContentWidthConstraint(
-              maxWidth: AppSpacing.maxWideContentWidth,
-              child: navigationShell,
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
+        ),
+      ],
+    );
+  }
 }
 
-/// 侧栏底部的常驻项（设置）。
-class _RailFooter extends StatelessWidget {
-  const _RailFooter({required this.onSettings});
+/// 外壳的公共底：一层纯色画布 + `Material` 兜底文本样式 + 若干浮起层。
+///
+/// `Material(type: MaterialType.transparency)` 不可删：`MaterialApp` 在根部把
+/// `_errorTextStyle`（红色等宽 + 黄色双下划线）装成兜底 `DefaultTextStyle`，
+/// 直接摆放在此之外的 `Text`（栏里的标题 / 标签）会继承它，
+/// 实机表现是标签下方出现黄色双下划线（回归用例见
+/// `test/glass_text_style_test.dart`）。
+class _ShellSurface extends StatelessWidget {
+  const _ShellSurface({required this.children, required this.background});
 
-  final VoidCallback onSettings;
+  final List<Widget> children;
+  final Color background;
 
   @override
-  Widget build(BuildContext context) => Row(
-    children: <Widget>[
-      Expanded(
-        child: GlassActionButton(
-          label: '设置',
-          icon: Icons.settings_outlined,
-          width: double.infinity,
-          onTap: onSettings,
-        ),
-      ),
-    ],
+  Widget build(BuildContext context) => Material(
+    type: MaterialType.transparency,
+    child: ColoredBox(
+      color: background,
+      child: Stack(children: children),
+    ),
   );
 }

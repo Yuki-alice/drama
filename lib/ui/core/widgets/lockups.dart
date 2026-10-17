@@ -1,621 +1,291 @@
 import 'package:flutter/material.dart';
 
 import '../../../domain/models/drama.dart';
+import '../layout/breakpoints.dart';
 import '../motion/app_motion.dart';
 import '../tokens/app_tokens.dart';
 import 'drama_cover.dart';
-import 'glass_kit.dart';
 
-// 内容层版式词汇表。
+// 内容层版式词汇表（**无彩色界面**）。
 //
-// 问题背景：此前全站只有一种 `DramaPosterCard` 反复出现，于是整页读起来像
-// 一张表格——用户无法从**形状**上分辨「这是重点推荐」「这是接着看」
-// 「这是榜单」。这里把词汇表补齐：hero / 竖版海报 / 横版继续观看 /
-// 榜单行 / 缩略行，每种形状承担一种明确的信息角色。
-//
-// 全部落在**内容层**（不透明），因此不使用任何玻璃控件。
+// 全部落在内容层（不透明），因此不使用任何玻璃控件。
+// 四条纪律（设计宪法第二节）：
+//   1. 封面不裁切 —— 一律按 3:4 原始比例渲染，禁止 `fill` 后裁切；
+//   2. 内容即界面 —— 标题与集数叠在封面下缘 scrim 上，卡片**无独立文本区**；
+//   3. 分层靠排版与负空间 —— 卡片默认无描边、无阴影、无容器色差；
+//   4. 续播做进卡片 —— 看过的卡右上角白胶囊 + 下缘发丝进度线。
 
-/// 区块标题：标题 + 可选副标题 + 可选右侧动作。
+/// 发现页 / 搜索结果的海报卡（原型 `card()`）。
 ///
-/// 标题用 [AppText.title]（22）而不是 display（32）——层级差靠字号阶梯
-/// 表达，不靠加分隔线。
-class SectionHead extends StatelessWidget {
-  const SectionHead({
-    super.key,
-    required this.title,
-    this.subtitle,
-    this.action,
-    this.onAction,
-    this.padding = const EdgeInsets.fromLTRB(0, AppSpacing.lg, 0, AppSpacing.md),
-  });
-
-  /// 自带页面左右边距的变体。
-  ///
-  /// 供**没有外层 padding** 的 `ListView` 使用（设置 / 关于 / 下载这类
-  /// 逐项自己控边距的页面）。滚在 `CustomScrollView` 里、外层已用
-  /// `AppSpacing.pageH` 包住的场景请用默认构造，否则会双重缩进。
-  const SectionHead.paged({
-    super.key,
-    required this.title,
-    this.subtitle,
-    this.action,
-    this.onAction,
-  }) : padding = const EdgeInsets.fromLTRB(
-         AppSpacing.gutter,
-         AppSpacing.lg,
-         AppSpacing.gutter,
-         AppSpacing.md,
-       );
-
-  final String title;
-  final String? subtitle;
-
-  /// 右侧动作文案（「查看全部」）。
-  final String? action;
-  final VoidCallback? onAction;
-  final EdgeInsetsGeometry padding;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    return Padding(
-      padding: padding,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: <Widget>[
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text(
-                  title,
-                  style: AppText.title.copyWith(color: colors.textPrimary),
-                ),
-                if (subtitle != null)
-                  Text(
-                    subtitle!,
-                    style: AppText.callout.copyWith(color: colors.textTertiary),
-                  ),
-              ],
-            ),
-          ),
-          if (action != null)
-            // 44pt 可点区：文案小，但命中区不缩水。
-            PressableScale(
-              scale: .94,
-              onTap: onAction,
-              semanticLabel: action,
-              child: SizedBox(
-                height: AppSpacing.minTapTarget,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.sm,
-                  ),
-                  child: Align(
-                    alignment: AlignmentDirectional.centerEnd,
-                    child: Text(
-                      action!,
-                      style: AppText.callout.copyWith(
-                        // 行内动作文字 = 链接形态：绿色小字用 accentDeep。
-                        color: colors.accentDeep,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// 页级大标题 + 右侧动作区（各主导航页的统一抬头）。
-///
-/// iOS 26 的两段式：滚动内容里是**大标题**，滚上去后收窄进顶栏。
-/// 这里只负责内容里的那一段（顶栏由外壳提供）。
-class PageHead extends StatelessWidget {
-  const PageHead({
-    super.key,
-    required this.title,
-    this.actions = const <Widget>[],
-    this.trailingText,
-  });
-
-  final String title;
-
-  /// 右侧玻璃圆钮（搜索 / 排序 / 设置 / 管理）。
-  final List<Widget> actions;
-
-  /// 右侧文字补充（「共 12 部」）。与 [actions] 可同时存在。
-  final String? trailingText;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(
-        top: AppSpacing.sm,
-        bottom: AppSpacing.md,
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: <Widget>[
-          Expanded(
-            child: Text(
-              title,
-              style: AppText.display.copyWith(color: colors.textPrimary),
-            ),
-          ),
-          if (trailingText != null)
-            Padding(
-              padding: const EdgeInsets.only(right: AppSpacing.sm),
-              child: Text(
-                trailingText!,
-                style: AppText.mono.copyWith(color: colors.textSecondary),
-              ),
-            ),
-          for (final action in actions) ...<Widget>[
-            const SizedBox(width: AppSpacing.sm),
-            action,
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-/// 全宽 Hero：内容出血，标题与元信息坐在画面上。
-///
-/// 这是首页的**唯一**重点位。一个页面只放一个 hero——
-/// 放两个就等于没有重点。
-class HeroLockup extends StatelessWidget {
-  const HeroLockup({
+/// 全屏都是这种竖卡：**没有横滑区、没有 banner、没有分区头条**。
+/// 卡片只有封面一层，标题与集数叠在下缘 scrim 上——这样密度才能上去。
+class DramaPosterCard extends StatelessWidget {
+  const DramaPosterCard({
     super.key,
     required this.drama,
     required this.onTap,
-    this.height = 380,
-    this.aspectRatio = 2.7,
+    this.watchedEpisode = 0,
+    this.progress = 0,
+    this.heroEnabled = true,
   });
 
   final Drama drama;
   final VoidCallback onTap;
 
-  /// 固定高度（紧凑宽度用）。
-  final double height;
+  /// 已看到第几集；`0` = 未看过（显示题材角标而不是续播胶囊）。
+  final int watchedEpisode;
 
-  /// 宽屏下的宽高比（横版裁切，聚焦人物）。
-  final double aspectRatio;
+  /// 0–1 进度（仅在看过的卡上画下缘发丝线）。
+  final double progress;
+
+  /// 是否参与封面 Hero 转场（同一路由内标签必须唯一）。
+  final bool heroEnabled;
+
+  bool get _seen => watchedEpisode > 0;
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
-    return PressableScale(
-      scale: .985,
-      borderRadius: AppRadii.xxl,
-      onTap: onTap,
-      semanticLabel: '${drama.title}，${drama.categoryName}',
-      semanticHint: '双击查看详情',
-      child: SizedBox(
-        height: height,
-        child: Stack(
-          fit: StackFit.expand,
-          children: <Widget>[
-            DramaCover(
-              seed: drama.coverSeed,
-              cover: drama.cover,
-              title: drama.title,
-              radius: AppRadii.xxl,
-              showTitleOverlay: false,
-              fill: true,
+    final cover = Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        DramaCover(
+          seed: drama.coverSeed,
+          cover: drama.cover,
+          title: drama.title,
+          radius: AppRadii.lg,
+          fill: true,
+        ),
+        // 下缘 scrim：保证叠在封面上的标题可读（58% 高）。
+        Positioned.fill(
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: FractionallySizedBox(
+              heightFactor: 0.58,
+              child: DecoratedBox(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: <Color>[
+                      Color(0xD1000000),
+                      Color(0x66000000),
+                      Color(0x00000000),
+                    ],
+                    stops: <double>[0.0, 0.44, 1.0],
+                  ),
+                ),
+              ),
             ),
-            // 底部压深保证标题可读；这也是 hero 与下方内容的接缝。
-            DecoratedBox(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(AppRadii.xxl),
-                gradient: const LinearGradient(
-                  begin: Alignment.bottomCenter,
-                  end: Alignment.center,
-                  colors: <Color>[
-                    Color(0xE6000000),
-                    Color(0x33000000),
-                    Colors.transparent,
+          ),
+        ),
+        if (_seen)
+          PositionedDirectional(
+            top: 8,
+            end: 8,
+            child: _ResumePill(episode: watchedEpisode),
+          )
+        else if (drama.tags.isNotEmpty)
+          PositionedDirectional(
+            top: 8,
+            start: 8,
+            child: _TagBadge(text: drama.tags.first),
+          ),
+        PositionedDirectional(
+          start: 9,
+          end: 9,
+          bottom: 9,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                drama.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  height: 1.3,
+                  letterSpacing: -0.1,
+                  color: Color(0xFFFFFFFF),
+                  shadows: <Shadow>[
+                    Shadow(color: Color(0x73000000), blurRadius: 6),
+                  ],
+                ),
+              ),
+              if (drama.episodeCount > 0) ...<Widget>[
+                const SizedBox(height: 3),
+                Text(
+                  '全 ${drama.episodeCount} 集',
+                  style: AppText.mono.copyWith(
+                    fontSize: 10,
+                    color: colors.onMediaSecondary,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (_seen)
+          PositionedDirectional(
+            start: 9,
+            end: 9,
+            bottom: 5,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: SizedBox(
+                height: 2,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: <Widget>[
+                    const ColoredBox(color: Color(0x4DFFFFFF)),
+                    FractionallySizedBox(
+                      alignment: AlignmentDirectional.centerStart,
+                      widthFactor: progress.clamp(0.0, 1.0),
+                      child: const ColoredBox(color: Color(0xFFFFFFFF)),
+                    ),
                   ],
                 ),
               ),
             ),
-            PositionedDirectional(
-              start: AppSpacing.lg,
-              end: AppSpacing.lg,
-              bottom: AppSpacing.lg,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  // 播放圆钮与剧名**内联**：一眼看到「这里能点着看」。
-                  Row(
-                    children: <Widget>[
-                      _PlayDot(color: colors.onMedia),
-                      const SizedBox(width: AppSpacing.sm),
-                      _MediaBadge(text: drama.status.label),
-                      const SizedBox(width: AppSpacing.xs),
-                      if (drama.episodeCount > 0)
-                        _MediaBadge(
-                          text: '全 ${drama.episodeCount} 集',
-                          mono: true,
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: AppSpacing.sm),
-                  Text(
-                    drama.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.display.copyWith(color: colors.onMedia),
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    <String>[
-                      drama.categoryName,
-                      if (drama.tags.isNotEmpty) drama.tags.first,
-                      drama.status.label,
-                    ].join(' · '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.callout.copyWith(
-                      color: colors.onMediaSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PlayDot extends StatelessWidget {
-  const _PlayDot({required this.color});
-
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    height: 30,
-    width: 30,
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: .92),
-      shape: BoxShape.circle,
-    ),
-    child: Icon(Icons.play_arrow_rounded, size: 20, color: Colors.black),
-  );
-}
-
-/// 画面之上的小徽章（状态 / 热度 / 集数）。
-class _MediaBadge extends StatelessWidget {
-  const _MediaBadge({required this.text, this.mono = false});
-
-  final String text;
-
-  /// 数字类内容走等宽，纵向对齐。
-  final bool mono;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-    decoration: BoxDecoration(
-      color: const Color(0x59000000),
-      borderRadius: BorderRadius.circular(AppRadii.xs),
-      border: Border.all(color: const Color(0x2EFFFFFF)),
-    ),
-    child: Text(
-      text,
-      style: (mono ? AppText.mono : AppText.caption).copyWith(
-        color: Colors.white,
-        fontSize: 11.5,
-      ),
-    ),
-  );
-}
-
-/// 竖版海报卡（货架与网格主力）。
-///
-/// 角标固定显示集数（等宽），标题一行 + 元信息一行。
-class PosterLockup extends StatelessWidget {
-  const PosterLockup({
-    super.key,
-    required this.drama,
-    required this.onTap,
-    this.width = 148,
-    this.showMeta = true,
-    this.fill = false,
-  });
-
-  final Drama drama;
-  final VoidCallback onTap;
-  final double width;
-
-  /// 是否显示标题下方的元信息行（网格里空间紧时可关）。
-  final bool showMeta;
-
-  /// `true` = 填满父级约束（网格格子已定形状），不强制 [width]。
-  final bool fill;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    final meta = drama.episodeCount > 0
-        ? '${drama.status.label} · 共 ${drama.episodeCount} 集'
-        : drama.status.label;
-
-    final content = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        // fill 时封面吃掉剩余高度；否则按 3:4 自撑。
-        if (fill)
-          Expanded(
-            child: Stack(
-              children: <Widget>[
-                Positioned.fill(child: _cover()),
-                if (drama.episodeCount > 0)
-                  PositionedDirectional(
-                    end: AppSpacing.xs,
-                    bottom: AppSpacing.xs,
-                    child: _CountBadge(count: drama.episodeCount),
-                  ),
-              ],
-            ),
-          )
-        else
-          Stack(
-            children: <Widget>[
-              AspectRatio(aspectRatio: 3 / 4, child: _cover()),
-              if (drama.episodeCount > 0)
-                PositionedDirectional(
-                  end: AppSpacing.xs,
-                  bottom: AppSpacing.xs,
-                  child: _CountBadge(count: drama.episodeCount),
-                ),
-            ],
           ),
-        const SizedBox(height: AppSpacing.sm),
-        Text(
-          drama.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: AppText.headline.copyWith(color: colors.textPrimary),
-        ),
-        if (showMeta) ...<Widget>[
-          const SizedBox(height: 2),
-          Text(
-            meta,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            // 元信息用 textSecondary（4.72:1）而非 textTertiary（2.29:1）：
-            // 集数/状态是用户真的会读的信息。
-            style: AppText.caption.copyWith(color: colors.textSecondary),
-          ),
-        ],
       ],
     );
 
-    final body = fill
-        ? content
-        : SizedBox(width: width, child: content);
-
-    return PressableScale(
-      scale: .96,
-      borderRadius: AppRadii.lg,
-      onTap: onTap,
-      semanticLabel: '${drama.title}，$meta',
-      semanticHint: '双击查看详情',
-      child: body,
+    final rounded = ClipRRect(
+      borderRadius: BorderRadius.circular(AppRadii.lg),
+      child: cover,
     );
-  }
 
-  Widget _cover() => DramaCover(
-    seed: drama.coverSeed,
-    cover: drama.cover,
-    title: drama.title,
-    radius: AppRadii.lg,
-    showTitleOverlay: false,
-    fill: true,
-  );
-}
-
-class _CountBadge extends StatelessWidget {
-  const _CountBadge({required this.count});
-
-  final int count;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-    decoration: BoxDecoration(
-      color: const Color(0x99000000),
-      borderRadius: BorderRadius.circular(AppRadii.xs),
-    ),
-    child: Text(
-      '$count 集',
-      style: AppText.mono.copyWith(
-        color: Colors.white,
-        fontSize: 11,
-        height: 1.5,
-      ),
-    ),
-  );
-}
-
-/// 横版「继续观看」卡：16:9 画面 + **常驻**发丝进度线。
-///
-/// 进度线常驻，不用点开才知道追到哪——短剧的核心痛点是「上次看到哪了」。
-class ContinueLockup extends StatelessWidget {
-  const ContinueLockup({
-    super.key,
-    required this.drama,
-    required this.onTap,
-    this.width = 220,
-    this.progress,
-    this.progressLabel,
-  });
-
-  final Drama drama;
-  final VoidCallback onTap;
-  final double width;
-
-  /// 0–1 的整体进度；为 null 时不画进度线。
-  final double? progress;
-
-  /// 进度文案（「看到第 12 集」）。
-  final String? progressLabel;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
     return PressableScale(
       scale: .96,
       borderRadius: AppRadii.lg,
       onTap: onTap,
       semanticLabel: <String>[
         drama.title,
-        ?progressLabel,
+        if (drama.episodeCount > 0) '全 ${drama.episodeCount} 集',
+        if (_seen) '看到第 $watchedEpisode 集',
       ].join('，'),
-      semanticHint: '双击继续观看',
-      child: SizedBox(
-        width: width,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Stack(
-              children: <Widget>[
-                AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: DramaCover(
-                    seed: drama.coverSeed,
-                    cover: drama.cover,
-                    title: drama.title,
-                    radius: AppRadii.lg,
-                    showTitleOverlay: false,
-                    fill: true,
-                  ),
-                ),
-                Positioned.fill(
-                  child: Center(
-                    child: Container(
-                      height: 36,
-                      width: 36,
-                      decoration: BoxDecoration(
-                        color: const Color(0x80000000),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: const Color(0x8CFFFFFF)),
-                      ),
-                      child: const Icon(
-                        Icons.play_arrow_rounded,
-                        size: 22,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ),
-                if (progress != null)
-                  PositionedDirectional(
-                    start: 0,
-                    end: 0,
-                    bottom: 0,
-                    child: HairlineProgress(
-                      fraction: progress!,
-                      color: colors.onMedia,
-                      track: colors.hairlineTrack,
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            Text(
-              drama.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: AppText.headline.copyWith(color: colors.textPrimary),
-            ),
-            if (progressLabel != null)
-              Text(
-                progressLabel!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppText.mono.copyWith(color: colors.textSecondary),
-              ),
-          ],
-        ),
+      semanticHint: '双击查看详情',
+      child: AspectRatio(
+        aspectRatio: 3 / 4,
+        child: heroEnabled
+            ? CoverHero(source: drama.source, id: drama.id, child: rounded)
+            : rounded,
       ),
     );
   }
 }
 
+/// 看过的卡右上角的白色续播胶囊（「继续看 N」）。
+class _ResumePill extends StatelessWidget {
+  const _ResumePill({required this.episode});
+
+  final int episode;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+    decoration: BoxDecoration(
+      color: const Color(0xEBFFFFFF),
+      borderRadius: BorderRadius.circular(7),
+    ),
+    child: Text(
+      '继续看 $episode',
+      style: AppText.mono.copyWith(
+        fontSize: 10,
+        fontWeight: FontWeight.w600,
+        color: const Color(0xFF0F0F0F),
+      ),
+    ),
+  );
+}
+
+/// 未看过的卡左上角的题材角标（半透明黑底白字）。
+class _TagBadge extends StatelessWidget {
+  const _TagBadge({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+    decoration: BoxDecoration(
+      color: const Color(0x6B000000),
+      borderRadius: BorderRadius.circular(6),
+    ),
+    child: Text(
+      text,
+      style: AppText.caption.copyWith(
+        fontSize: 10,
+        fontWeight: FontWeight.w600,
+        color: const Color(0xFFFFFFFF),
+      ),
+    ),
+  );
+}
+
 /// 榜单行：**数字即视觉**（大号等宽序号 + 发丝分隔）。
 ///
-/// 前三名用墨黑，其余用银灰——名次差靠字色而不是奖牌图标表达。
+/// 前三名墨黑、其余银灰——名次差靠字色而不是奖牌图标表达。
+/// 缩略图 50×68，比行内文字还小：排行榜里用户读的是名次和剧名。
 class RankRow extends StatelessWidget {
   const RankRow({
     super.key,
     required this.drama,
     required this.rank,
     required this.onTap,
-    this.trailing,
+    this.hotLabel,
   });
 
   final Drama drama;
   final int rank;
   final VoidCallback onTap;
-  final Widget? trailing;
+
+  /// 热度文案（等宽）；null 时不显示。
+  final String? hotLabel;
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
     final top = rank <= 3;
     final meta = <String>[
-      drama.categoryName,
-      if (drama.episodeCount > 0) '${drama.episodeCount} 集',
-      drama.status.label,
+      if (drama.episodeCount > 0) '全 ${drama.episodeCount} 集',
+      if (drama.tags.isNotEmpty) drama.tags.first,
     ].join(' · ');
 
     return PressableScale(
       scale: .98,
-      borderRadius: AppRadii.md,
       onTap: onTap,
       semanticLabel: '第 $rank 名，${drama.title}，$meta',
       semanticHint: '双击查看详情',
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 11),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: colors.divider, width: .5)),
+        ),
         child: Row(
           children: <Widget>[
-            // 名次列固定 42pt：1–2 位保持 30pt 的「数字即视觉」重量；
-            // 3 位（榜单可以到 100+）用 `FittedBox` 等比缩下来，
-            // 而不是撑宽列或裁掉高位——实测 30pt 等宽数字约 29pt/字符，
-            // 三位就是 87pt，硬排会挤掉右侧标题。
+            // 名次列固定 36pt；三位数（榜单可到 100+）用 FittedBox 等比缩下来，
+            // 而不是撑宽列或裁掉高位。
             SizedBox(
-              width: 42,
+              width: 36,
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: AlignmentDirectional.center,
                 child: Text(
                   '$rank',
-                  textAlign: TextAlign.center,
                   style: AppText.numeral.copyWith(
                     color: top ? colors.textPrimary : colors.textTertiary,
                   ),
                 ),
               ),
             ),
-            const SizedBox(width: AppSpacing.sm),
+            const SizedBox(width: AppSpacing.md),
             SizedBox(
-              height: 64,
-              width: 48,
+              height: 68,
+              width: 50,
               child: CoverHero(
                 source: drama.source,
                 id: drama.id,
@@ -624,7 +294,6 @@ class RankRow extends StatelessWidget {
                   cover: drama.cover,
                   title: drama.title,
                   radius: AppRadii.thumbnail,
-                  showTitleOverlay: false,
                   fill: true,
                 ),
               ),
@@ -640,24 +309,37 @@ class RankRow extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppText.body.copyWith(
+                      fontSize: 14,
                       color: colors.textPrimary,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    meta,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.mono.copyWith(
-                      color: colors.textSecondary,
-                      fontSize: 11.5,
+                  if (meta.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 3),
+                    Text(
+                      meta,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.mono.copyWith(
+                        fontSize: 11,
+                        color: colors.textSecondary,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),
-            ?trailing,
+            if (hotLabel != null)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(start: AppSpacing.md),
+                child: Text(
+                  hotLabel!,
+                  style: AppText.mono.copyWith(
+                    fontSize: 11,
+                    color: colors.textTertiary,
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -665,11 +347,12 @@ class RankRow extends StatelessWidget {
   }
 }
 
-/// 追剧行：缩略封面 + 标题 + 集内进度 + 发丝进度线 + 墨色「继续看」。
+/// 追剧行：缩略封面 + 标题 + 状态 + **2px 墨色进度线** + 右侧胶囊。
 ///
-/// 与榜单行的区别是它承载**进度**，所以行更高、进度线常驻。
-class LibraryRow extends StatelessWidget {
-  const LibraryRow({
+/// 进度线贴着剧名下方，是全页唯一的「重量」。
+/// 右侧胶囊按状态换字：在追=「继续看」，看完=「重看」。
+class FollowRow extends StatelessWidget {
+  const FollowRow({
     super.key,
     required this.title,
     required this.onTap,
@@ -678,11 +361,9 @@ class LibraryRow extends StatelessWidget {
     this.source = '',
     this.cover = '',
     this.seed = '',
-    this.watchedEpisode = 0,
-    this.totalEpisode = 0,
-    this.progress = 0,
     this.statusLine,
-    this.updatedLabel,
+    this.progress = 0,
+    this.actionLabel,
   });
 
   final String title;
@@ -696,143 +377,103 @@ class LibraryRow extends StatelessWidget {
   final String cover;
   final String seed;
 
-  /// 已看到第几集（0 = 未开始）。
-  final int watchedEpisode;
-
-  /// 总集数（0 = 未知，不画进度线）。
-  final int totalEpisode;
+  /// 状态文案（「看到 34 集 · 更新至 38 集」）。
+  final String? statusLine;
 
   /// 0–1 进度。
   final double progress;
 
-  /// 覆盖默认的「看到第 N 集 / 共 M 集」文案。
-  final String? statusLine;
-
-  /// 「3 小时前更新」这类更新徽章。
-  final String? updatedLabel;
+  /// 右侧胶囊文案；默认「继续看」。
+  final String? actionLabel;
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
-    final line = statusLine ??
-        (totalEpisode > 0
-            ? '看到第 $watchedEpisode 集 / 共 $totalEpisode 集'
-            : '看到第 $watchedEpisode 集');
+    final coverWidget = DramaCover(
+      seed: seed.isEmpty ? title : seed,
+      cover: cover,
+      title: title,
+      radius: AppRadii.thumbnail,
+      fill: true,
+    );
 
     return Semantics(
       button: true,
-      label: '$title，$line',
+      label: <String>[title, ?statusLine].join('，'),
       hint: '双击查看详情',
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 13),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: colors.divider, width: .5)),
+        ),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: <Widget>[
-            PressableScale(
-              scale: .94,
-              borderRadius: AppRadii.thumbnail,
-              onTap: onTap,
-              child: SizedBox(
-                height: 92,
-                width: 69,
-                // 追剧行也参与封面 Hero。**空 id 不包**：标签空串会让
-                // 同一页多行共享同一 tag，飞行扫描直接断言失败。
-                child: id.isEmpty
-                    ? DramaCover(
-                        seed: seed.isEmpty ? title : seed,
-                        cover: cover,
-                        title: title,
-                        radius: AppRadii.thumbnail,
-                        showTitleOverlay: false,
-                        fill: true,
-                      )
-                    : CoverHero(
-                        source: source.isEmpty ? 'hongguo' : source,
-                        id: id,
-                        child: DramaCover(
-                          seed: seed.isEmpty ? title : seed,
-                          cover: cover,
-                          title: title,
-                          radius: AppRadii.thumbnail,
-                          showTitleOverlay: false,
-                          fill: true,
-                        ),
-                      ),
-              ),
+            // 空 id 不包 Hero：标签空串会让同页多行共享同一 tag，断言失败。
+            SizedBox(
+              height: 76,
+              width: 56,
+              child: id.isEmpty
+                  ? coverWidget
+                  : CoverHero(source: source, id: id, child: coverWidget),
             ),
             const SizedBox(width: AppSpacing.md),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  PressableScale(
-                    scale: .98,
-                    onTap: onTap,
-                    excludeSemantics: true,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: <Widget>[
-                        Text(
-                          title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppText.headline.copyWith(
-                            color: colors.textPrimary,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          line,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppText.mono.copyWith(
-                            color: colors.textSecondary,
-                            fontSize: 11.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // 总集数未知时不画进度线：分母不明，画出来是假精度。
-                  if (totalEpisode > 0) ...<Widget>[
-                    const SizedBox(height: AppSpacing.sm),
-                    HairlineProgress(fraction: progress),
-                  ],
-                  const SizedBox(height: AppSpacing.sm),
-                  Row(
-                    children: <Widget>[
-                      InkPill(
-                        label: watchedEpisode > 0 ? '继续看' : '开始看',
-                        icon: Icons.play_arrow_rounded,
-                        dense: true,
-                        height: 32,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: AppSpacing.md,
-                        ),
-                        onTap: onPlay,
-                        semanticHint: '从第 $watchedEpisode 集继续',
+              child: PressableScale(
+                scale: .98,
+                onTap: onTap,
+                excludeSemantics: true,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.body.copyWith(
+                        fontSize: 14.5,
+                        color: colors.textPrimary,
+                        fontWeight: FontWeight.w600,
                       ),
-                      if (updatedLabel != null) ...<Widget>[
-                        const SizedBox(width: AppSpacing.sm),
-                        Flexible(
-                          child: Text(
-                            updatedLabel!,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppText.caption.copyWith(
-                              // 「还有未看的」= 待处理状态 → 绿。
-                              color: colors.accentDeep,
-                            ),
-                          ),
+                    ),
+                    if (statusLine != null) ...<Widget>[
+                      const SizedBox(height: 3),
+                      Text(
+                        statusLine!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.mono.copyWith(
+                          fontSize: 11,
+                          color: colors.textSecondary,
                         ),
-                      ],
+                      ),
                     ],
-                  ),
-                ],
+                    const SizedBox(height: 9),
+                    // 进度线：2px 墨色，贴剧名下方。
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(2),
+                      child: SizedBox(
+                        height: 2,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: <Widget>[
+                            ColoredBox(color: colors.divider),
+                            FractionallySizedBox(
+                              alignment: AlignmentDirectional.centerStart,
+                              widthFactor: progress.clamp(0.0, 1.0),
+                              child: ColoredBox(color: colors.textPrimary),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
+            const SizedBox(width: AppSpacing.md),
+            InkPillSmall(label: actionLabel ?? '继续看', onTap: onPlay),
           ],
         ),
       ),
@@ -840,81 +481,274 @@ class LibraryRow extends StatelessWidget {
   }
 }
 
-/// 横向货架：标题 + 横滚内容。
-///
-/// 高度必须由调用方给（横滚列表在纵向上是无界的）。
-class Shelf extends StatelessWidget {
-  const Shelf({
-    super.key,
-    required this.title,
-    required this.height,
-    required this.children,
-    this.subtitle,
-    this.action,
-    this.onAction,
-    this.leadingPadding = AppSpacing.gutter,
-    this.trailingPadding = AppSpacing.gutter,
-  });
+/// 列表行内的小墨色胶囊（原型 `.pill.sm`：高 36 / 13px / 左右 15）。
+class InkPillSmall extends StatelessWidget {
+  const InkPillSmall({super.key, required this.label, required this.onTap});
 
-  final String title;
-  final String? subtitle;
-  final double height;
-  final List<Widget> children;
-  final String? action;
-  final VoidCallback? onAction;
-  final double leadingPadding;
-  final double trailingPadding;
+  final String label;
+  final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    mainAxisSize: MainAxisSize.min,
-    children: <Widget>[
-      Padding(
-        padding: EdgeInsetsDirectional.only(
-          start: leadingPadding,
-          end: trailingPadding,
-        ),
-        child: SectionHead(
-          title: title,
-          subtitle: subtitle,
-          action: action,
-          onAction: onAction,
-        ),
-      ),
-      SizedBox(
-        height: height,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          padding: EdgeInsetsDirectional.only(
-            start: leadingPadding,
-            end: trailingPadding,
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Semantics(
+      button: true,
+      label: label,
+      child: Material(
+        color: colors.textPrimary,
+        shape: const StadiumBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          splashColor: colors.onInk.withValues(alpha: .12),
+          child: SizedBox(
+            height: 36,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 15),
+              child: Center(
+                child: Text(
+                  label,
+                  style: AppText.callout.copyWith(
+                    fontSize: 13,
+                    color: colors.onInk,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
           ),
-          children: children,
         ),
       ),
-    ],
-  );
+    );
+  }
 }
 
-/// 海报网格的单一参数来源。
+/// 空态：图标 + 一句说明 + 一个出口，**不留白屏**。
+class EmptyState extends StatelessWidget {
+  const EmptyState({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.description,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final IconData icon;
+  final String title;
+  final String description;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.xl,
+        vertical: 64,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: colors.sunken,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: 24, color: colors.textTertiary),
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: AppText.body.copyWith(
+              fontSize: 15,
+              color: colors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 230),
+            child: Text(
+              description,
+              textAlign: TextAlign.center,
+              style: AppText.caption.copyWith(
+                fontSize: 12.5,
+                height: 1.6,
+                color: colors.textSecondary,
+              ),
+            ),
+          ),
+          if (actionLabel != null && onAction != null) ...<Widget>[
+            const SizedBox(height: AppSpacing.xl),
+            _InkPill(label: actionLabel!, onTap: onAction!),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 空态的出口按钮（原型 `.pill`：高 44 / 15px / 左右 20）。
+class _InkPill extends StatelessWidget {
+  const _InkPill({required this.label, required this.onTap});
+
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Semantics(
+      button: true,
+      label: label,
+      child: Material(
+        color: colors.textPrimary,
+        shape: const StadiumBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          splashColor: colors.onInk.withValues(alpha: .12),
+          child: SizedBox(
+            height: 44,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+              child: Center(
+                child: Text(
+                  label,
+                  style: AppText.body.copyWith(
+                    color: colors.onInk,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 设置类分组卡（原型的 `.listcard`：浅雾底、圆角 14、行间发丝线）。
 ///
-/// 此前 `home_view` 内联一份、`content_widgets` 又一份，改比例必然漂移。
-abstract final class PosterGrid {
-  /// 单列最大宽度（列数随可用宽度自动变化：手机 2 列、平板 4 列、桌面 6 列）。
-  static const double maxCrossAxisExtent = 172;
+/// 组是一块**浅雾圆角卡**，组间靠 24pt 负空间分隔，**不画外框**。
+class SettingsCard extends StatelessWidget {
+  const SettingsCard({super.key, required this.rows});
 
-  /// 3:4 封面 + 标题 + 元信息 ≈ 0.62。
-  static const double childAspectRatio = 0.62;
+  final List<Widget> rows;
 
-  static const double mainAxisSpacing = AppSpacing.lg;
-  static const double crossAxisSpacing = AppSpacing.md;
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(AppRadii.lg),
+      child: ColoredBox(
+        color: colors.contentSurface,
+        child: Column(
+          children: <Widget>[
+            for (var index = 0; index < rows.length; index++) ...<Widget>[
+              rows[index],
+              if (index < rows.length - 1)
+                Container(height: .5, color: colors.divider),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
 
-  static SliverGridDelegate delegate({double maxExtent = maxCrossAxisExtent}) =>
-      SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: maxExtent,
-        mainAxisSpacing: mainAxisSpacing,
-        crossAxisSpacing: crossAxisSpacing,
-        childAspectRatio: childAspectRatio,
+/// 设置类行：图标方格（30×30 圆角 9）+ 文字 + 右侧值（等宽）+ 箭头。
+class SettingsRow extends StatelessWidget {
+  const SettingsRow({
+    super.key,
+    required this.icon,
+    required this.label,
+    this.value,
+    this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+
+  /// 右侧值（等宽，纵向对齐）。
+  final String? value;
+
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    return Semantics(
+      button: onTap != null,
+      label: label,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(AppRadii.lg),
+            child: Row(
+              children: <Widget>[
+                Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    color: colors.surfaceElevated,
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Icon(icon, size: 16, color: colors.textPrimary),
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: AppText.body.copyWith(
+                      fontSize: 14.5,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                ),
+                if (value != null)
+                  Text(
+                    value!,
+                    style: AppText.mono.copyWith(
+                      fontSize: 12.5,
+                      color: colors.textTertiary,
+                    ),
+                  ),
+                const SizedBox(width: AppSpacing.sm),
+                Icon(Icons.chevron_right, size: 16, color: colors.textTertiary),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 海报网格的**连续密度**参数（列数由可用宽推出，见 `Breakpoints`）。
+abstract final class FeedGrid {
+  static const double gap = Breakpoints.kGridGap;
+
+  /// 卡片只有封面一层，所以宽高比恒为 3:4（标题叠在封面上，不占额外高度）。
+  static const double cardAspectRatio = 3 / 4;
+
+  /// 由网格**内层**宽度（已扣掉左右 gutter）算出列数。
+  static int columns(double innerWidth) =>
+      Breakpoints.feedColumns(innerWidth.clamp(0, Breakpoints.kGridMaxWidth));
+
+  static SliverGridDelegate delegate(double innerWidth) =>
+      SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns(innerWidth),
+        mainAxisSpacing: gap,
+        crossAxisSpacing: gap,
+        childAspectRatio: cardAspectRatio,
       );
 }

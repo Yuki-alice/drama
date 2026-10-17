@@ -1,4 +1,3 @@
-import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
 import '../tokens/app_tokens.dart';
@@ -10,11 +9,11 @@ import 'appearance_controller.dart';
 /// 只负责 Material 侧的配色与字体——玻璃侧由 `GlassTheme` 另外提供
 /// （见 [buildGlassThemeData]）。
 ///
-/// **为什么不 `ColorScheme.fromSeed`**：从种子推导会生成一整套带 Material
-/// 色相的容器色（primaryContainer / tertiary / surfaceTint…），与本项目
-/// 「灰阶 + 一支标志绿」的双色板直接冲突。这里显式构造 [ColorScheme]，
-/// 只保留真正会用到的角色：交互态（开关 / 勾选 / 焦点 / 加载）指向标志绿，
-/// 主操作与中性面指向墨色。
+/// **为什么不用 `ColorScheme.fromSeed`，也不用任何强调色**：色板是无彩色的，
+/// 所有交互态（开关 / 勾选 / 焦点 / 加载 / 选中）都指向**墨色**——层级靠
+/// 字重、填充与面积表达，不靠颜色。颜色只由内容（封面）提供
+/// （见 `cover_palette.dart`）。因此 [ColorScheme] 显式构造、只保留真正
+/// 会用到的角色，所有容器色指向中性面。
 ThemeData buildMaterialTheme(
   Brightness brightness, {
   bool highContrast = false,
@@ -24,24 +23,22 @@ ThemeData buildMaterialTheme(
 
   final scheme = ColorScheme(
     brightness: brightness,
-    // Material 的「主色」= 标志绿：开关 / 勾选 / 焦点 / 加载这类交互态
-    // 会取它。主操作**不**走 Material 按钮——它们是自绘的墨色胶囊
-    // （textPrimary 填充），所以绿色不会落到大块按钮上。
-    primary: colors.accent,
-    onPrimary: colors.onAccent,
-    primaryContainer: colors.accentSubtle,
+    // Material 的「主色」= 墨：开关 / 勾选 / 焦点 / 加载这类交互态会取它。
+    // 「选中」在无彩色色板里就是「涂成墨 + 反白」——没有第二支颜色可用。
+    primary: colors.textPrimary,
+    onPrimary: colors.onInk,
+    primaryContainer: colors.selectionFill,
     onPrimaryContainer: colors.textPrimary,
     secondary: colors.textSecondary,
-    onSecondary: colors.contentSurface,
-    // 第三色位不用（避免多一支抢眼颜色），指向中性面。
+    onSecondary: colors.background,
+    // 第三色位不用，指向中性面。
     tertiary: colors.textSecondary,
-    onTertiary: colors.contentSurface,
+    onTertiary: colors.background,
     // 破坏性操作在 UI 层用措辞 + 确认承载，色板不再单列一支红。
-    // 注意：这里也**不**指向 accent——色板里没有真正的错误色，
-    // 让 ErrorView 自己用墨色图标 + 措辞表达。
+    // 错误也指向墨：ErrorView 用图标形状 + 措辞表达，不靠颜色。
     error: colors.textPrimary,
-    onError: colors.onAccent,
-    errorContainer: colors.accentSubtle,
+    onError: colors.onInk,
+    errorContainer: colors.selectionFill,
     onErrorContainer: colors.textPrimary,
     surface: colors.background,
     onSurface: colors.textPrimary,
@@ -60,7 +57,7 @@ ThemeData buildMaterialTheme(
     scrim: const Color(0x80000000),
     inverseSurface: colors.textPrimary,
     onInverseSurface: colors.background,
-    inversePrimary: colors.accent,
+    inversePrimary: colors.textPrimary,
   );
 
   return ThemeData(
@@ -80,10 +77,10 @@ ThemeData buildMaterialTheme(
     ),
     // 玻璃面自己承担动效，Material 的水波纹在玻璃上是噪点。
     splashFactory: NoSplash.splashFactory,
-    // 选中/悬停靠**底色**而非描边或水波纹（绿色浅底，见 accentSubtle）。
-    highlightColor: colors.accentSubtle,
-    hoverColor: colors.accentSubtle,
-    focusColor: colors.accentSubtle,
+    // 选中 / 悬停靠**中性浅雾底**而非描边或水波纹。
+    highlightColor: colors.selectionFill,
+    hoverColor: colors.selectionFill,
+    focusColor: colors.selectionFill,
     textTheme: TextTheme(
       displaySmall: AppText.display.copyWith(color: colors.textPrimary),
       titleLarge: AppText.title.copyWith(color: colors.textPrimary),
@@ -99,20 +96,17 @@ ThemeData buildMaterialTheme(
       elevation: 0,
       scrolledUnderElevation: 0,
       centerTitle: false,
-      titleTextStyle: AppText.headline.copyWith(color: colors.textPrimary),
+      titleTextStyle: AppText.barTitle.copyWith(color: colors.textPrimary),
       iconTheme: IconThemeData(color: colors.textPrimary, size: 20),
     ),
     iconTheme: IconThemeData(color: colors.textSecondary, size: 20),
-    // 列表/卡片默认无「纸片阴影」：分层靠发丝线与材质，
-    // 投影只留给真正浮起的功能层（玻璃）。
-    cardTheme: CardThemeData(
-      color: colors.contentSurface,
+    // 列表 / 卡片默认**无描边、无阴影、无容器色差**：分层靠排版与负空间
+    // （见设计宪法第四节「分层靠排版与负空间」）。
+    cardTheme: const CardThemeData(
+      color: Colors.transparent,
       surfaceTintColor: Colors.transparent,
       elevation: 0,
-      shape: RoundedSuperellipseBorder(
-        borderRadius: BorderRadius.circular(AppRadii.lg),
-        side: BorderSide(color: colors.divider),
-      ),
+      margin: EdgeInsets.zero,
     ),
     // 弹层用更高一级的面 + 大圆角（弹层 28，见 AppRadii.sheet）。
     dialogTheme: DialogThemeData(
@@ -136,15 +130,14 @@ ThemeData buildMaterialTheme(
       ),
     ),
     snackBarTheme: SnackBarThemeData(
-      // 深色场景反过来用浅面？不——snack 在两种外观下都是「屏幕上方的临时层」，
+      // snack 在两种外观下都是「屏幕上方的临时层」：
       // 浅色下用墨面（`#0F0F0F`），深色下用抬高面，都保证其上文字可读。
       backgroundColor: dark ? colors.surfaceElevated : const Color(0xFF0F0F0F),
       contentTextStyle: AppText.body.copyWith(
         color: dark ? colors.textPrimary : const Color(0xFFECECEC),
       ),
-      // 动作文字取绿：墨面之上用标志绿（6.0:1），
-      // 深色抬高面（`#3A3A3A`）之上用提亮的 `accentDeep`（4.9:1）。
-      actionTextColor: dark ? colors.accentDeep : colors.accent,
+      // 无彩色色板下动作文字不再取绿，取与正文同源的亮色。
+      actionTextColor: dark ? colors.textPrimary : const Color(0xFFECECEC),
       behavior: SnackBarBehavior.floating,
       shape: RoundedSuperellipseBorder(
         borderRadius: BorderRadius.circular(AppRadii.md),
@@ -152,7 +145,7 @@ ThemeData buildMaterialTheme(
       elevation: 0,
     ),
     progressIndicatorTheme: ProgressIndicatorThemeData(
-      color: colors.accent,
+      color: colors.textPrimary,
       linearTrackColor: colors.sunken,
       circularTrackColor: Colors.transparent,
     ),

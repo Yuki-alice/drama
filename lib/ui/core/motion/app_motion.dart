@@ -186,7 +186,7 @@ class _RevealState extends State<Reveal> with SingleTickerProviderStateMixin {
 
 /// 发丝进度线。
 ///
-/// 规格来自设计规范：**3px 轨道 + 绿色填充**（画面之上的角标进度用白）。
+/// 规格来自设计规范：**2px 轨道 + 墨色填充**（画面之上的进度用白）。
 /// 不是 4px 圆头胶囊——圆头把「一条线」变成「一根管子」，
 /// 在密集列表里会显重。
 ///
@@ -199,18 +199,19 @@ class HairlineProgress extends StatelessWidget {
     required this.fraction,
     this.color,
     this.track,
-    this.height = 3,
+    this.height = 2,
   });
 
   final double fraction;
 
-  /// 已完成段颜色；默认取 [AppColors.accent]（标志绿——进度是状态）。
+  /// 已完成段颜色；默认取 [AppColors.textPrimary]（墨——进度即状态，
+  /// 无彩色色板下状态用灰度与字重表达）。
   final Color? color;
 
-  /// 未完成段底色；默认取 [AppColors.sunken]（浅雾）。
+  /// 未完成段底色；默认取 [AppColors.divider]（发丝线）。
   final Color? track;
 
-  /// 线宽。规范值 3；播放器按住拖拽时加到 5 以示「可拖」。
+  /// 线宽。规范值 2；播放器按住拖拽时加到 4 以示「可拖」。
   final double height;
 
   @override
@@ -223,11 +224,11 @@ class HairlineProgress extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: <Widget>[
-            ColoredBox(color: track ?? colors.sunken),
+            ColoredBox(color: track ?? colors.divider),
             FractionallySizedBox(
               alignment: AlignmentDirectional.centerStart,
               widthFactor: fraction.clamp(0.0, 1.0),
-              child: ColoredBox(color: color ?? colors.accent),
+              child: ColoredBox(color: color ?? colors.textPrimary),
             ),
           ],
         ),

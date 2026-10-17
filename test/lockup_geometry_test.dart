@@ -10,9 +10,9 @@ import 'package:flutter_test/flutter_test.dart';
 /// 也不会报 RenderFlex overflow——它只是静默画出边界，压到旁边的元素上。
 /// 必须直接量渲染尺寸才能测出这类缺陷。
 ///
-/// 实测数据：`AppText.numeral`（30pt 等宽）约 29pt/字符，
-/// 所以 1 位 = 29、2 位 = 58、3 位 = 87。名次列固定 42pt，
-/// **三位数必然溢出**——榜单超过 99 条就会压到标题。
+/// 实测数据：`AppText.numeral`（27pt 等宽）单行约 27pt 高，
+/// 名次列固定 36pt，三位数（榜单可到 100+）靠 `FittedBox` 等比缩下来——
+/// 直接排会折行成竖排的「1 2 8」，行高翻三倍。
 Drama _drama(String id, String title, int eps) => Drama(
   id: id,
   title: title,
@@ -23,9 +23,14 @@ Drama _drama(String id, String title, int eps) => Drama(
   tags: const <String>['逆袭'],
 );
 
-Future<void> _pump(WidgetTester tester, Widget child, {Size size = const Size(320, 700)}) async {
-  await tester.binding.setSurfaceSize(size);
-  addTearDown(() => tester.binding.setSurfaceSize(null));
+Future<void> _pump(
+  WidgetTester tester,
+  Widget child, {
+  Size size = const Size(320, 700),
+}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
   await tester.pumpWidget(
     MaterialApp(
       theme: buildMaterialTheme(Brightness.light),
@@ -35,16 +40,10 @@ Future<void> _pump(WidgetTester tester, Widget child, {Size size = const Size(32
   await tester.pumpAndSettle();
 }
 
-/// 一个 widget 的**实际绘制矩形**（把祖先施加的缩放算进去）。
-///
-/// `tester.getRect` 会把 `getTransformTo(null)` 算进来，所以 `FittedBox`
-/// 的缩放是可见的；直接读 child 的 `size` 则拿不到。
-Rect _paintedRect(WidgetTester tester, Finder finder) => tester.getRect(finder);
-
 void main() {
   group('RankRow 名次列', () {
     for (final rank in <int>[1, 9, 10, 99, 100, 999]) {
-      testWidgets('rank=$rank 的名次不超出 42pt 列宽', (tester) async {
+      testWidgets('rank=$rank 的名次不折行、不超出 36pt 列宽', (tester) async {
         await _pump(
           tester,
           RankRow(
@@ -55,96 +54,80 @@ void main() {
         );
         expect(tester.takeException(), isNull);
 
-        // 关键：在**紧约束的 42pt 列**里，超宽文字不会溢出、也不会报错，
-        // 而是**折行**——实测 `128` 在 42pt 宽下从 30pt 高变成 90pt 高
-        // （三个字各占一行），行高翻三倍且读作竖排的「1 2 8」。
-        // 所以断言的正确对象是**绘制高度**（行数），不是宽度。
+        // 断言的正确对象是**绘制高度**（行数）：紧约束下超宽文字不报错，
+        // 而是折行——`128` 折成三行会让行高翻三倍。
         final text = find.text('$rank');
         expect(text, findsOneWidget);
-        final rect = _paintedRect(tester, text);
+        final rect = tester.getRect(text);
         expect(
           rect.height,
           lessThanOrEqualTo(34.0),
-          reason: 'rank=$rank 的绘制高度 ${rect.height.toStringAsFixed(1)}pt '
-              '说明名次在 42pt 列里折行了（单行应为 30pt）',
+          reason:
+              'rank=$rank 的绘制高度 ${rect.height.toStringAsFixed(1)}pt '
+              '说明名次在 36pt 列里折行了（单行应约 27pt）',
         );
         expect(
           rect.width,
-          lessThanOrEqualTo(42.0 + 0.5),
-          reason: 'rank=$rank 的绘制宽度 ${rect.width.toStringAsFixed(1)}pt '
-              '超出列宽',
+          lessThanOrEqualTo(36.0 + 0.5),
+          reason: 'rank=$rank 的绘制宽度 ${rect.width.toStringAsFixed(1)}pt 超出列宽',
         );
       });
     }
-
-    testWidgets('名次列与封面不重叠', (tester) async {
-      await _pump(
-        tester,
-        RankRow(drama: _drama('x', '剧名', 128), rank: 128, onTap: () {}),
-      );
-      final rankRect = tester.getRect(find.text('128'));
-      final coverRect = tester.getRect(find.byType(RankRow));
-      expect(
-        rankRect.right,
-        lessThanOrEqualTo(coverRect.left + 60),
-        reason: '名次画到了行外',
-      );
-    });
   });
 
-  group('其余 lockup 在大数值下不溢出', () {
-    testWidgets('LibraryRow 三位集数', (tester) async {
+  group('其余内容件在大数值下不溢出', () {
+    testWidgets('FollowRow 三位集数 + 超长剧名', (tester) async {
       await _pump(
         tester,
-        LibraryRow(
-          title: '很长的剧名测试溢出情况',
+        FollowRow(
+          title: '很长的剧名测试溢出情况一二三四五六七八九十',
           seed: 'x',
-          watchedEpisode: 128,
-          totalEpisode: 320,
+          statusLine: '看到 128 集 · 更新至 320 集',
           progress: .4,
-          statusLine: '看到第 128 集 / 共 320 集',
-          updatedLabel: '还有未看的',
+          actionLabel: '继续看',
           onTap: () {},
           onPlay: () {},
         ),
       );
       expect(tester.takeException(), isNull);
+      expect(
+        tester.getRect(find.text('继续看')).width,
+        lessThan(120),
+        reason: '右侧胶囊被长剧名挤到换行',
+      );
     });
 
-    testWidgets('HeroLockup 超长标题与集数', (tester) async {
+    testWidgets('DramaPosterCard 三位集数 + 超长标题（3:4 不裁切）', (tester) async {
+      const width = 140.0;
       await _pump(
         tester,
-        HeroLockup(
+        DramaPosterCard(
           drama: _drama('x', '超长剧名一二三四五六七八九十一二三四五六七八九十', 999),
           onTap: () {},
-          height: 300,
         ),
+        // 视口宽度即卡片宽度（ListView 的交叉轴是紧约束，SizedBox 会被忽略）。
+        size: const Size(width, 400),
       );
       expect(tester.takeException(), isNull);
+      final rect = tester.getRect(find.byType(DramaPosterCard));
+      expect(rect.width, closeTo(width, 0.5));
+      // 3:4 → 高 = 宽 / 0.75。
+      expect(rect.height, closeTo(width / (3 / 4), 0.5));
     });
 
-    testWidgets('ContinueLockup 长标题 + 三位集数', (tester) async {
+    testWidgets('DramaPosterCard 续播胶囊不超出封面', (tester) async {
       await _pump(
         tester,
-        ContinueLockup(
-          drama: _drama('x', '超长剧名一二三四五六七八九十', 96),
-          onTap: () {},
-          progress: .3,
-          progressLabel: '看到第 128 集 / 共 320 集',
-        ),
-      );
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('PosterLockup 三位集数角标', (tester) async {
-      await _pump(
-        tester,
-        PosterLockup(
-          drama: _drama('x', '超长剧名一二三四五六七八九十', 999),
+        DramaPosterCard(
+          drama: _drama('x', '剧名', 82),
+          watchedEpisode: 34,
+          progress: .41,
           onTap: () {},
         ),
+        size: const Size(140, 400),
       );
       expect(tester.takeException(), isNull);
+      expect(find.text('继续看 34'), findsOneWidget);
     });
   });
 }

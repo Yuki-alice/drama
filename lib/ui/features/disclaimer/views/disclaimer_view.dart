@@ -121,7 +121,7 @@ class _BulletPoint extends StatelessWidget {
               width: 5,
               height: 5,
               decoration: BoxDecoration(
-                color: colors.accent,
+                color: colors.textPrimary,
                 shape: BoxShape.circle,
               ),
             ),

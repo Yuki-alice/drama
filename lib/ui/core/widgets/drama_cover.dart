@@ -1,22 +1,25 @@
 import 'package:flutter/material.dart';
 
+import '../theme/cover_palette.dart';
 import '../tokens/app_tokens.dart';
 
 /// 内容层封面（**必须不透明**）。
 ///
 /// 三级回落，任何一级都不让布局塌掉、也不让整页报错：
 /// 1. 有 [cover]（本机代理地址）→ 网络图，按显示宽度解码后淡入；
-/// 2. 加载中 / 失败 / 无 cover → [seed] 派生的确定性渐变 + 标题；
+/// 2. 加载中 / 失败 / 无 cover → [seed] 派生的**确定性氛围渐变**；
 /// 3. 渐变始终在位（垫在网络图**下面**），因此不会出现白闪或空洞。
 ///
-/// **为什么用 `Image.network` 而不是手写 `ui.Image` 缓存**：
-/// Flutter 的 `ImageCache` 已经负责解码缓存、按 `cacheWidth` 缩放、以及
-/// **图像句柄的所有权与释放**（`ImageStream` 每次向 listener 交付
-/// `image.clone()`，并由 `RenderImage` 释放自己那份）。我曾手写一层
-/// 「缓存 `ui.Image` 并交给多个 `RawImage`」的实现，结果多个格子共享同一个
-/// 句柄、谁先被回收谁就把图 dispose 掉，运行时报
-/// `Bad state: Cannot clone a disposed image`（实机截图复现）。
-/// 交给框架后这类生命周期问题不存在。
+/// 渐变形态对齐原型 `cover-art`：`linear-gradient(168deg, c1, c2)` +
+/// 右上角一圈柔光 + 下缘一枚椭圆暗影。色相来自封面色板
+/// （见 `cover_palette.dart`），界面色板本身仍是无彩色的。
+///
+/// **不裁切**：默认按 [aspectRatio]（短剧封面 3:4）渲染，禁止用
+/// `fill + 裁切` 把封面裁成别的比例——封面上的文案就是卖点。
+///
+/// **为什么用 `Image.network` 而不是手写 `ui.Image` 缓存**：Flutter 的
+/// `ImageCache` 已负责解码缓存、按 `cacheWidth` 缩放、以及图像句柄的所有权
+/// 与释放；手写共享 `ui.Image` 会撞上 `Cannot clone a disposed image`。
 class DramaCover extends StatelessWidget {
   const DramaCover({
     super.key,
@@ -24,8 +27,8 @@ class DramaCover extends StatelessWidget {
     this.cover = '',
     this.title,
     this.aspectRatio = 3 / 4,
-    this.radius = AppRadii.lg,
-    this.showTitleOverlay = true,
+    this.radius = AppRadii.thumbnail,
+    this.showTitleOverlay = false,
     this.fill = false,
   });
 
@@ -41,12 +44,12 @@ class DramaCover extends StatelessWidget {
   final double aspectRatio;
   final double radius;
 
-  /// 是否在渐变态叠加标题（小尺寸缩略图通常不需要）。
+  /// 是否在渐变态叠加标题（卡片自己画 meta 时不需要）。
   final bool showTitleOverlay;
 
   /// `true` = 填满父级约束（**不**强制 [aspectRatio]）。
   ///
-  /// 用于外层已定好格子形状的场景（如网格 `Expanded`）：此时再套一层
+  /// 用于外层已定好格子形状的场景（网格 `Expanded`）：此时再套一层
   /// `AspectRatio` 会因约束冲突而留白（letterbox），由外层统一控制比例更稳。
   final bool fill;
 
@@ -68,10 +71,12 @@ class DramaCover extends StatelessWidget {
             LayoutBuilder(
               builder: (context, constraints) {
                 // 按**物理像素**解码：640×960 的封面原始 RGBA 是 2.4MiB，
-                // 一屏十几张就是几十 MiB。交给框架按实际显示宽度解码可省一个量级。
+                // 一屏十几张就是几十 MiB。按实际显示宽度解码可省一个量级。
                 final dpr = MediaQuery.devicePixelRatioOf(context);
-                final targetWidth =
-                    (constraints.maxWidth * dpr).round().clamp(1, 4096);
+                final targetWidth = (constraints.maxWidth * dpr).round().clamp(
+                  1,
+                  4096,
+                );
                 return _NetworkCover(url: cover, cacheWidth: targetWidth);
               },
             ),
@@ -79,8 +84,6 @@ class DramaCover extends StatelessWidget {
       ),
     );
 
-    // fill=false（默认）时由封面自己决定形状（3:4 等）；
-    // fill=true 时完全服从父级约束（网格已定好格子形状）。
     return fill
         ? SizedBox.expand(child: content)
         : AspectRatio(aspectRatio: aspectRatio, child: content);
@@ -103,11 +106,8 @@ class _NetworkCover extends StatelessWidget {
       url,
       fit: BoxFit.cover,
       filterQuality: FilterQuality.medium,
-      // 按显示宽度解码，显著降低内存（见 DramaCover 的类注释）。
       cacheWidth: cacheWidth,
-      // 重试避免闪烁；同一 URL 复用缓存条目。
       gaplessPlayback: true,
-      // 失败/加载中都只画透明层，让下层的渐变透出来。
       errorBuilder: (context, error, stack) => const SizedBox.shrink(),
       frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
         if (wasSynchronouslyLoaded) return child;
@@ -134,12 +134,12 @@ String coverHeroTag({required String source, required String id}) =>
 /// 把封面包进共享元素转场（Kazumi 的做法）。
 ///
 /// - `transitionOnUserGestures: true`：iOS 边缘右滑返回也走转场；
-/// - 自定义 shuttle（见 [_coverFlightShuttle]）：飞行途中沿用出发端的
-///   渲染树，并在出发/落点上下文里补上 `Material` 与 InheritedTheme，
+/// - 自定义 shuttle（见 [_coverFlightShuttle]）：飞行途中沿用出发端的渲染树，
+///   并在出发/落点上下文里补上 `Material` 与 InheritedTheme，
 ///   否则飞出原树后文字样式与主题会漂移。
 ///
-/// **标签在同一路由内必须唯一**：同一剧目不要在一个页面里出现两份
-/// （例如既进信息流又在别处重复渲染），否则飞行扫描会断言失败。
+/// **标签在同一路由内必须唯一**：同一剧目不要在一个页面里出现两份，
+/// 否则飞行扫描会断言失败。
 class CoverHero extends StatelessWidget {
   const CoverHero({
     super.key,
@@ -154,8 +154,7 @@ class CoverHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 空标签 = 调用方还没拿到身份（如追剧行为空 id 的兜底渲染）：
-    // 直接放行，避免所有兜底行共用空标签互相串场。
+    // 空标签 = 调用方还没拿到身份：直接放行，避免所有兜底行共用空标签串场。
     if (id.isEmpty || source.isEmpty) return child;
     return Hero(
       tag: coverHeroTag(source: source, id: id),
@@ -166,7 +165,7 @@ class CoverHero extends StatelessWidget {
   }
 }
 
-/// 飞行载体：push 取出发端、pop 取落点端的渲染树（Kazumi 同款）。
+/// 飞行载体：push 取出发端、pop 取落点端的渲染树。
 Widget _coverFlightShuttle(
   BuildContext flightContext,
   Animation<double> animation,
@@ -183,13 +182,15 @@ Widget _coverFlightShuttle(
   );
 }
 
-/// 确定性渐变占位（同一 seed 每次颜色一致）。
+/// 确定性氛围渐变占位（同一 seed 每次颜色一致）。
+///
+/// 形态对齐原型 `cover-art`：168° 线性渐变 + 右上柔光 + 下缘椭圆暗影。
 class _GradientPoster extends StatelessWidget {
   const _GradientPoster({
     required this.seed,
     required this.showTitle,
     this.title,
-    this.radius = AppRadii.lg,
+    this.radius = AppRadii.thumbnail,
   });
 
   final String seed;
@@ -199,66 +200,75 @@ class _GradientPoster extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = AppColors.of(context);
-    // 用 hashCode 取色相，保证同一剧目每次渲染颜色一致。
-    final hue = seed.hashCode.abs() % 360;
-    // 「墨·玻璃」：界面本体零装饰色，所以占位图**不是**彩色海报，
-    // 而是一块低饱和的中性灰，只保留一点点色相用来区分相邻剧目
-    // （这是信息，不是装饰）。真正决定观感的是上面那层真封面。
-    final top = HSLColor.fromAHSL(
-      1,
-      hue.toDouble(),
-      colors.highContrast ? 0.0 : 0.10,
-      colors.brightness == Brightness.dark ? 0.20 : 0.94,
-    ).toColor();
-    final bottom = HSLColor.fromAHSL(
-      1,
-      ((hue + 28) % 360).toDouble(),
-      colors.highContrast ? 0.0 : 0.13,
-      colors.brightness == Brightness.dark ? 0.13 : 0.87,
-    ).toColor();
-
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[top, bottom],
+    final palette = paletteFromSeed(seed);
+    return Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              // 168°：亮侧在上，暗侧在下。
+              begin: const Alignment(-0.2, -1),
+              end: const Alignment(0.25, 1),
+              colors: <Color>[palette.c1, palette.c2],
+            ),
+          ),
         ),
-        border: Border.all(color: colors.divider),
-        borderRadius: BorderRadius.circular(radius),
-      ),
-      child: Stack(
-        fit: StackFit.expand,
-        children: <Widget>[
-          if (showTitle)
-            // 底部 scrim：保证标题在任何渐变底色上都可读。
-            const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.center,
-                  end: Alignment.bottomCenter,
-                  colors: <Color>[Color(0x00000000), Color(0x8A000000)],
+        // 右上角柔光（prototype radial-gradient(105% 68% at 74% 6%, #fff .32)）。
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              center: Alignment(0.48, -0.88),
+              radius: 1.05,
+              colors: <Color>[Color(0x52FFFFFF), Color(0x00FFFFFF)],
+              stops: <double>[0.0, 0.6],
+            ),
+          ),
+        ),
+        // 下缘椭圆暗影（prototype cover-art::after）。
+        Positioned.fill(
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: FractionallySizedBox(
+              widthFactor: 0.66,
+              heightFactor: 0.54,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: const Color(0x33000000),
+                  borderRadius: BorderRadius.vertical(
+                    top: Radius.circular(200),
+                  ),
                 ),
               ),
             ),
-          if (showTitle && title != null)
-            Positioned(
-              left: AppSpacing.sm,
-              right: AppSpacing.sm,
-              bottom: AppSpacing.sm,
-              child: Text(
-                title!,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: AppText.callout.copyWith(
-                  color: const Color(0xFFFFFFFF),
-                  fontWeight: FontWeight.w600,
-                ),
+          ),
+        ),
+        if (showTitle)
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.center,
+                end: Alignment.bottomCenter,
+                colors: <Color>[Color(0x00000000), Color(0x8A000000)],
               ),
             ),
-        ],
-      ),
+          ),
+        if (showTitle && title != null)
+          Positioned(
+            left: 9,
+            right: 9,
+            bottom: 9,
+            child: Text(
+              title!,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.callout.copyWith(
+                color: const Color(0xFFFFFFFF),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
