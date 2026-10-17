@@ -1,0 +1,74 @@
+schema: 1
+id: huangju
+name: 剧果
+version: 0.1.0
+author: official
+homepage: https://huangju.net
+base: https://api.huangju.net
+user_agent: mobile
+cookie_jar: on
+caps:
+  catalog: true
+  detail: true
+  playback: true
+auth:
+  - type: login
+    request:
+      method: POST
+      url: "{{base}}/auth/guest"
+      body: '{"deviceId":"11111111-1111-1111-1111-111111111111"}'
+      headers:
+        Content-Type: application/json
+    extract: "token"
+    cache_ttl_s: 21600
+    header: "Authorization: Bearer {{token}}"
+ops:
+  categories:
+    - { id: "", name: "全部" }
+  catalog:
+    request:
+      url: "{{base}}/dramas?page={{page}}&pageSize=20"
+    items: "items"
+    map:
+      id:
+        from: "slug"
+      title:
+        from: "title"
+      cover:
+        from: "coverUrl"
+      episodes:
+        from: "totalEpisodes"
+      status:
+        from: "status"
+        filters:
+          - 'status_map'
+    pagination:
+      type: page
+      size: 20
+  detail:
+    request:
+      url: "{{base}}/dramas/{{id}}"
+    identity_check: false
+    map:
+      id:
+        from: "{{id}}"
+      title:
+        from: "title"
+      cover:
+        from: "coverUrl"
+      summary:
+        from: "description"
+      episodes:
+        from: "totalEpisodes"
+    chapters:
+      items: "episodes"
+      index: "epNo"
+      vid: "id"
+      title_template: "第{{index}}集"
+  playback:
+    request:
+      url: "{{base}}/play/{{vid}}"
+    extract:
+      type: json
+      path: "url"
+    referer: "https://huangju.net/"

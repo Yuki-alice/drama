@@ -1,0 +1,50 @@
+schema: 1
+id: wuguo
+name: 伍果
+version: 0.1.0
+author: official
+homepage: https://www.duanju55.com
+base: https://www.duanju55.com
+user_agent: desktop
+caps:
+  catalog: true
+  detail: true
+  playback: true
+ops:
+  categories:
+    - { id: "1", name: "短剧" }
+  catalog:
+    request:
+      url: "{{base}}/index.php/vod/type/id/{{category}}/page/{{page}}.html"
+    items: "css:[class*='BrowseList_itemBox']"
+    map:
+      id:
+        from: "a@href"
+        filters:
+          - 're:/id/([0-9]+)\.html:1'
+      title:
+        from: "img@alt"
+      cover:
+        from: "img@src"
+    pagination:
+      type: page
+      size: 24
+  detail:
+    request:
+      url: "{{base}}/index.php/vod/detail/id/{{id}}.html"
+    identity_check: false
+    map:
+      id:
+        from: "{{id}}"
+      title:
+        from: "css:h1"
+      cover:
+        from: "img@data-original"
+  playback:
+    request:
+      url: "{{base}}/index.php/vod/play/id/{{id}}/sid/1/nid/1.html"
+    extract:
+      type: regex
+      pattern: '"url":"(https:[^"]+)"'
+      group: 1
+    referer: "{{base}}/"

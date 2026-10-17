@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:media_kit/media_kit.dart';
+
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
@@ -41,10 +43,14 @@ Future<void> main() async {
     final core = await RustCore.spawn();
     // 设备身份初始化（签名用稳定身份；失败则用进程内临时身份，不阻断）。
     try {
+      // 专用子目录而不是 Documents 根：缓存/规则包/追剧都在这里，
+      // 用户在文件 App 里看到的是干净的一个文件夹。
       final support = await getApplicationDocumentsDirectory();
+      final dataDir = Directory(p.join(support.path, 'drama_data'));
+      await dataDir.create(recursive: true);
       await core.call(
         'init',
-        params: <String, Object?>{'dataDir': support.path},
+        params: <String, Object?>{'dataDir': dataDir.path},
       );
     } catch (error) {
       debugPrint('Rust 核心 init 失败，将用临时设备身份：$error');

@@ -83,6 +83,38 @@ impl Engine {
         }
     }
 
+    /// 首次初始化时把**内置规则包**装进数据目录。
+    ///
+    /// 规则源按产品定义是「可安装的扩展」，但官方仓库维护的核心几个包
+    /// （网果/花果/伍果/韩小圈/剧果/黄果AI）应当开箱即用——用户不该
+    /// 手动找 YAML。这里内嵌 YAML 文本（编译期包含），幂等安装：
+    /// 同内容哈希重复安装自动跳过，更新版本则覆盖。
+    fn bootstrap_builtin_sources(&self) {
+        const BUILTIN_PACKS: &[&str] = &[
+            include_str!("../sources/wangguo.yaml"),
+            include_str!("../sources/huaguo.yaml"),
+            include_str!("../sources/wuguo.yaml"),
+            include_str!("../sources/hanxiaoquan.yaml"),
+            include_str!("../sources/huangju.yaml"),
+            include_str!("../sources/huangguoai.yaml"),
+        ];
+        for text in BUILTIN_PACKS {
+            let Ok(manifest) = drama_rules::Manifest::from_bytes(text.as_bytes()) else {
+                tracing::warn!("内置规则包解析失败，跳过");
+                continue;
+            };
+            if let Err(error) = self.store.install(&manifest, "builtin") {
+                tracing::warn!("内置规则包 {} 安装失败: {error}", manifest.id);
+                eprintln!("[bootstrap] {} 失败: {error}", manifest.id);
+            }
+        }
+        // 清掉规则引擎缓存，让新装的包立即可用。
+        self.rule_engines
+            .lock()
+            .expect("rule engines poisoned")
+            .clear();
+    }
+
     /// 数据目录切换后重新挂载（`init` op）。
     pub fn reattach(&self) {
         if let Some(dirs) = drama_store::data_dirs() {
@@ -408,6 +440,8 @@ impl Engine {
                         .unwrap_or_default(),
                 );
                 self.reattach();
+                // 内置规则包开箱即用（幂等；已装同版本自动跳过）。
+                self.bootstrap_builtin_sources();
                 ok(serde_json::json!({
                     "initialized": true,
                     "dataDir": data_dir,
@@ -1657,5 +1691,30 @@ ops: {}
         let request = Request::parse(r#"{"v":1,"op":"search","params":{"keyword":"都市"}}"#)
             .expect("parse");
         assert_eq!(read_cache_key(&request), "hongguo:search:都市");
+    }
+    #[test]
+    fn init_installs_builtin_rule_packs() {
+        let _guard = serial();
+        let dir = std::env::temp_dir().join(format!("drama-bootstrap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // 前序测试可能改过共享 store；复位到干净状态再验证 init 全流程。
+        drama_rules::SourceStore::shared().reset();
+
+        let data = dispatch_ok("init", json!({"dataDir": dir.to_string_lossy()}));
+        assert_eq!(data["initialized"], true);
+
+        let sources = dispatch_ok("sources", json!({}));
+        let ids: Vec<String> = sources
+            .as_array()
+            .expect("sources")
+            .iter()
+            .filter_map(|s| s["id"].as_str().map(str::to_owned))
+            .collect();
+        for pack in ["wangguo", "huaguo", "wuguo", "hanxiaoquan", "huangju", "huangguoai"] {
+            assert!(ids.contains(&pack.to_owned()), "缺少内置包 {pack}，实际 {ids:?}");
+        }
+        assert!(ids.len() >= 7, "内置 + 规则源总数应 ≥7");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

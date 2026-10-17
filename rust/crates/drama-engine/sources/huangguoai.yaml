@@ -1,0 +1,63 @@
+schema: 1
+id: huangguoai
+name: 黄果AI
+version: 0.1.0
+author: official
+homepage: https://huangguoai.com
+base: https://huangguoai.com
+user_agent: desktop
+caps:
+  catalog: true
+  detail: true
+  playback: true
+ops:
+  catalog:
+    request:
+      url: "{{base}}/api/videos/category/ai-duanju?sort=hot&page={{page}}&size=20"
+      headers:
+        Referer: "{{base}}/"
+    items: "data.items"
+    map:
+      id:
+        from: "id"
+      title:
+        from: "title"
+      cover:
+        from: "coverSrc"
+      episodes:
+        from: "episodeCount|totalEpisode"
+      summary:
+        from: "description"
+    pagination:
+      type: page
+      size: 20
+  detail:
+    request:
+      url: "{{base}}/video/{{id}}/"
+    identity_check: false
+    map:
+      id:
+        from: "{{id}}"
+      title:
+        from: "css:script#videoInitialData::json:title"
+      cover:
+        from: "css:script#videoInitialData::json:posterSrc"
+      summary:
+        from: "css:script#videoInitialData::json:description"
+    chapters:
+      items: "css:script#videoInitialData"
+      title_template: "正片"
+      url:
+        from: "css:script#videoInitialData::json:epPlaySrcs.1"
+      index:
+        from: "{{index}}"
+  playback:
+    request:
+      url: "{{base}}/video/{{id}}/"
+    # epPlaySrcs 是 {集号: m3u8} 映射，必须按请求的集号取——
+    # 正则做不到按动态键提取，用 css::json: 加 {{episode}} 模板。
+    extract:
+      type: html_attr
+      css: "script#videoInitialData::json:epPlaySrcs.{{episode}}"
+      attr: ""
+    referer: "{{base}}/"
