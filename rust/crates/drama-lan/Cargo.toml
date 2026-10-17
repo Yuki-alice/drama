@@ -1,0 +1,25 @@
+[package]
+name = "drama-lan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "局域网发现、配对、增量同步、推送续播"
+
+[dependencies]
+drama-types.workspace = true
+drama-net.workspace = true
+drama-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+once_cell.workspace = true
+tokio.workspace = true
+mdns-sd.workspace = true
+rcgen.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

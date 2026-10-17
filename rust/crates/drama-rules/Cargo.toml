@@ -1,0 +1,28 @@
+[package]
+name = "drama-rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "规则扩展源：YAML 作者态 → JSON 分发态 + 执行引擎"
+
+[dependencies]
+drama-types.workspace = true
+drama-net.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+regex.workspace = true
+url.workspace = true
+base64.workspace = true
+md5.workspace = true
+sha2.workspace = true
+aes.workspace = true
+cbc.workspace = true
+scraper.workspace = true
+
+[lints]
+workspace = true

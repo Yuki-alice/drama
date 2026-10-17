@@ -1,0 +1,25 @@
+# 由 native_toolchain_rust 读取：channel 必须为精确版本（禁止 stable/beta/nightly），
+# targets 必须覆盖构建目标（校验见 native_toolchain_rust crate_info_validator）。
+[toolchain]
+channel = "1.96.0"
+targets = [
+  # Android：覆盖 Flutter 默认 APK 的 ABI 集合（避免 hook 校验在 armv7/x86 上报错）
+  "armv7-linux-androideabi",
+  "aarch64-linux-android",
+  "i686-linux-android",
+  "x86_64-linux-android",
+  # Windows（MVP：仅 x64；arm64 由 hook 守卫直接 FATAL）
+  "x86_64-pc-windows-msvc",
+  # macOS 桌面（双架构；aarch64 为本机宿主，flutter test / macOS 构建必需）
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  # iOS（真机 + 模拟器；P1 末位但校验前置，避免 flutter test/host 构建被 validator 拦截）
+  "aarch64-apple-ios",
+  "aarch64-apple-ios-sim",
+  # x86_64 iOS 无真机，该 target 即 x86_64 模拟器
+  "x86_64-apple-ios",
+  # Linux 桌面宿主：CI 跑在 ubuntu-latest，其 targetTriple 是
+  # x86_64-unknown-linux-gnu；缺失会让 hook 的 crate_info_validator 直接抛错。
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
