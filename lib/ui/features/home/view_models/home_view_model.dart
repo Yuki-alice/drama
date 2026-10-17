@@ -23,12 +23,27 @@ class HomeSourceNotifier extends Notifier<String> {
   }
 }
 
-/// 源对应的首页默认分类（真实源的首个内容分类；未知源退回 `recommend`）。
-String homeDefaultCategoryOf(String source) => switch (source) {
-  'hongguo' => 'real-drama',
-  'huangguoai' => 'ai-duanju',
-  _ => 'recommend',
-};
+/// 规则源分类表（切源后拉 `categories` op；内置源直接走硬编码表）。
+///
+/// UI（分类横滑条）与 VM（默认分类推断）共用这一份，避免两处各拉一次。
+/// `fetchRuleSourceCategories` 内部有进程级缓存，重复 watch 不重复打网络。
+final ruleCategoriesProvider =
+    FutureProvider.family<List<DramaCategory>, String>((ref, source) {
+      // `ref.container` 是 Riverpod 3 的 Ref 实例属性（免 BuildContext）。
+      return fetchRuleSourceCategories(ref.container, source);
+    });
+
+/// 源对应的首页默认分类。
+///
+/// 内置源用硬编码表；规则源用后端分类表的**第一项**（通常是「全部」），
+/// 分类表未拉到时用空串——Rust 侧空 category 即「默认分类」。
+/// 与 [_ruleCategoriesProvider] 的结果联动。
+String homeDefaultCategoryOf(String source, {List<DramaCategory> ruleCategories = const []}) =>
+    switch (source) {
+      'hongguo' => 'real-drama',
+      'huangguoai' => 'ai-duanju',
+      _ => ruleCategories.isNotEmpty ? ruleCategories.first.id : '',
+    };
 
 /// 当前源对应的目录仓库。
 ///
@@ -108,13 +123,20 @@ class HomeFeedNotifier extends AsyncNotifier<HomeFeed> {
     final source = ref.watch(homeSourceProvider);
     final repository = ref.watch(homeRepositoryProvider(source));
 
+    // 规则源：先拉分类表，用第一项当默认分类（通常是「全部」）。
+    // 失败/为空时用空串——Rust 侧空 category 即默认分类。
+    var ruleCategories = const <DramaCategory>[];
+    if (source != 'hongguo' && source != 'huangguoai') {
+      ruleCategories = await ref.watch(ruleCategoriesProvider(source).future);
+    }
+
     // 重启续载：**一次往返**取回此前已加载的 0..depth-1 页。
     //
     // 分页水位由 Rust 侧记录（`catalogPages` 不传 depth 即跟随水位），
     // 缓存命中的页在 Rust 内瞬时返回 —— 往返数从 N 降到 1，
     // 也省掉 N 次 JSON 编解码。
     final pages = await repository.catalogPages(
-      categoryId: homeDefaultCategoryOf(source),
+      categoryId: homeDefaultCategoryOf(source, ruleCategories: ruleCategories),
     );
     if (pages.isEmpty) {
       return const HomeFeed(items: <Drama>[], hasMore: false, loadedPages: 0);

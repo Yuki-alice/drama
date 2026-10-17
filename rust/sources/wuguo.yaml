@@ -11,9 +11,11 @@ caps:
   detail: true
   playback: true
 ops:
+  categories:
+    - { id: "1", name: "短剧" }
   catalog:
     request:
-      url: "{{base}}/index.php/vod/type/id/1.html"
+      url: "{{base}}/index.php/vod/type/id/{{category}}/page/{{page}}.html"
     items: "css:[class*='BrowseList_itemBox']"
     map:
       id:

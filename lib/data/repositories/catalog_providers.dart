@@ -64,8 +64,8 @@ final availableSourcesProvider = FutureProvider<List<SourceInfo>>((ref) async {
 /// 按源取目录仓库（搜索/详情等跨源入口用；首页仍走默认的
 /// [catalogRepositoryProvider]，行为不变）。
 ///
-/// 分类表按源映射（`version` 暂不下发分类，R2 再补）；未知源给空表，
-/// 不冒充有分类。
+/// 分类表：内置源用硬编码表（与历史行为一致）；规则源**异步拉后端**
+/// `categories` op（规则包声明了什么分类就展示什么，前端不硬编码）。
 final catalogRepositoryForSourceProvider =
     Provider.family<CatalogRepository, String>((ref, source) {
       final holder = ref.watch(rustCoreProvider);
@@ -82,11 +82,59 @@ final catalogRepositoryForSourceProvider =
       );
     });
 
+/// 规则源分类缓存（`categories` op 结果，进程内一次）。
+///
+/// 为什么放这里而不是 provider family：分类表是**每个源一份**的静态数据，
+/// 与仓库实例无关；缓存住避免每次切源都打一次网络。
+final _ruleSourceCategories = <String, List<DramaCategory>>{};
+
+/// 取规则源分类：先查缓存，未命中则拉 `categories` op。
+///
+/// 拉取失败返回空表——规则包没声明分类时 UI 不显示分类条，
+/// 不冒充「全部」。同步返回是因为 `Provider.family` 不支持 async 构造；
+/// 真正的拉取由首页首次加载触发（见 [_ensureRuleCategories]）。
 List<DramaCategory> _categoriesFor(String source) => switch (source) {
   'hongguo' => HongguoCategories.all,
   'huangguoai' => HuangguoCategories.all,
-  _ => const <DramaCategory>[],
+  _ => _ruleSourceCategories[source] ?? const <DramaCategory>[],
 };
+
+/// 拉取规则源分类（`categories` op；进程级缓存，重复调用不重复打网络）。
+///
+/// wire 形态 `[{id, name}]`；失败返回空表——规则包没声明分类时 UI
+/// 不显示分类条，不冒充「全部」。
+Future<List<DramaCategory>> fetchRuleSourceCategories(
+  ProviderContainer container,
+  String source,
+) async {
+  if (source == 'hongguo' || source == 'huangguoai') {
+    return _categoriesFor(source);
+  }
+  final cached = _ruleSourceCategories[source];
+  if (cached != null) return cached;
+
+  final holder = container.read(rustCoreProvider);
+  if (holder == null) return const <DramaCategory>[];
+  try {
+    final envelope = await holder.core.call('categories', source: source);
+    if (envelope['ok'] != true) return const <DramaCategory>[];
+    final data = envelope['data'];
+    final items = data is Map ? data['items'] : null;
+    if (items is! List) return const <DramaCategory>[];
+    final categories = <DramaCategory>[
+      for (final item in items)
+        if (item is Map)
+          DramaCategory(
+            id: (item['id'] as String? ?? ''),
+            name: (item['name'] as String? ?? ''),
+          ),
+    ];
+    _ruleSourceCategories[source] = categories;
+    return categories;
+  } on Object {
+    return const <DramaCategory>[];
+  }
+}
 
 /// 是否正在展示「缓存兜底」数据（供 home 页显示轻提示）。
 ///

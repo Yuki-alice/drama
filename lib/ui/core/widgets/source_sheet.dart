@@ -87,7 +87,9 @@ Widget _choices(
     children: <Widget>[
       for (final source in sources)
         _SheetChoice(
-          label: sourceLabel(source.id),
+          // 展示名走 Rust 下发的 name（规则包 authors 起的名），
+          // 规则源加「规则」角标——用户有权知道内容来自第三方规则。
+          label: source.isRule ? '${source.displayName}（规则）' : source.displayName,
           selected: source.id == current,
           onTap: () {
             sheetRef.read(homeSourceProvider.notifier).select(source.id);
@@ -97,13 +99,6 @@ Widget _choices(
     ],
   );
 }
-
-/// 源 id → 展示名。
-String sourceLabel(String id) => switch (id) {
-  'hongguo' => '红果（默认）',
-  'huangguoai' => '黄果 AI',
-  _ => id,
-};
 
 /// sheet 内的一行选项（**内容层**行，不是玻璃控件——玻璃不嵌套）。
 class _SheetChoice extends StatelessWidget {

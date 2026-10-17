@@ -255,16 +255,7 @@ impl Engine {
                 })
             }),
             "catalogPages" => self.op_catalog_pages(request),
-            "categories" => self.op_read(request, |p, _| {
-                p.categories().map(|items| {
-                    Value::Array(
-                        items
-                            .into_iter()
-                            .map(|(id, name)| Value::String(format!("{id}\u{1}{name}")))
-                            .collect(),
-                    )
-                })
-            }),
+            "categories" => self.op_categories(request),
             "recommend" => self.op_read(request, |p, _| {
                 p.recommend().map(|items| {
                     Value::Array(items.iter().map(Drama::to_wire).collect())
@@ -392,6 +383,9 @@ impl Engine {
             .map(|s| serde_json::to_value(s).unwrap_or_default())
             .collect();
         ok(serde_json::json!({
+            // `core` 是 Dart 侧冒烟测试的历史字段名（非空即通过）；
+            // `version` 是新口径。两个字段并存到 Dart 侧迁移完再删。
+            "core": env!("CARGO_PKG_VERSION"),
             "version": env!("CARGO_PKG_VERSION"),
             "builtinSource": BUILTIN,
             "sources": sources,
@@ -487,6 +481,52 @@ impl Engine {
             .collect();
         let groups = EpisodeGroups::build(episodes, group_size);
         ok(serde_json::to_value(&groups).unwrap_or_default())
+    }
+
+    /// 源分类列表。
+    ///
+    /// 内置源走 `SourceProvider::categories`；规则源优先用规则包的
+    /// **静态分类表**（不发网络、不需要分类页解析器），没有表再回落到
+    /// provider 默认实现。
+    fn op_categories(&self, request: &Request) -> Response {
+        let source_key = request
+            .source
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(BUILTIN)
+            .to_owned();
+
+        // 规则源：先查规则包的静态表。
+        if source_key != BUILTIN
+            && let Ok(manifest) = self.store.manifest(&source_key)
+            && !manifest.ops.categories.is_empty()
+        {
+            {
+                return ok(Value::Array(
+                    manifest
+                        .ops
+                        .categories
+                        .iter()
+                        .map(|category| {
+                            serde_json::json!({ "id": category.id, "name": category.name })
+                        })
+                        .collect(),
+                ));
+            }
+        }
+        // 内置源 / 无静态表的规则源：走 provider。
+        match self.provider(Some(&source_key)) {
+            Ok(provider) => match provider.categories() {
+                Ok(items) => ok(Value::Array(
+                    items
+                        .into_iter()
+                        .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
+                        .collect(),
+                )),
+                Err(e) => Response::err(&e),
+            },
+            Err(e) => Response::err(&e),
+        }
     }
 
     /// 一次取回多页目录并合并（首页续载）。
@@ -814,12 +854,13 @@ impl Engine {
     fn op_follow_list(&self, request: &Request) -> Response {
         let user = current_user(request);
         let follows = drama_store::library::global().follow_list(user);
-        ok(Value::Array(
-            follows
+        // wire 形态 `{items: [...]}`——Dart 侧 `_items()` 统一按 data.items 解包。
+        ok(serde_json::json!({
+            "items": follows
                 .iter()
                 .map(|f| serde_json::to_value(f).unwrap_or_default())
-                .collect(),
-        ))
+                .collect::<Vec<_>>(),
+        }))
     }
 
     fn op_history_put(&self, request: &Request) -> Response {
@@ -827,26 +868,73 @@ impl Engine {
         let Some(key) = str_param(&request.params, "id") else {
             return Response::err(&DramaError::BadRequest("missing id".to_owned()));
         };
+        let episode = request
+            .params
+            .get("episode")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let position_secs = request
+            .params
+            .get("positionSecs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let duration_secs = request
+            .params
+            .get("durationSecs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         let item = drama_store::HistoryItem {
             drama_key: key.to_owned(),
             title: str_param(&request.params, "title").unwrap_or_default().to_owned(),
             cover: str_param(&request.params, "cover").unwrap_or_default().to_owned(),
-            episode: request.params.get("episode").and_then(Value::as_u64).unwrap_or(0) as u32,
-            position_secs: request.params.get("positionSecs").and_then(Value::as_u64).unwrap_or(0),
-            duration_secs: request.params.get("durationSecs").and_then(Value::as_u64).unwrap_or(0),
+            episode,
+            position_secs,
+            duration_secs,
             total_episode: request.params.get("totalEpisode").and_then(Value::as_u64).unwrap_or(0) as u32,
             updated_at_ms: now_ms(),
         };
-        store_result(drama_store::library::global().history_put(user, item).map(|_| Value::Null))
+        let result = drama_store::library::global().history_put(user, item);
+        // 上报进度同时刷新追剧条目的观看位置（追剧页据此显示进度线）。
+        // 历史与追剧是两个表；只写历史会让追剧页停在旧集数。
+        if result.is_ok()
+            && let Some(existing) = drama_store::library::global().follow_get(user, key)
+        {
+            let _ = drama_store::library::global().follow_put(
+                user,
+                drama_store::Follow {
+                    drama_key: existing.drama_key.clone(),
+                    title: existing.title.clone(),
+                    cover: existing.cover.clone(),
+                    episode,
+                    position_secs,
+                    duration_secs,
+                    total_episode: existing.total_episode,
+                    known_episodes: existing.known_episodes.max(episode),
+                    updated_at_ms: now_ms(),
+                },
+            );
+        }
+        store_result(result.map(|_| Value::Null))
     }
 
     fn op_history_get(&self, request: &Request) -> Response {
         let user = current_user(request);
+        // 双形态：带 id → 单条 `{item}`；不带 → 全列表 `{items}`。
+        // Dart 侧 `history()`（列表）与 `resumeFor(id)`（单条）共用本 op。
         let Some(id) = str_param(&request.params, "id") else {
-            return Response::err(&DramaError::BadRequest("missing id".to_owned()));
+            let items: Vec<Value> = drama_store::library::global()
+                .history_list(user)
+                .iter()
+                .map(|h| serde_json::to_value(h).unwrap_or_default())
+                .collect();
+            return ok(serde_json::json!({ "items": items }));
         };
+        // wire 形态 `{item: {...}}`（无记录时 data 为 null）——
+        // Dart 侧 resumeFor 按 data.item 解包。
         match drama_store::library::global().history_get(user, id) {
-            Some(item) => ok(serde_json::to_value(&item).unwrap_or_default()),
+            Some(item) => ok(serde_json::json!({
+                "item": serde_json::to_value(&item).unwrap_or_default(),
+            })),
             None => ok(Value::Null),
         }
     }
@@ -871,13 +959,10 @@ impl Engine {
     }
 
     fn op_search_list(&self, request: &Request) -> Response {
-        ok(Value::Array(
-            drama_store::library::global()
-                .search_list(current_user(request))
-                .into_iter()
-                .map(Value::String)
-                .collect(),
-        ))
+        ok(serde_json::json!({
+            "items": drama_store::library::global()
+                .search_list(current_user(request)),
+        }))
     }
 
     fn op_search_del(&self, request: &Request) -> Response {
@@ -1401,6 +1486,23 @@ mod tests {
     }
 
     #[test]
+    fn follow_roundtrip_with_total_episode() {
+        // 前端 progress_e2e 的参数形态：id + title + totalEpisode，无 source。
+        let _guard = serial();
+        let created = dispatch_ok(
+            "followPut",
+            json!({"id": "d1", "title": "某剧", "episode": 1, "totalEpisode": 80}),
+        );
+        assert_eq!(created, true);
+        let list = dispatch_ok("followList", json!({}));
+        let entries = list["items"].as_array().expect("items");
+        assert_eq!(entries.len(), 1, "entries: {entries:?}");
+        assert_eq!(entries[0]["dramaKey"], "d1");
+        assert_eq!(entries[0]["totalEpisode"], 80);
+        dispatch_ok("followDel", json!({"id": "d1"}));
+    }
+
+    #[test]
     fn follow_roundtrip_through_dispatch() {
         let _guard = serial();
         let data = dispatch_ok(
@@ -1409,7 +1511,7 @@ mod tests {
         );
         assert_eq!(data, true, "首次应是新增");
         let list = dispatch_ok("followList", json!({}));
-        assert!(!list.as_array().expect("list").is_empty());
+        assert!(!list["items"].as_array().expect("items").is_empty());
         dispatch_ok("followDel", json!({"id": "hongguo:1"}));
     }
 
@@ -1422,7 +1524,7 @@ mod tests {
                    "positionSecs": 30, "durationSecs": 120}),
         );
         let item = dispatch_ok("historyGet", json!({"id": "hongguo:2"}));
-        assert_eq!(item["episode"], 5);
+        assert_eq!(item["item"]["episode"], 5);
         dispatch_ok("historyClear", json!({}));
     }
 
@@ -1431,11 +1533,12 @@ mod tests {
         let _guard = serial();
         dispatch_ok("searchHistoryPut", json!({"keyword": "都市"}));
         let list = dispatch_ok("searchHistoryList", json!({}));
-        assert!(list.as_array().expect("list").contains(&json!("都市")));
+        assert!(list["items"].as_array().expect("items").contains(&json!("都市")));
         dispatch_ok("searchHistoryDel", json!({"keyword": "都市"}));
         assert!(dispatch_ok("searchHistoryList", json!({}))
+            ["items"]
             .as_array()
-            .expect("list")
+            .expect("items")
             .is_empty());
     }
 

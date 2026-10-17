@@ -1,3 +1,5 @@
+// `CupertinoPageTransitionsBuilder` 来自 cupertino 库，material 不重新导出它。
+import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
 import '../tokens/app_tokens.dart';

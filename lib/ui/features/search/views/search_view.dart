@@ -12,7 +12,6 @@ import '../../../core/layout/breakpoints.dart';
 import '../../../core/tokens/app_tokens.dart';
 import '../../../core/widgets/app_glass_surface.dart';
 import '../../../core/widgets/lockups.dart';
-import '../../../core/widgets/source_sheet.dart';
 import '../view_models/search_view_model.dart';
 
 /// 搜索：**筛选优先**（对齐 Kazumi，无热门趋势）。
@@ -779,7 +778,10 @@ class _FilterSheetState extends ConsumerState<_FilterSheet> {
                       children: <Widget>[
                         for (final source in sources)
                           _Chip(
-                            label: sourceLabel(source.id),
+                            // 展示名优先 Rust 下发的 name（规则源用它）。
+                            label: source.displayName.isNotEmpty
+                                ? source.displayName
+                                : _sourceLabel(source.id),
                             selected:
                                 (draft.source ?? widget.currentSource) ==
                                 source.id,
@@ -1072,3 +1074,10 @@ class _SearchFilters {
     return list;
   }
 }
+
+/// 源 id → 展示名（Rust 未下发 name 时的兜底）。
+String _sourceLabel(String id) => switch (id) {
+  'hongguo' => '红果',
+  'huangguoai' => '黄果 AI',
+  _ => id,
+};

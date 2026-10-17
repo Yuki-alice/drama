@@ -148,6 +148,7 @@ fn build_envelope(
     match command {
         // 引擎级 op（无参数）。
         "ping" | "ops" | "sources" | "cacheStats" | "diagnostics" | "version" => {}
+        "categories" => {}
         "catalog" => {
             if let Some(category) = opt("category") {
                 params["category"] = json!(category);
@@ -228,6 +229,7 @@ fn print_help() {
                                 分类目录
   search --keyword K            搜索
   suggest --keyword K           搜索联想
+  categories                    源分类列表
   detail --id ID                详情
   episodeGroups --id ID [--group-size N]
                                 选集分组

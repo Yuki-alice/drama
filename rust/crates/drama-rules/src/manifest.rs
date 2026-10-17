@@ -462,10 +462,28 @@ pub struct VariantsSpec {
     pub quality: String,
 }
 
+/// 静态分类表（`categories` op 不发网络，直接返回）。
+///
+/// 为什么是静态而不是运行期抓取：分类导航埋在首页 DOM 里，各站结构
+/// 千差万别（网果是 `/show/{id}---{name}----.html`，韩小圈是 `/hxq/{id}.html`
+/// 带文字在链接外）。为它设计一套声明式解析的成本远高于让作者写死
+/// 一张 6~10 行的表——分类名很少变，变了改规则包重装即可。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StaticCategory {
+    /// 传给 catalog 的分类 id。
+    pub id: String,
+    /// 展示名。
+    pub name: String,
+}
+
 /// 各能力的操作定义。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ops {
+    /// 静态分类表（声明了才有 `categories` 能力）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<StaticCategory>,
     pub catalog: Option<Operation>,
     pub search: Option<Operation>,
     pub suggest: Option<Operation>,

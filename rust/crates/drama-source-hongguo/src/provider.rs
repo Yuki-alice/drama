@@ -333,14 +333,18 @@ impl SourceProvider for HongguoProvider {
         // 分类目录走**网页 SSR**：免签、稳定、分页清晰。
         // App 目录接口带会话游标，适合「整库拉取」这类后台任务，
         // 浏览场景没必要引入那套状态机。
+        // 三种形态都接受：
+        // - 空 = 默认（真人剧）；
+        // - App 分类 key（`short_play` 等，App 目录链路用）；
+        // - SSR 路由名（`real-drama` 等，Dart 侧历史口径 + categories op）。
         let route = if category.is_empty() {
             "real-drama"
+        } else if GENRES.iter().any(|(key, _, _)| *key == category) {
+            ssr_route_for(category)
+        } else if ["real-drama", "comic-drama", "ai-drama", "comic"].contains(&category) {
+            category
         } else {
-            GENRES
-                .iter()
-                .find(|(key, _, _)| *key == category)
-                .map(|(_, _, _)| ssr_route_for(category))
-                .ok_or_else(|| drama_types::DramaError::BadRequest("红果分类无效".to_owned()))?
+            return Err(drama_types::DramaError::BadRequest("红果分类无效".to_owned()));
         };
         let url = if page == 0 {
             format!("{WEB_BASE}/category/{route}")

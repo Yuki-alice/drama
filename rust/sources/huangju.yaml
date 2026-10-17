@@ -23,6 +23,8 @@ auth:
     cache_ttl_s: 21600
     header: "Authorization: Bearer {{token}}"
 ops:
+  categories:
+    - { id: "", name: "全部" }
   catalog:
     request:
       url: "{{base}}/dramas?page={{page}}&pageSize=20"

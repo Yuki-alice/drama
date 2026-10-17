@@ -11,9 +11,11 @@ caps:
   detail: true
   playback: true
 ops:
+  categories:
+    - { id: "27", name: "短剧" }
   catalog:
     request:
-      url: "{{base}}/"
+      url: "{{base}}/zywtype/{{category}}-{{page}}.html"
     items: "css:[class*='vodlist__item']"
     map:
       id:

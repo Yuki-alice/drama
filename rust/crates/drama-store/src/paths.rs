@@ -47,8 +47,12 @@ impl DataDirs {
         self.data_dir.join("catalogs.json")
     }
 
+    /// 追剧与进度存储。
+    ///
+    /// 文件名沿用前端 e2e 测试与历史版本写入的 `progress.json`
+    /// （改名会让老用户升级后丢追剧，不值得）。
     pub fn library_file(&self) -> PathBuf {
-        self.data_dir.join("library.json")
+        self.data_dir.join("progress.json")
     }
 
     pub fn settings_file(&self) -> PathBuf {

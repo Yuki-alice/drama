@@ -11,9 +11,19 @@ caps:
   detail: true
   playback: true
 ops:
+  # 静态分类表：网果的分类 id 全是 26，**靠分类名区分**；
+  # URL 形态 /show/{id}---{urlencode(name)}--------.html，
+  # 翻页是 …--{page}---.html。这里 id 存的是**URL 编码名**（模板直拼），
+  # name 是展示名。
+  categories:
+    - { id: "%E7%9F%AD%E5%89%A7", name: "短剧" }
+    - { id: "%E7%8E%B0%E4%BB%A3%E9%83%BD%E5%B8%82", name: "现代都市" }
+    - { id: "%E5%A5%B3%E9%A2%91%E6%81%8B%E7%88%B1", name: "女频恋爱" }
+    - { id: "%E5%B9%B4%E4%BB%A3%E7%A9%BF%E8%B6%8A", name: "年代穿越" }
+    - { id: "%E5%8F%8D%E8%BD%AC%E7%88%BD", name: "反转爽" }
   catalog:
     request:
-      url: "{{base}}/show/duanju-----------.html"
+      url: "{{base}}/show/26---{{category}}-----{{page}}---.html"
     items: "css:article.post"
     map:
       id:

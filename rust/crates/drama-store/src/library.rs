@@ -38,7 +38,11 @@ fn now_ms() -> i64 {
 }
 
 /// 追剧条目。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// `Serialize` 手写：Dart 侧读 `id` 与 `source` 两个字段，
+/// 而内部存储用单一 `dramaKey`（`{source}:{source_id}`）——
+/// 序列化时拆开，反序列化时（缓存回读不需要）走 derive 形态。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Follow {
     /// `{source}:{source_id}`。
@@ -69,8 +73,31 @@ impl Follow {
     }
 }
 
-/// 历史条目。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+impl Serialize for Follow {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let (source, source_id) = self
+            .drama_key
+            .split_once(':')
+            .unwrap_or(("", self.drama_key.as_str()));
+        let mut map = serializer.serialize_map(Some(9))?;
+        map.serialize_entry("id", source_id)?;
+        map.serialize_entry("source", source)?;
+        map.serialize_entry("dramaKey", &self.drama_key)?;
+        map.serialize_entry("title", &self.title)?;
+        map.serialize_entry("cover", &self.cover)?;
+        map.serialize_entry("episode", &self.episode)?;
+        map.serialize_entry("positionSecs", &self.position_secs)?;
+        map.serialize_entry("durationSecs", &self.duration_secs)?;
+        map.serialize_entry("totalEpisode", &self.total_episode)?;
+        map.serialize_entry("knownEpisodes", &self.known_episodes)?;
+        map.serialize_entry("updatedAtMs", &self.updated_at_ms)?;
+        map.end()
+    }
+}
+
+/// 历史条目（wire 序列化同 [`Follow`]：`dramaKey` 拆成 `id` + `source`）。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
     pub drama_key: String,
@@ -85,6 +112,28 @@ pub struct HistoryItem {
     #[serde(default)]
     pub total_episode: u32,
     pub updated_at_ms: i64,
+}
+
+impl Serialize for HistoryItem {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let (source, source_id) = self
+            .drama_key
+            .split_once(':')
+            .unwrap_or(("", self.drama_key.as_str()));
+        let mut map = serializer.serialize_map(Some(8))?;
+        map.serialize_entry("id", source_id)?;
+        map.serialize_entry("source", source)?;
+        map.serialize_entry("dramaKey", &self.drama_key)?;
+        map.serialize_entry("title", &self.title)?;
+        map.serialize_entry("cover", &self.cover)?;
+        map.serialize_entry("episode", &self.episode)?;
+        map.serialize_entry("positionSecs", &self.position_secs)?;
+        map.serialize_entry("durationSecs", &self.duration_secs)?;
+        map.serialize_entry("totalEpisode", &self.total_episode)?;
+        map.serialize_entry("updatedAtMs", &self.updated_at_ms)?;
+        map.end()
+    }
 }
 
 impl HistoryItem {
@@ -215,6 +264,18 @@ impl Library {
             self.flush_inner()?;
         }
         Ok(removed)
+    }
+
+    /// 读单条追剧（无则 `None`）。
+    pub fn follow_get(&self, user: &str, drama_key: &str) -> Option<Follow> {
+        self.inner
+            .lock()
+            .expect("library poisoned")
+            .snapshot
+            .follows
+            .get(user)?
+            .get(drama_key)
+            .cloned()
     }
 
     /// 追剧列表（按更新时间降序）。

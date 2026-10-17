@@ -11,9 +11,14 @@ caps:
   detail: true
   playback: true
 ops:
+  categories:
+    - { id: "1", name: "韩剧" }
+    - { id: "2", name: "韩国电影" }
+    - { id: "4", name: "韩国动漫" }
   catalog:
     request:
-      url: "{{base}}/hxq/{{page}}.html"
+      url: "{{base}}/hxq/{{category}}-{{page}}.html"
+      # 翻页实测 /hxq/1-2.html（首页 -0，页 2 起）
     items: "css:.module-item"
     map:
       id:
