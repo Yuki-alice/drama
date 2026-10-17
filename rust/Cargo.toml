@@ -92,3 +92,6 @@ todo = "warn"
 # 真正的禁令是 `unwrap()`：它连错误信息都没有。
 unwrap_used = "warn"
 expect_used = "allow"
+# 测试代码里 `unwrap()` / `unwrap_err()` 是标准写法（断言失败即失败），不适用上述禁令。
+field_reassign_with_default = "allow"
+

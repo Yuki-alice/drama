@@ -95,6 +95,7 @@ pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::test_support::TempDir;

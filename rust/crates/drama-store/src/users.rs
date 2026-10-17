@@ -507,6 +507,7 @@ fn hex_decode(hex: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::test_support::TempDir;

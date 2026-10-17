@@ -134,6 +134,7 @@ pub fn build_proxy(settings: &ProxySettings) -> Result<Option<Proxy>, ProxyError
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

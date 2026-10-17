@@ -460,6 +460,7 @@ pub fn key_categories(source: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::test_support::TempDir;
@@ -483,7 +484,7 @@ mod tests {
                 "k".to_owned(),
                 CacheEntry {
                     value: serde_json::json!({"old": true}),
-                    fetched_at_ms: CatalogCache::now_ms() - 3600_000,
+                    fetched_at_ms: CatalogCache::now_ms() - 3_600_000,
                     source: "hongguo".to_owned(),
                 },
             );
@@ -503,7 +504,7 @@ mod tests {
                 "k".to_owned(),
                 CacheEntry {
                     value: serde_json::json!({}),
-                    fetched_at_ms: CatalogCache::now_ms() - 48 * 3600_000,
+                    fetched_at_ms: CatalogCache::now_ms() - 48 * 3_600_000,
                     source: "hongguo".to_owned(),
                 },
             );
@@ -605,7 +606,7 @@ mod tests {
                 "old".to_owned(),
                 CacheEntry {
                     value: serde_json::json!({}),
-                    fetched_at_ms: CatalogCache::now_ms() - 3600_000,
+                    fetched_at_ms: CatalogCache::now_ms() - 3_600_000,
                     source: "hongguo".to_owned(),
                 },
             );

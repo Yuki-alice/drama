@@ -151,6 +151,7 @@ pub fn fill_random(buf: &mut [u8]) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;

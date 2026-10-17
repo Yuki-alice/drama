@@ -44,6 +44,7 @@ pub fn is_numeric_id(s: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

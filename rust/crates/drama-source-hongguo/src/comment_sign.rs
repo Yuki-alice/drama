@@ -82,12 +82,12 @@ pub fn sign_comment_request(
         box_[i] = box_[j as usize];
     }
     j = 0;
-    for offset in 0..20 {
+    for (offset, slot) in seed.iter_mut().enumerate() {
         let i = (offset + 1) as u8;
         j = j.wrapping_add(box_[i as usize]);
         box_[i as usize] = box_[j as usize];
         let idx = box_[i as usize].wrapping_add(box_[j as usize]);
-        seed[offset] ^= box_[idx as usize];
+        *slot ^= box_[idx as usize];
     }
     for i in 0..seed.len() {
         let mixed = seed[i].rotate_left(4) ^ seed[(i + 1) % seed.len()];
@@ -389,6 +389,7 @@ fn hex_decode(hex: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -130,6 +130,7 @@ pub fn new_device_id(random_u64: u64) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

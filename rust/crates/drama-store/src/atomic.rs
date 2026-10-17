@@ -176,6 +176,7 @@ pub fn cleanup_temp_files(dir: &Path, older_than: std::time::Duration) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::test_support::TempDir;

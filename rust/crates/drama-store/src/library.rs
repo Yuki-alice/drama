@@ -226,7 +226,7 @@ impl Library {
             .get(user)
             .map(|b| b.values().cloned().collect())
             .unwrap_or_default();
-        items.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+        items.sort_by_key(|f| std::cmp::Reverse(f.updated_at_ms));
         items
     }
 
@@ -433,6 +433,7 @@ fn merge_follow(existing: &Follow, incoming: &Follow) -> Follow {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::test_support::TempDir;

@@ -322,6 +322,7 @@ pub type Envelope = Response;
 pub type OpName = str;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

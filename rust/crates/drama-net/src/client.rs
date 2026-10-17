@@ -593,6 +593,7 @@ pub fn host_last_seen() -> HashMap<String, Instant> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

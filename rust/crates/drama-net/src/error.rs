@@ -82,6 +82,7 @@ impl fmt::Display for HttpError {
 impl std::error::Error for HttpError {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

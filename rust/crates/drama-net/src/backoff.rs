@@ -147,6 +147,7 @@ pub fn parse_retry_after(value: &str) -> Option<Duration> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
