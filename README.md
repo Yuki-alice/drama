@@ -19,7 +19,21 @@ Flutter 只做渲染，Rust 做引擎。红果为**唯一内置源**，其余源
 | `drama-net` | 全工程唯一出网点：限流、退避、代理、超时、取消 |
 | `drama-store` | 原子写（含目录 fsync）、目录缓存、追剧进度、设置 |
 | `drama-source-hongguo` | 红果主源：Gorgon/注释签名、SSR、三级取流、弹幕 |
-| `drama-rules` | 规则扩展源：清单 schema、模板、取值、过滤器、校验、安装、执行 |
+| `drama-rules` | 规则扩展源：清单 schema、模板、JSON/CSS/正则取值、过滤器、cookie jar、校验、安装、执行 |
+
+已交付规则包（`rust/sources/`，全部实网验证）：
+
+| 包 | 协议 | 状态 |
+|---|---|---|
+| `wangguo.yaml` 网果 | MacCMS HTML（`player_aaaa`） | 目录 24 / 取流 ✓ |
+| `huaguo.yaml` 花果 | MacCMS HTML（页面内 m3u8） | 目录 36 / 取流 ✓ |
+| `wuguo.yaml` 伍果 | MacCMS HTML | 目录 24 / 取流 ✓ |
+| `hanxiaoquan.yaml` 韩小圈 | MacCMS HTML | 目录 36 / 取流 ✓ |
+| `huangju.yaml` 剧果 | REST JSON + 登录 token + cookie jar | 目录 20 / 取流 ✓ |
+| `huangguoai.yaml` 黄果AI | 脚本内 JSON（`::json:` 语法） | 目录 20 / 分集取流 ✓ |
+
+未实现：帝果（AAencode 算术求值器）、野果（JS chunk 抓密钥）——均需内置 codec，
+按你的决定跳过。其余站源大多已下线或需要 TLS 指纹/加密信封（见架构文档第七节）。
 | `drama-gateway` | 本机回环代理：媒体、CENC 解密、封面签名 |
 | `drama-download` | 分段续传、索引持久化、本地播放计划 |
 | `drama-engine` | 源注册、op 调度、缓存策略、会话仲裁 |
