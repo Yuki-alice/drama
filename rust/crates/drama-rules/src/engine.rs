@@ -71,6 +71,23 @@ impl From<RuleError> for DramaError {
     }
 }
 
+/// 一个待映射的条目。
+///
+/// 三种上下文对应三类站源：
+/// - `Json`：REST API 的一行记录；
+/// - `Element`：HTML 列表里的一个卡片（**元素级取值**，MacCMS 主要形态）；
+/// - `Document`：整篇文档（详情页只有一条记录，或裸文本页面）。
+///
+/// `Element` 持有**元素序列化后的小文档**而不是 `ElementRef`：
+/// `ElementRef` 借用了整篇文档，跨函数返回值会因生命周期而不可用；
+/// 每卡片几百字节的序列化开销，远小于为此把文档搬来搬去的复杂度。
+#[derive(Debug, Clone)]
+enum Item {
+    Json(serde_json::Value),
+    Element(Html),
+    Document(Html),
+}
+
 /// 请求时注入的运行期变量。
 #[derive(Debug, Clone, Default)]
 pub struct RequestContext<'a> {
@@ -105,6 +122,10 @@ pub struct RuleEngine {
     base_url: url::Url,
     /// 登录 token 缓存：`(值, 过期时刻毫秒)`。
     token_cache: std::sync::Mutex<Option<(String, i64)>>,
+    /// 跨请求 cookie（`cookie_jar: on` 时生效）。
+    cookies: drama_net::CookieJar,
+    /// 最近一次取流拿到的 cookie（交给网关去回源媒体）。
+    media_cookies: std::sync::Mutex<Option<String>>,
 }
 
 impl RuleEngine {
@@ -117,11 +138,24 @@ impl RuleEngine {
             manifest,
             base_url,
             token_cache: std::sync::Mutex::new(None),
+            cookies: drama_net::CookieJar::new(),
+            media_cookies: std::sync::Mutex::new(None),
         })
     }
 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// 取流时捕获到的 cookie（供网关回源时带上）。
+    ///
+    /// 只有声明了 `cookie_jar: on` 的源才有值；剧果的 CloudFront
+    /// 签名就靠这条链路传给媒体请求。
+    pub fn media_cookie(&self) -> Option<String> {
+        self.media_cookies
+            .lock()
+            .expect("media cookies poisoned")
+            .clone()
     }
 
     /// 渲染模板：静态变量 + 运行期变量 + base。
@@ -235,61 +269,89 @@ impl RuleEngine {
         let mut extra_query = Vec::new();
         let auth_headers = self.apply_auth(&mut extra_query)?;
         let url = append_query(&url, &extra_query);
-        let out_spec = build_spec(spec, &url, auth_headers, &self.manifest).map_err(|e| RuleError::Request(e.to_string()))?;
-        let body = drama_net::fetch_text(out_spec).map_err(|e| RuleError::Request(e.to_string()))?;
-        let content_type = String::new();
-        Ok((body, content_type))
+        let mut headers = auth_headers;
+        // cookie 罐开启时：把已有 cookie 带上。
+        if self.manifest.cookie_jar == crate::manifest::CookieJar::On
+            && let Some(cookie) = self.cookies.header_value()
+        {
+            headers.push(("Cookie".to_owned(), cookie));
+        }
+        let out_spec = build_spec(spec, &url, headers, &self.manifest)
+            .map_err(|e| RuleError::Request(e.to_string()))?;
+        let response =
+            drama_net::client::client().execute(out_spec).map_err(|e| RuleError::Request(e.to_string()))?;
+        // 吸收新下发的 cookie。
+        if self.manifest.cookie_jar == crate::manifest::CookieJar::On && !response.set_cookies.is_empty()
+        {
+            self.cookies.absorb(&response.set_cookies);
+            // 取流请求的 cookie 要交给网关（媒体请求在另一条链上）。
+            if let Some(cookie) = self.cookies.header_value() {
+                *self.media_cookies.lock().expect("media cookies poisoned") = Some(cookie);
+            }
+        }
+        Ok((response.text(), response.content_type))
     }
 
     /// 从响应提取条目列表。
-    fn extract_items(
-        &self,
-        op: &Operation,
-        body: &str,
-    ) -> Result<Vec<serde_json::Value>, RuleError> {
+    ///
+    /// 返回 [`Item`] 而不是裸 `Value`：HTML 源的字段必须**在元素上下文里**取值
+    /// （同一个 `.title` 选择器在每个卡片里指向不同文字），
+    /// 只传一个 JSON 值做不到这件事。
+    fn extract_items(&self, op: &Operation, body: &str) -> Result<Vec<Item>, RuleError> {
         // `items` 为空 = 整个响应就是单条（detail 常见形态）。
         if op.items.is_empty() {
-            let value: serde_json::Value = serde_json::from_str(body)
-                .map_err(|e| RuleError::Parse(format!("响应不是有效 JSON: {e}")))?;
-            return Ok(vec![value]);
+            // 详情页可能是 JSON 也可能是 HTML：按首个非空白字符判断。
+            if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
+                let value: serde_json::Value = serde_json::from_str(body)
+                    .map_err(|e| RuleError::Parse(format!("响应不是有效 JSON: {e}")))?;
+                return Ok(vec![Item::Json(value)]);
+            }
+            return Ok(vec![Item::Document(Html::parse_document(body))]);
         }
-        if op.items.starts_with("css:") {
-            // HTML 条目：把每个元素序列化成有限的 JSON 表示。
+        if op.items.starts_with("css:") || op.items.starts_with("html:") {
             let document = Html::parse_document(body);
             let elements = extract::items_from_html(&document, &op.items)
                 .map_err(|e| RuleError::Parse(e.to_string()))?;
-            // HTML 条目在字段映射阶段直接走元素取值；这里占位为索引。
-            Ok(elements
+            // 每个元素单独序列化成小文档：后续字段取值都在自己的卡片里找，
+            // 不会误取到隔壁卡片的标题。
+            return Ok(elements
                 .into_iter()
-                .enumerate()
-                .map(|(i, _)| serde_json::json!({ "__html_index": i }))
-                .collect())
-        } else {
-            let value: serde_json::Value = serde_json::from_str(body)
-                .map_err(|e| RuleError::Parse(format!("响应不是有效 JSON: {e}")))?;
-            let items = extract::json_array(&value, &op.items)
-                .ok_or_else(|| RuleError::NoItems(op.items.clone()))?;
-            Ok(items.to_vec())
+                .map(|element| Item::Element(Html::parse_fragment(&element.html())))
+                .collect());
         }
+        let value: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| RuleError::Parse(format!("响应不是有效 JSON: {e}")))?;
+        let items = extract::json_array(&value, &op.items)
+            .ok_or_else(|| RuleError::NoItems(op.items.clone()))?;
+        Ok(items.iter().cloned().map(Item::Json).collect())
     }
 
     /// 字段映射：条目 → Drama。
+    ///
+    /// `from` 表达式的两种语义：
+    /// - 元素/文档上下文（HTML 源）：无 `@` 时按 CSS 选择器取文本，
+    ///   `sel@attr` 取属性，`regex(...)` 取正则组；
+    /// - JSON 上下文：点路径，支持 `|` 别名回退。
     fn map_drama(
         &self,
         op: &Operation,
-        item: &serde_json::Value,
-        html: Option<&Html>,
-        element_index: Option<usize>,
+        item: &Item,
+        ctx: &RequestContext<'_>,
     ) -> Result<Drama, RuleError> {
         let get = |expr: &str| -> Option<String> {
-            match (html, element_index) {
-                (Some(document), _) => {
-                    // HTML 条目：`css:...` 或 `a@attr` 从整篇文档取第一个匹配
-                    // （真正的逐条目取值需要元素级上下文，见 `map_drama_from_element`）。
-                    let _ = document;
-                    None
+            // `{{id}}` 这类模板：详情页的 id 就是请求参数，不在响应里。
+            // 渲染后若不再含 `{{`，说明它是纯模板，直接返回渲染结果。
+            if expr.contains("{{") {
+                let rendered = self.render(expr, ctx);
+                if !rendered.contains("{{") {
+                    return Some(rendered);
                 }
-                _ => extract::value_from_json(item, expr),
+            }
+            match item {
+                Item::Json(value) => extract::value_from_json(value, expr),
+                Item::Element(document) | Item::Document(document) => {
+                    extract::value_from_document(document, expr, Some(&self.base_url))
+                }
             }
         };
         let field = |name: &str| -> String {
@@ -301,11 +363,7 @@ impl RuleEngine {
                             .unwrap_or_default()
                     })
                 })
-                .or_else(|| {
-                    op.map
-                        .get(name)
-                        .map(|m| m.default.clone())
-                })
+                .or_else(|| op.map.get(name).map(|m| m.default.clone()))
                 .unwrap_or_default()
         };
 
@@ -338,6 +396,29 @@ impl RuleEngine {
             },
             metric: field("metric"),
         })
+    }
+
+    /// 提取分集列表（JSON 或 HTML）。
+    fn extract_chapters(
+        &self,
+        chapters: &crate::manifest::ChapterSpec,
+        body: &str,
+    ) -> Result<Vec<Item>, RuleError> {
+        if chapters.items.starts_with("css:") || chapters.items.starts_with("html:") {
+            let document = Html::parse_document(body);
+            let elements = extract::items_from_html(&document, &chapters.items)
+                .map_err(|e| RuleError::Parse(e.to_string()))?;
+            return Ok(elements
+                .into_iter()
+                .map(|element| Item::Element(Html::parse_fragment(&element.html())))
+                .collect());
+        }
+        let value: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| RuleError::Parse(format!("分集响应不是有效 JSON: {e}")))?;
+        let rows = extract::json_array(&value, &chapters.items).ok_or_else(|| {
+            RuleError::Parse(format!("分集列表 {} 不存在", chapters.items))
+        })?;
+        Ok(rows.iter().cloned().map(Item::Json).collect())
     }
 
     /// 判断分页是否还有下一页。
@@ -406,13 +487,8 @@ impl SourceProvider for RuleEngine {
         let (body, _) = self.fetch(&op.request, &ctx)?;
         let items = self.extract_items(&op, &body)?;
         let mut dramas = Vec::with_capacity(items.len());
-        let html = if op.items.starts_with("css:") {
-            Some(Html::parse_document(&body))
-        } else {
-            None
-        };
-        for (index, item) in items.iter().enumerate() {
-            match self.map_drama(&op, item, html.as_ref(), Some(index)) {
+        for item in &items {
+            match self.map_drama(&op, item, &ctx) {
                 Ok(drama) => dramas.push(drama),
                 // 单条失败不影响整页。
                 Err(RuleError::NoItems(_)) => continue,
@@ -444,7 +520,7 @@ impl SourceProvider for RuleEngine {
         let items = self.extract_items(&op, &body)?;
         let mut dramas = Vec::with_capacity(items.len());
         for item in &items {
-            match self.map_drama(&op, item, None, None) {
+            match self.map_drama(&op, item, &ctx) {
                 Ok(drama) => dramas.push(drama),
                 Err(RuleError::NoItems(_)) => continue,
                 Err(e) => return Err(e.into()),
@@ -475,9 +551,7 @@ impl SourceProvider for RuleEngine {
         let item = items
             .first()
             .ok_or_else(|| DramaError::NotFound(format!("未找到剧集 {series_id}")))?;
-        let mut drama = self
-            .map_drama(&op, item, None, None)
-            .map_err(DramaError::from)?;
+        let mut drama = self.map_drama(&op, item, &ctx).map_err(DramaError::from)?;
         // 身份校验：站点在拿不到目标时会给「默认推荐」。
         if op.identity_check && drama.id.source_id != series_id {
             return Err(DramaError::Parse(format!(
@@ -494,25 +568,50 @@ impl SourceProvider for RuleEngine {
             .chapters
             .as_ref()
             .ok_or(DramaError::Unsupported("detail.chapters"))?;
-        let value: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| DramaError::Parse(format!("响应不是有效 JSON: {e}")))?;
-        let rows = extract::json_array(&value, &chapters.items)
-            .ok_or_else(|| DramaError::Parse(format!("分集列表 {} 不存在", chapters.items)))?;
-        let episodes = rows
+        // 分集同样支持 JSON 与 HTML（MacCMS 的分集是 `<a>` 列表）。
+        let chapter_items = self.extract_chapters(chapters, &body)?;
+        let episodes = chapter_items
             .iter()
             .enumerate()
-            .map(|(index, row)| {
-                let vid = extract::json_string(row, &chapters.vid).unwrap_or_default();
-                let url = extract::json_string(row, &chapters.url).unwrap_or_default();
-                let number = extract::json_int(row, &chapters.index)
-                    .map(|n| n.max(0) as u32)
+            .map(|(index, item)| {
+                let get = |spec: &crate::manifest::FieldSpec| -> Option<String> {
+                    let expr = spec.from_expr();
+                    if expr.is_empty() {
+                        return None;
+                    }
+                    let raw = match item {
+                        Item::Json(value) => extract::value_from_json(value, expr),
+                        Item::Element(document) | Item::Document(document) => {
+                            extract::value_from_document(document, expr, Some(&self.base_url))
+                        }
+                    }?;
+                    // 分集字段同样应用过滤器（`re:` 常在 filters 里）。
+                    let filters = spec.filters();
+                    if filters.is_empty() {
+                        Some(raw)
+                    } else {
+                        Some(
+                            transform::apply_chain(&raw, filters, Some(&self.base_url))
+                                .unwrap_or(raw),
+                        )
+                    }
+                };
+                let vid = get(&chapters.vid).unwrap_or_default();
+                let url = get(&chapters.url).unwrap_or_default();
+                let number = get(&chapters.index)
+                    .and_then(|text| text.trim().parse::<u32>().ok())
+                    .filter(|n| *n > 0)
                     .unwrap_or(index as u32 + 1);
                 Episode {
                     index: number,
-                    title: template::render(
-                        &chapters.title_template,
-                        &[("index", number.to_string().as_str())],
-                    ),
+                    title: if chapters.title_template.is_empty() {
+                        format!("第{number}集")
+                    } else {
+                        template::render(
+                            &chapters.title_template,
+                            &[("index", number.to_string().as_str())],
+                        )
+                    },
                     vid: if vid.is_empty() { None } else { Some(vid) },
                     duration_seconds: 0,
                     locked: false,
@@ -547,24 +646,58 @@ impl SourceProvider for RuleEngine {
             category: "",
         };
         let (body, _) = self.fetch(spec, &ctx)?;
-        let value: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| DramaError::Parse(format!("取流响应不是有效 JSON: {e}")))?;
 
-        let url = match &playback.extract {
-            Some(crate::manifest::Extract::Json { path }) => {
-                extract::json_string(&value, path).ok_or_else(|| {
-                    DramaError::Parse(format!("取流地址 {path} 不存在"))
-                })?
-            }
-            _ => return Err(DramaError::Unsupported("playback.extract")),
+        // 取流响应可能是 JSON，也可能是 HTML（Mplayer/player_aaaa 嵌在页面里）。
+        // 按内容判断而不是按配置猜——站点经常两种都返回。
+        let trimmed = body.trim_start();
+        let (value, document) = if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            let value: serde_json::Value = serde_json::from_str(&body)
+                .map_err(|e| DramaError::Parse(format!("取流响应不是有效 JSON: {e}")))?;
+            (Some(value), None)
+        } else {
+            (None, Some(Html::parse_document(&body)))
         };
+
+        // `extract` 支持三种写法：JSON 点路径 / `re:` 正则 / `css:` 选择器。
+        let url = match &playback.extract {
+            Some(crate::manifest::Extract::Json { path }) => match (&value, &document) {
+                (Some(value), _) => extract::json_string(value, path),
+                (None, Some(document)) => {
+                    extract::value_from_document(document, path, Some(&self.base_url))
+                }
+                _ => None,
+            },
+            Some(crate::manifest::Extract::Regex { pattern, group }) => {
+                extract::value_from_document(
+                    document.as_ref().unwrap_or(&Html::parse_document("")),
+                    &format!("re:{pattern}:{group}"),
+                    Some(&self.base_url),
+                )
+            }
+            Some(crate::manifest::Extract::Html { css }) => document
+                .as_ref()
+                .and_then(|d| extract::value_from_document(d, &format!("css:{css}"), Some(&self.base_url))),
+            Some(crate::manifest::Extract::HtmlAttr { css, attr }) => document.as_ref().and_then(|d| {
+                extract::value_from_document(d, &format!("css:{css}@{attr}"), Some(&self.base_url))
+            }),
+            Some(crate::manifest::Extract::Text) => Some(body.clone()),
+            None => return Err(DramaError::Unsupported("playback.extract")),
+        }
+        .ok_or_else(|| DramaError::Parse("取流地址不存在或格式已变化".to_owned()))?;
+
+        // 清洗：站源常把地址嵌在 JS 字符串里（`https:\/\/…`）或带上尾随标点。
+        let url = clean_media_url(&url);
         if !url.starts_with("http") {
-            return Err(DramaError::Parse("取流地址不是 http(s)".to_owned()));
+            return Err(DramaError::Parse(format!(
+                "取流地址不是 http(s): {}",
+                truncate_for_message(&url)
+            )));
         }
 
         let mut variants = Vec::new();
         if let Some(variants_spec) = &playback.variants
-            && let Some(rows) = extract::json_array(&value, &variants_spec.path)
+            && let Some(value) = &value
+            && let Some(rows) = extract::json_array(value, &variants_spec.path)
         {
             for row in rows {
                 let Some(variant_url) = extract::json_string(row, &variants_spec.url) else {
@@ -572,7 +705,7 @@ impl SourceProvider for RuleEngine {
                 };
                 let quality = extract::json_int(row, &variants_spec.quality).unwrap_or(0);
                 variants.push(Variant {
-                    url: variant_url,
+                    url: clean_media_url(&variant_url),
                     quality: quality.max(0),
                     encrypted: false,
                 });
@@ -604,6 +737,36 @@ impl SourceProvider for RuleEngine {
 }
 
 // ── 辅助 ────────────────────────────────────────────────────
+
+/// 清洗媒体地址。
+///
+/// 真实站源里出现过的脏数据：
+/// - `https:\\/\\/host\\/path`（JSON/JS 转义）；
+/// - `https://…/index.m3u8,`（尾随逗号，正则贪婪匹配带出来的）；
+/// - `"https://…"`（残留引号）；
+/// - 前后空白。
+///
+/// 这些交给播放器就是「黑屏无错」，必须在这里清干净。
+fn clean_media_url(raw: &str) -> String {
+    let mut value = extract::unescape_js_string(raw.trim());
+    value = value.trim().to_owned();
+    // 去掉包裹的引号/反斜杠。
+    value = value.trim_matches(|c| c == '"' || c == '\\').trim().to_owned();
+    // 从第一个 `http` 起截断，丢掉前面可能的 `url":"` 之类残留。
+    if let Some(start) = value.find("http") {
+        value = value[start..].to_owned();
+    }
+    // 尾随标点。
+    while value.ends_with([',', ';', ')', '"', '\'', '>', '}']) {
+        value.pop();
+    }
+    value
+}
+
+/// 错误信息里截断长地址（避免把带签名的 URL 全打出来）。
+fn truncate_for_message(value: &str) -> String {
+    value.chars().take(120).collect()
+}
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -737,6 +900,22 @@ fn build_spec(
         Method::Get => drama_net::RequestSpec::get(url, manifest.id.clone()),
         Method::Post => drama_net::RequestSpec::post(url, manifest.id.clone()),
     };
+    // 有 body 就必须有 Content-Type：很多站（剧果就是）对缺失的请求
+    // 直接返回 415，而报错信息里看不出是 header 的问题。
+    if let Some(body) = &spec.body
+        && !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        let content_type = if body.trim_start().starts_with('{')
+            || body.trim_start().starts_with('[')
+        {
+            "application/json"
+        } else {
+            "application/x-www-form-urlencoded"
+        };
+        headers.push(("Content-Type".to_owned(), content_type.to_owned()));
+    }
     let mut out = base.headers_vec(headers).timeout(timeout);
     if let Some(body) = &spec.body {
         out = out.body(template::render(body, &[("base", manifest.base.as_str())]).into_bytes());

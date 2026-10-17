@@ -14,6 +14,7 @@
 //! 但不保证立刻中断对端 socket。
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
@@ -213,6 +214,8 @@ pub struct ResponseBody {
     /// 跟随重定向后的最终地址（HLS 相对路径要基于它解析）。
     pub final_url: String,
     pub content_type: String,
+    /// 本次响应下发的 `Set-Cookie`（剧果的 CloudFront 签名靠它）。
+    pub set_cookies: Vec<String>,
 }
 
 impl ResponseBody {
@@ -414,6 +417,14 @@ impl HttpClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_owned();
+        // 先抓 `Set-Cookie` 再消费 body。
+        let set_cookies: Vec<String> = response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .collect();
         let bytes = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
         if !(200..300).contains(&status) {
             return Err(HttpError::status(
@@ -426,6 +437,7 @@ impl HttpClient {
             bytes,
             final_url,
             content_type,
+            set_cookies,
         })
     }
 
@@ -514,6 +526,74 @@ pub fn download_client() -> &'static reqwest::Client {
             .expect("build download client")
     });
     &CLIENT
+}
+
+/// 简单的 cookie 罐。
+///
+/// 只做**域匹配 + 覆盖**，不做 RFC 6265 的完整语义（过期/路径/HttpOnly）——
+/// 我们要的场景很窄：从 `/play/{id}` 的 `Set-Cookie` 里拿到 CloudFront
+/// 签名三件套，再原样带到媒体请求上。完整 cookie 引擎在这里是过度设计。
+#[derive(Debug, Default)]
+pub struct CookieJar {
+    /// `(名字, 值)`，按插入顺序。
+    cookies: Mutex<Vec<(String, String)>>,
+}
+
+impl CookieJar {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 从 `Set-Cookie` 头解析并存入（同名覆盖）。
+    ///
+    /// 只取 `name=value` 部分；`Domain`/`Path`/`Expires` 等属性丢弃——
+    /// 我们的使用场景里 cookie 只回发给同一个 host。
+    pub fn absorb(&self, set_cookie_values: &[String]) {
+        let mut guard = self.cookies.lock().expect("cookie jar poisoned");
+        for raw in set_cookie_values {
+            let Some(pair) = raw.split(';').next() else {
+                continue;
+            };
+            let Some((name, value)) = pair.split_once('=') else {
+                continue;
+            };
+            let name = name.trim();
+            let value = value.trim();
+            if name.is_empty() {
+                continue;
+            }
+            guard.retain(|(existing, _)| existing != name);
+            guard.push((name.to_owned(), value.to_owned()));
+        }
+    }
+
+    /// 拼成 `Cookie:` 头的值；空罐返回 `None`。
+    pub fn header_value(&self) -> Option<String> {
+        let guard = self.cookies.lock().expect("cookie jar poisoned");
+        if guard.is_empty() {
+            return None;
+        }
+        Some(
+            guard
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+
+    /// 条目数（诊断用）。
+    pub fn len(&self) -> usize {
+        self.cookies.lock().expect("cookie jar poisoned").len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn clear(&self) {
+        self.cookies.lock().expect("cookie jar poisoned").clear();
+    }
 }
 
 /// 提取 host（用于冷却表 key）。
@@ -678,6 +758,7 @@ mod tests {
             bytes: vec![0x61, 0xff, 0x62],
             final_url: String::new(),
             content_type: String::new(),
+            set_cookies: Vec::new(),
         };
         // 非法字节被替换，不 panic。
         assert!(body.text().contains('a'));
@@ -691,6 +772,7 @@ mod tests {
             bytes: b"{not json".to_vec(),
             final_url: String::new(),
             content_type: String::new(),
+            set_cookies: Vec::new(),
         };
         let err = body.json().unwrap_err();
         assert!(!err.retryable());

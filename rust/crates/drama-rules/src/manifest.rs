@@ -49,6 +49,9 @@ pub struct Manifest {
     /// 依赖的内置 codec（如 `codec.aaencode`）；缺失时拒绝安装。
     #[serde(default)]
     pub requires: Vec<String>,
+    /// 跨请求 cookie 共享（剧果的 CloudFront 签名场景）。
+    #[serde(default)]
+    pub cookie_jar: CookieJar,
 }
 
 /// 能力声明。
@@ -100,6 +103,25 @@ impl UaProfile {
             UaProfile::Desktop => drama_net::DESKTOP_UA,
         }
     }
+}
+
+/// 会话 cookie 传递策略。
+///
+/// 剧果这类站点：`/play/{id}` 返回 m3u8 地址的同时，用 `Set-Cookie`
+/// 下发 CloudFront 签名（Policy/Signature/Key-Pair-Id）。**取媒体时必须
+/// 带上这三个 cookie**，否则 403。
+///
+/// 规则包声明 `cookie_jar: true` 后，引擎会：
+/// 1. 在该源所有请求之间共享 cookie；
+/// 2. 把 `playback` 请求拿到的 cookie 交给网关，随媒体请求一起发出。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CookieJar {
+    /// 不保存 cookie。
+    #[default]
+    Off,
+    /// 在同一源的所有请求之间共享。
+    On,
 }
 
 /// 鉴权步骤。
@@ -270,8 +292,17 @@ pub enum Method {
 }
 
 /// 响应体提取方式。
+///
+/// **外部标签**（`#[serde(tag = "type")]`）而不是内部标签：
+/// 内部标签在 YAML 里要求 `!json` 这种奇怪的写法，作者会写错。
+/// 现在写成：
+/// ```yaml
+/// extract: { type: regex, pattern: '"url":"([^"]+)"', group: 1 }
+/// extract: { type: json, path: "data.url" }
+/// extract: { type: html_attr, css: "video", attr: "src" }
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Extract {
     /// JSON 点路径（`data.list`），支持 `|` 别名回退。
     Json { path: String },
@@ -334,23 +365,67 @@ pub enum Pagination {
 
 
 /// 分集规格。
+///
+/// 三个取值字段都是 [`FieldSpec`]：既可以写成简单字符串（`"vid"`），
+/// 也可以写成带过滤器/缺省值的对象。MacCMS 的分集链接常需要
+/// `re:` 从 href 里抠集号，纯字符串表达不了。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChapterSpec {
-    /// 分集列表的取值表达式。
+    /// 分集列表的取值表达式（JSON 路径或 `css:`）。
     pub items: String,
     /// 集号字段。
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub index: String,
+    pub index: FieldSpec,
     /// 视频 id 字段。
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub vid: String,
+    pub vid: FieldSpec,
     /// 地址字段（网页类源直接给）。
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub url: String,
+    pub url: FieldSpec,
     /// 标题模板（支持 `{{index}}`）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title_template: String,
+}
+
+/// 取值规格：字符串简写或完整对象。
+///
+/// `#[serde(untagged)]` 让 YAML/JSON 都能直接写：
+/// ```yaml
+/// vid: "episode_id"                      # 简写
+/// index: { from: "a@href", filters: [] }  # 完整
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FieldSpec {
+    /// 完整对象。
+    Detailed(FieldMap),
+    /// 字符串简写，等价于 `{ from: "…" }`。
+    Short(String),
+    /// 未配置。
+    #[default]
+    None,
+}
+
+impl FieldSpec {
+    /// 取值表达式。
+    pub fn from_expr(&self) -> &str {
+        match self {
+            FieldSpec::Detailed(map) => &map.from,
+            FieldSpec::Short(expr) => expr,
+            FieldSpec::None => "",
+        }
+    }
+
+    /// 过滤器链。
+    pub fn filters(&self) -> &[String] {
+        match self {
+            FieldSpec::Detailed(map) => &map.filters,
+            _ => &[],
+        }
+    }
+
+    /// 是否为空（未配置）。
+    pub fn is_empty(&self) -> bool {
+        self.from_expr().is_empty()
+    }
 }
 
 /// 取流规格。
@@ -445,8 +520,13 @@ fn default_token_ttl() -> u64 {
 fn default_uri_key_len() -> usize {
     16
 }
+/// 默认单请求超时。
+///
+/// 取 20s 而不是更短：实测花果的播放页要 3.4s、韩小圈偶发 2s+，
+/// 加上限流器排队，12s 会把正常站点误判成超时。
+/// 真正慢的站应该由规则包自己调 `timeout_ms`，而不是让所有人一起等。
 fn default_timeout() -> u64 {
-    12_000
+    20_000
 }
 fn default_body_limit() -> usize {
     8 * 1024 * 1024
@@ -630,7 +710,7 @@ ops:
     fn request_spec_defaults() {
         let spec = RequestSpec::default();
         assert_eq!(spec.method, Method::Get);
-        assert_eq!(spec.timeout_ms, 12_000);
+        assert_eq!(spec.timeout_ms, 20_000);
         assert_eq!(spec.max_body_bytes, 8 * 1024 * 1024);
     }
 

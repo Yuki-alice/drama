@@ -49,6 +49,8 @@ struct Session {
     referer: String,
     user_agent: String,
     key: Option<[u8; 16]>,
+    /// 回源时附加的 `Cookie` 头（CloudFront 签名等）。
+    cookie: Option<String>,
     /// 本地文件源（离线播放）；`Some` 时忽略 url 回源，读磁盘。
     file: Option<std::path::PathBuf>,
     plan: Mutex<Option<Arc<CachedPlan>>>,
@@ -149,17 +151,33 @@ pub fn register_hex(
     referer: String,
     key_hex: Option<String>,
 ) -> Result<String, String> {
+    register_hex_with_cookie(url, referer, key_hex, None)
+}
+
+/// 带 cookie 的注册：媒体回源时附上 `Cookie` 头。
+///
+/// 剧果的 HLS 是 CloudFront 签名 URL——`/play/{id}` 下发三个 cookie，
+/// 不带就是 403。cookie 由规则引擎在取流时捕获，经这里交给网关。
+pub fn register_hex_with_cookie(
+    url: &str,
+    referer: String,
+    key_hex: Option<String>,
+    cookie: Option<String>,
+) -> Result<String, String> {
     let key = match key_hex.as_deref().filter(|k| !k.is_empty()) {
         Some(hex) => Some(hex_to_key(hex)?),
         None => None,
     };
-    // Referer 需要 `'static`：会话表持有它直到过期。
-    // 用 `Box::leak` 会泄漏内存——改为把 referer 存进会话（下面 `register_owned`）。
-    register_owned(url, referer, key)
+    register_owned_with_cookie(url, referer, key, cookie)
 }
 
-/// 注册会话（Referer 按所有权存储）。
-fn register_owned(url: &str, referer: String, key: Option<[u8; 16]>) -> Result<String, String> {
+/// 注册会话（Referer 与 cookie 按所有权存储）。
+fn register_owned_with_cookie(
+    url: &str,
+    referer: String,
+    key: Option<[u8; 16]>,
+    cookie: Option<String>,
+) -> Result<String, String> {
     let port = ensure_port_blocking()?;
     sweep_and_evict();
     let token = new_token();
@@ -169,6 +187,7 @@ fn register_owned(url: &str, referer: String, key: Option<[u8; 16]>) -> Result<S
         referer,
         user_agent: drama_net::USER_AGENT_VALUE.to_owned(),
         key,
+        cookie,
         plan: Mutex::new(None),
         expires: now + SESSION_TTL,
         last_used: now,
@@ -209,6 +228,7 @@ pub fn register(
         referer,
         user_agent,
         key,
+        cookie: None,
         file: None,
         plan: Mutex::new(None),
         expires: now + SESSION_TTL,
@@ -240,6 +260,7 @@ pub fn register_file(
         referer: String::new(),
         user_agent,
         key,
+        cookie: None,
         file: Some(path.to_owned()),
         plan: Mutex::new(None),
         expires: now + SESSION_TTL,
@@ -303,6 +324,7 @@ struct SessionView {
     referer: String,
     user_agent: String,
     key: Option<[u8; 16]>,
+    cookie: Option<String>,
     file: Option<std::path::PathBuf>,
 }
 
@@ -319,6 +341,7 @@ fn lookup(token: &str) -> Option<SessionView> {
         referer: session.referer.clone(),
         user_agent: session.user_agent.clone(),
         key: session.key,
+        cookie: session.cookie.clone(),
         file: session.file.clone(),
     })
 }
@@ -330,7 +353,7 @@ async fn source_size(view: &SessionView) -> Result<u64, String> {
             .map(|m| m.len())
             .map_err(|e| format!("local file: {e}"));
     }
-    upstream_size(&view.url, &view.referer, &view.user_agent).await
+    upstream_size(&view.url, &view.referer, &view.user_agent, view.cookie.as_deref()).await
 }
 
 /// 数据源区间读：文件直接读磁盘，回源走 Range。
@@ -341,7 +364,7 @@ async fn source_range(view: &SessionView, start: u64, end: u64) -> Result<Vec<u8
     if let Some(path) = view.file.as_deref() {
         return read_file_range(path, start, end).map_err(|e| format!("local file: {e}"));
     }
-    upstream_range(&view.url, &view.referer, &view.user_agent, start, end).await
+    upstream_range(&view.url, &view.referer, &view.user_agent, view.cookie.as_deref(), start, end).await
 }
 
 fn read_file_range(path: &std::path::Path, start: u64, end: u64) -> Result<Vec<u8>, String> {
@@ -481,6 +504,7 @@ async fn serve_connection(mut stream: tokio::net::TcpStream) -> Result<(), Strin
             &view.url,
             &view.referer,
             &view.user_agent,
+            view.cookie.as_deref(),
             range,
             is_head,
         )
@@ -567,11 +591,13 @@ async fn upstream_get(
     url: &str,
     referer: &str,
     user_agent: &str,
+    cookie: Option<&str>,
     range: Option<&str>,
 ) -> Result<reqwest::Response, String> {
     let mut req = MEDIA_CLIENT
         .get(url)
         .header("Referer", referer)
+        .header("Cookie", cookie.unwrap_or(""))
         .header("User-Agent", user_agent);
     if let Some(range) = range {
         req = req.header("Range", range);
@@ -585,10 +611,11 @@ async fn forward(
     url: &str,
     referer: &str,
     user_agent: &str,
+    cookie: Option<&str>,
     range: Option<String>,
     is_head: bool,
 ) -> Result<(), String> {
-    let resp = upstream_get(url, referer, user_agent, range.as_deref()).await?;
+    let resp = upstream_get(url, referer, user_agent, cookie, range.as_deref()).await?;
     let status = resp.status().as_u16();
     if status != 200 && status != 206 {
         return respond_simple(stream, 502, "upstream unavailable").await;
@@ -780,7 +807,12 @@ fn finish_plan(plan: decrypt::MoviePlan, file_size: u64) -> CachedPlan {
     }
 }
 
-async fn upstream_size(url: &str, referer: &str, user_agent: &str) -> Result<u64, String> {
+async fn upstream_size(
+    url: &str,
+    referer: &str,
+    user_agent: &str,
+    cookie: Option<&str>,
+) -> Result<u64, String> {
     let resp = MEDIA_CLIENT
         .head(url)
         .header("Referer", referer)
@@ -796,7 +828,7 @@ async fn upstream_size(url: &str, referer: &str, user_agent: &str) -> Result<u64
         return Ok(n);
     }
     // 无长度：取首字节从 Content-Range 读总量。
-    let resp = upstream_get(url, referer, user_agent, Some("bytes=0-0")).await?;
+    let resp = upstream_get(url, referer, user_agent, cookie, Some("bytes=0-0")).await?;
     let text = resp
         .headers()
         .get("content-range")
@@ -814,6 +846,7 @@ async fn upstream_range(
     url: &str,
     referer: &str,
     user_agent: &str,
+    cookie: Option<&str>,
     start: u64,
     end: u64,
 ) -> Result<Vec<u8>, String> {
@@ -821,6 +854,7 @@ async fn upstream_range(
         url,
         referer,
         user_agent,
+        cookie,
         Some(&format!("bytes={start}-{end}")),
     )
     .await?;

@@ -178,6 +178,10 @@ fn build_envelope(
             if let Some(quality) = opt("quality") {
                 params["quality"] = json!(quality.parse::<i64>().map_err(|e| e.to_string())?);
             }
+            // `--vid`：分集视频 id（规则源的取流 URL 常需要它）。
+            if let Some(vid) = opt("vid") {
+                params["vid"] = json!(vid);
+            }
         }
         "ranking" => {
             if let Some(board) = opt("board") {

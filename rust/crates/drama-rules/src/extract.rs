@@ -103,13 +103,19 @@ pub fn json_array<'a>(value: &'a serde_json::Value, path: &str) -> Option<&'a [s
     }
 }
 
-/// 解析 `from` 表达式：JSON 路径或 `css@attr`。
+/// `from` 表达式的解析结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     /// JSON 点路径。
     JsonPath(String),
     /// CSS 选择器 + 属性（`attr` 为空表示取文本）。
     Css { selector: String, attr: String },
+    /// 正则捕获组：`re:<pattern>:<group>`。
+    ///
+    /// 为什么需要它：MacCMS 的播放地址藏在 `player_aaaa={...}` 这段
+    /// JS 里，CSS 选择器够不到；而 JSON 路径也解析不了「从脚本正文里
+    /// 抠一段」。正则是最小可用的原语。
+    Regex { pattern: String, group: usize },
 }
 
 /// 解析 `from` 表达式。
@@ -117,6 +123,17 @@ pub enum Source {
 /// `css:` 前缀显式声明 HTML；`@` 分隔选择器与属性。
 pub fn parse_source(expr: &str) -> Source {
     let expr = expr.trim();
+    // `re:<pattern>:<group>`；group 省略时取 0（整段匹配）。
+    if let Some(rest) = expr.strip_prefix("re:") {
+        let (pattern, group) = match rest.rsplit_once(':') {
+            Some((pattern, group)) if group.chars().all(|c| c.is_ascii_digit()) => (
+                pattern.to_owned(),
+                group.parse::<usize>().unwrap_or(0),
+            ),
+            _ => (rest.to_owned(), 0),
+        };
+        return Source::Regex { pattern, group };
+    }
     if let Some(rest) = expr.strip_prefix("css:") {
         return split_attr(rest.trim());
     }
@@ -144,6 +161,17 @@ fn split_attr(expr: &str) -> Source {
 pub fn value_from_json(item: &serde_json::Value, expr: &str) -> Option<String> {
     match parse_source(expr) {
         Source::JsonPath(path) => json_string(item, &path),
+        // JSON 条目里的正则：对整个条目序列化后匹配（少数站把有用信息
+        // 塞进字符串字段里的 JSON/JS 片段）。
+        Source::Regex { pattern, group } => {
+            let regex = regex::Regex::new(&pattern).ok()?;
+            let text = item.to_string();
+            let captures = regex.captures(&text)?;
+            captures
+                .get(group)
+                .or_else(|| captures.get(0))
+                .map(|m| m.as_str().to_owned())
+        }
         Source::Css { .. } => None, // JSON 条目里没有 HTML 可选。
     }
 }
@@ -159,6 +187,114 @@ pub fn html_first(document: &Html, selector: &str, attr: &str) -> Option<String>
     } else {
         element.value().attr(attr).unwrap_or("").to_owned()
     })
+}
+
+/// 从整篇文档按 `from` 表达式取值。
+///
+/// 顺序：正则优先（能命中脚本正文），其次 CSS，最后整段文本。
+/// 正则对**原始 HTML** 生效——这一点很关键：`player_aaaa={"url":"..."}`
+/// 里的 JSON 在 CSS 树里只是一个文本节点，但正则能直接抠出来。
+pub fn value_from_document(
+    document: &Html,
+    expr: &str,
+    base_url: Option<&url::Url>,
+) -> Option<String> {
+    match parse_source(expr) {
+        Source::Regex { pattern, group } => {
+            let regex = regex::Regex::new(&pattern).ok()?;
+            let html = document.html();
+            let captures = regex.captures(&html)?;
+            // 请求整个匹配后再做 HTML 反转义：脚本里的 URL 常写成
+            // `https:\/\/host\/path`，反转义后才是可用地址。
+            captures
+                .get(group)
+                .or_else(|| captures.get(0))
+                .map(|m| unescape_js_string(m.as_str()))
+        }
+        Source::Css { selector, attr } => html_first(document, &selector, &attr)
+            .map(|value| resolve_if_url(&value, &attr, base_url)),
+        Source::JsonPath(path) => {
+            // 文档上下文里的点路径：先尝试把整篇 HTML 当 JSON（罕见），
+            // 失败就按「选择器取文本」理解，方便作者少写 `css:`。
+            serde_json::from_str::<serde_json::Value>(&document.html())
+                .ok()
+                .and_then(|value| json_string(&value, &path))
+                .or_else(|| html_first(document, &path, ""))
+        }
+    }
+}
+
+/// 反转义 JS 字符串字面量里的转义序列。
+///
+/// 典型输入：`https:\/\/cdn.example\/index.m3u8`
+/// 典型输出：`https://cdn.example/index.m3u8`
+pub fn unescape_js_string(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('/') => {
+                chars.next();
+                out.push('/');
+            }
+            Some('"') => {
+                chars.next();
+                out.push('"');
+            }
+            Some('\'') => {
+                chars.next();
+                out.push('\'');
+            }
+            Some('n') => {
+                chars.next();
+                out.push('\n');
+            }
+            Some('t') => {
+                chars.next();
+                out.push('\t');
+            }
+            Some('r') => {
+                chars.next();
+                out.push('\r');
+            }
+            Some('u') => {
+                chars.next();
+                // `\uXXXX`：4 位十六进制。
+                let hex: String = chars.clone().take(4).collect();
+                if hex.len() == 4
+                    && let Ok(code) = u32::from_str_radix(&hex, 16)
+                    && let Some(ch) = char::from_u32(code)
+                {
+                    for _ in 0..4 {
+                        chars.next();
+                    }
+                    out.push(ch);
+                    continue;
+                }
+                out.push('u');
+            }
+            _ => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// 属性是 `href`/`src` 等 URL 语义时补全为绝对地址。
+fn resolve_if_url(value: &str, attr: &str, base_url: Option<&url::Url>) -> String {
+    if !matches!(attr, "href" | "src" | "data-src" | "data-original") {
+        return value.to_owned();
+    }
+    match base_url {
+        Some(base) => base
+            .join(value.trim())
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| value.to_owned()),
+        None => value.to_owned(),
+    }
 }
 
 /// 从 HTML 文档按 CSS 选择器取**全部**匹配。
@@ -188,6 +324,7 @@ pub fn value_from_element(
     };
     match parse_source(&css_expr) {
         Source::JsonPath(_) => None,
+        Source::Regex { .. } => None,
         Source::Css { selector, attr } => {
             let selector = Selector::parse(&selector).ok()?;
             let inner = element.select(&selector).next()?;

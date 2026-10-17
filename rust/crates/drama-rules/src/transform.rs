@@ -39,6 +39,13 @@ pub fn apply_one(
     filter: &str,
     base_url: Option<&url::Url>,
 ) -> Result<String, FilterError> {
+    // `re:<pattern>:<group>` —— 正则提取。
+    //
+    // 放在过滤器链里（而不是只放 `from`）是必要的：MacCMS 的 id 要从
+    // `href="/vod/49477.html"` 里抠出 `49477`，先取值再提取是最自然的写法。
+    if let Some(rest) = filter.trim().strip_prefix("re:") {
+        return apply_regex(input, rest);
+    }
     let (name, arg) = match filter.split_once(':') {
         Some((n, a)) => (n.trim(), a.trim()),
         None => (filter.trim(), ""),
@@ -68,6 +75,53 @@ pub fn apply_one(
                 .ok_or_else(|| FilterError::BadArgument("replace", arg.to_owned()))?;
             input.replace(from, to)
         }
+        "trim_suffix" => {
+            // `trim_suffix:,` → 去掉尾随逗号（MacCMS 的 m3u8 常见脏数据）。
+            let mut value = input.trim().to_owned();
+            while !arg.is_empty() && value.ends_with(arg) {
+                value.truncate(value.len() - arg.len());
+            }
+            value
+        }
+        "trim_prefix" => {
+            let mut value = input.trim().to_owned();
+            while !arg.is_empty() && value.starts_with(arg) {
+                value = value[arg.len()..].to_owned();
+            }
+            value
+        }
+        "after" => {
+            // `after:第` → 取第一次出现之后的全部。
+            match input.find(arg) {
+                Some(index) => input[index + arg.len()..].to_owned(),
+                None => input.to_owned(),
+            }
+        }
+        "before" => {
+            match input.find(arg) {
+                Some(index) => input[..index].to_owned(),
+                None => input.to_owned(),
+            }
+        }
+        "digits" => input.chars().filter(char::is_ascii_digit).collect(),
+        "url_path" => {
+            // 取 URL 的路径部分（用于从封面推媒体地址）。
+            url::Url::parse(input.trim())
+                .map(|parsed| parsed.path().to_owned())
+                .unwrap_or_else(|_| input.to_owned())
+        }
+        "replace_ext" => {
+            // `replace_ext:index.m3u8` → 把文件名的扩展部分换成给定值。
+            // 例：`/video1/1.jpg` + `index.m3u8` → `/video1/index.m3u8`
+            match input.rfind('/') {
+                Some(index) => {
+                    let (dir, _) = input.split_at(index + 1);
+                    format!("{dir}{arg}")
+                }
+                None => arg.to_owned(),
+            }
+        }
+        "unescape_js" => crate::extract::unescape_js_string(input),
         "split_tags" => {
             // 结果用 `|` 连接（Drama.tags 的中间表示）。
             let sep = if arg.is_empty() { "," } else { arg };
@@ -81,6 +135,30 @@ pub fn apply_one(
         _ => return Err(FilterError::Unknown(name.to_owned())),
     };
     Ok(value)
+}
+
+/// 正则提取：`<pattern>:<group>`。
+///
+/// `group` 省略时取 1（有捕获组就取第一组，比取整段更常用）；
+/// `group` 非数字时当作 `pattern` 的一部分（比如 `re:a:b` 里的 `b`）。
+fn apply_regex(input: &str, spec: &str) -> Result<String, FilterError> {
+    // 从右往左找「冒号 + 纯数字」作为 group。
+    let (pattern, group) = match spec.rsplit_once(':') {
+        Some((pattern, group)) if !group.is_empty() && group.chars().all(|c| c.is_ascii_digit()) => {
+            (pattern, group.parse::<usize>().unwrap_or(1))
+        }
+        _ => (spec, 1),
+    };
+    let regex = regex::Regex::new(pattern).map_err(|e| FilterError::BadRegex(e.to_string()))?;
+    let captures = regex
+        .captures(input)
+        .ok_or_else(|| FilterError::BadArgument("re", format!("未匹配: {pattern}")))?;
+    // 指定组不存在时回落到整段匹配（作者常忘记数括号）。
+    captures
+        .get(group)
+        .or_else(|| captures.get(0))
+        .map(|m| m.as_str().to_owned())
+        .ok_or_else(|| FilterError::BadArgument("re", "无捕获内容".to_owned()))
 }
 
 /// 全部过滤器名（校验白名单）。
@@ -103,6 +181,16 @@ pub fn all_names() -> &'static [&'static str] {
             "trim",
             "replace",
             "split_tags",
+            "trim_suffix",
+            "trim_prefix",
+            "after",
+            "before",
+            "digits",
+            "url_path",
+            "replace_ext",
+            "unescape_js",
+            // `re:<pattern>:<group>` 在 apply_one 里前置处理。
+            "re",
         ]
     })
 }
@@ -405,7 +493,13 @@ mod tests {
     fn all_names_are_implemented() {
         // 白名单里的每个过滤器都必须能跑通（防止加了名字忘了实现）。
         // 需要参数的过滤器用合法的示例参数。
-        let sample_args: &[(&str, &str)] = &[("truncate", "truncate:5"), ("replace", "replace:a:b"), ("split_tags", "split_tags:,")];
+        let sample_args: &[(&str, &str)] = &[
+            ("truncate", "truncate:5"),
+            ("replace", "replace:a:b"),
+            ("split_tags", "split_tags:,"),
+            // `re` 需要参数，给一个能匹配 "test" 的模式。
+            ("re", "re:es:0"),
+        ];
         let base = url::Url::parse("https://x.com/").expect("base");
         for name in all_names() {
             let expr = sample_args

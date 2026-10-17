@@ -642,10 +642,24 @@ impl Engine {
         let key = media.key_hex.clone();
         let referer = media.referer.clone();
         let url = media.url.clone();
-        let proxy_url = match drama_gateway::register_hex(
+        // 规则源的 cookie（剧果 CloudFront 签名）：交给网关随媒体请求发出。
+        let source_key = request
+            .source
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(BUILTIN)
+            .to_owned();
+        let media_cookie = self
+            .rule_engines
+            .lock()
+            .expect("rule engines poisoned")
+            .get(&source_key)
+            .and_then(|engine| engine.media_cookie());
+        let proxy_url = match drama_gateway::register_hex_with_cookie(
             &url,
             referer,
             if key.is_empty() { None } else { Some(key) },
+            media_cookie,
         ) {
             Ok(proxy) => proxy,
             Err(e) => {

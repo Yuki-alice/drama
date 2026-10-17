@@ -22,7 +22,10 @@ pub mod decrypt;
 pub mod gateway;
 
 pub use covers::{proxy_url, rewrite_to_current_port};
-pub use gateway::{ensure_port, register, register_file, register_hex, warm_first_window};
+pub use gateway::{
+    ensure_port, register, register_file, register_hex, register_hex_with_cookie,
+    warm_first_window,
+};
 
 use std::sync::Mutex;
 

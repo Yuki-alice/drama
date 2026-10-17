@@ -1,0 +1,59 @@
+schema: 1
+id: hanxiaoquan
+name: 韩小圈
+version: 0.1.0
+author: official
+homepage: https://www.jennyhow.com
+base: https://www.jennyhow.com
+user_agent: desktop
+caps:
+  catalog: true
+  detail: true
+  playback: true
+ops:
+  catalog:
+    request:
+      url: "{{base}}/hxq/{{page}}.html"
+    items: "css:.module-item"
+    map:
+      id:
+        from: "a@href"
+        filters:
+          - 're:/([0-9]+)\.html:1'
+      title:
+        from: "a@title"
+      cover:
+        from: "img@data-original"
+    pagination:
+      type: page
+      size: 24
+  detail:
+    request:
+      url: "{{base}}/hanxiaoquan/{{id}}.html"
+    identity_check: false
+    map:
+      id:
+        from: "{{id}}"
+      title:
+        from: "css:h1"
+      summary:
+        from: "css:.video-info-item, .desc"
+      cover:
+        from: "img@data-original"
+    chapters:
+      items: "css:.myui-content__list a, .playlist a"
+      title_template: "第{{index}}集"
+      url:
+        from: "a@href"
+      index:
+        from: "a"
+        filters:
+          - 're:第\\s*([0-9]+)\\s*集:1'
+  playback:
+    request:
+      url: "{{base}}/play/{{id}}-0-0.html"
+    extract:
+      type: regex
+      pattern: '(https?://[^"''\s]+\.m3u8)'
+      group: 1
+    referer: "{{base}}/"

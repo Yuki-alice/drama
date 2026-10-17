@@ -1,0 +1,54 @@
+schema: 1
+id: wangguo
+name: 网果
+version: 0.1.0
+author: official
+homepage: https://www.duanju2.com
+base: https://www.duanju2.com
+user_agent: desktop
+caps:
+  catalog: true
+  detail: true
+  playback: true
+ops:
+  catalog:
+    request:
+      url: "{{base}}/show/duanju-----------.html"
+    items: "css:article.post"
+    map:
+      id:
+        from: "a[href^='/vod/']@href"
+        filters:
+          - 're:([0-9]+)\.html:1'
+      title:
+        from: "img@alt"
+      cover:
+        from: "img@data-src"
+  detail:
+    request:
+      url: "{{base}}/vod/{{id}}.html"
+    identity_check: false
+    map:
+      id:
+        from: "{{id}}"
+      title:
+        from: "css:h1"
+      cover:
+        from: "img@data-src"
+    chapters:
+      items: "css:.playlist a, ul.playlist a, .stui-content__playlist a"
+      title_template: "第{{index}}集"
+      url:
+        from: "a@href"
+      index:
+        from: "a"
+        filters:
+          - 're:第\\s*([0-9]+)\\s*集:1'
+  playback:
+    request:
+      url: "{{base}}/play/{{id}}-1-{{episode}}.html"
+    extract:
+      type: regex
+      pattern: '"url":"(https:[^"]+)"'
+      group: 1
+    referer: "{{base}}/"
