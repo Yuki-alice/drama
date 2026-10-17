@@ -776,6 +776,32 @@ mod live_tests {
         println!(
             "detail ok: episodes={} accessible={accessible} play track url host={}",
             detail.episodes.len(),
-            url::Url::parse(&media.url).map(|u| u.host_str().unwrap_or("").to_owned()).unwrap_or_default()
+            url::Url::parse(&media.url)
+                .map(|u| u.host_str().unwrap_or("").to_owned())
+                .unwrap_or_default()
         );
+    }
+
+    #[test]
+    #[ignore = "requires network"]
+    fn live_danmaku_parses() {
+        let provider = HongguoProvider::new();
+        let page = provider.catalog("short_play", 0).expect("catalog");
+        let target = &page.items[0];
+        let detail = provider.detail(&target.id.source_id).expect("detail");
+        let vid = detail.episodes[0].vid.clone().expect("vid");
+        // 弹幕失败是**允许**的（有的集就是没开弹幕），
+        // 这里只验证「成功时结构正确」。
+        match provider.danmaku(&target.id.source_id, &vid, 0, 30_000) {
+            Ok(page) => {
+                println!("danmaku ok: items={} next={} total={}", page.items.len(), page.next_ms, page.total);
+                assert_eq!(page.episode_id, vid);
+                assert!(page.next_ms > 0);
+                for item in &page.items {
+                    assert!(!item.text.is_empty());
+                    assert!((0..page.next_ms).contains(&item.time_ms));
+                }
+            }
+            Err(e) => println!("danmaku unavailable (allowed): {e}"),
+        }
     }
