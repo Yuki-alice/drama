@@ -95,6 +95,16 @@ pub fn global() -> &'static SourceStore {
     &STORE
 }
 
+/// [`global`] 的 crate 级别名（供其他 crate 以 `drama_rules::store::global_store()` 引用）。
+pub use global as global_store;
+
+impl SourceStore {
+    /// 全局实例。
+    pub fn shared() -> &'static SourceStore {
+        &STORE
+    }
+}
+
 impl SourceStore {
     /// 绑定落盘目录并加载。
     pub fn attach(&self, dir: PathBuf) {

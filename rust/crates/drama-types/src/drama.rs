@@ -124,6 +124,17 @@ impl DramaId {
 /// 剧。
 ///
 /// 这是**内部模型**：源实现往这里填，序列化交给 [`Drama::to_wire`]。
+///
+/// `Serialize` 手写而不是 derive：derive 会按 Rust 字段名输出（`source_id`），
+/// 而 wire 契约是 camelCase 且 id 不带源前缀（`to_wire` 的语义）。
+/// 两条路必须产出**同一个 JSON**，否则缓存里的数据与直连结果不同形。
+impl Serialize for Drama {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_wire().serialize(serializer)
+    }
+}
+
+/// 剧。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Drama {
     pub id: DramaId,

@@ -23,6 +23,7 @@ publish = false
 
 [workspace.dependencies]
 # ── 内部 crate ────────────────────────────────────────────────
+drama-core = { package = "drama_core", path = "core" }
 drama-types = { path = "crates/drama-types" }
 drama-net = { path = "crates/drama-net" }
 drama-store = { path = "crates/drama-store" }

@@ -49,7 +49,8 @@ pub struct Variant {
 }
 
 /// 解析出的可播媒体。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolvedMedia {
     /// 选中的直链。
     pub url: String,

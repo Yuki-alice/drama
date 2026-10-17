@@ -23,6 +23,8 @@ pub mod danmaku;
 pub mod device;
 pub mod media;
 pub mod provider;
+
+pub use provider::HongguoProvider;
 pub mod sign;
 pub mod ssr;
 

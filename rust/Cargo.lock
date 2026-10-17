@@ -379,8 +379,8 @@ version = "0.2.0"
 dependencies = [
  "drama-engine",
  "drama-types",
+ "drama_core",
  "serde_json",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -552,24 +552,12 @@ dependencies = [
 name = "drama_core"
 version = "0.1.0"
 dependencies = [
- "aes",
- "base64 0.23.1",
- "cbc",
- "ctr",
- "md5",
+ "drama-engine",
+ "drama-types",
  "once_cell",
- "regex",
- "reqwest",
- "scraper",
- "serde",
  "serde_json",
- "sha2",
- "sm3",
- "thiserror",
- "tokio",
- "tokio-util",
  "tracing",
- "url",
+ "tracing-subscriber",
 ]
 
 [[package]]

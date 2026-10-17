@@ -277,7 +277,8 @@ pub trait SourceProvider: Send + Sync {
 }
 
 /// 一页目录。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogPage {
     pub items: Vec<Drama>,
     pub has_more: bool,
@@ -288,7 +289,8 @@ pub struct CatalogPage {
 }
 
 /// 搜索结果。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     pub items: Vec<Drama>,
     /// 源站报告的总数（`0` = 未提供）。
@@ -299,7 +301,8 @@ pub struct SearchResult {
 }
 
 /// 详情。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DramaDetail {
     pub drama: Drama,
     pub episodes: Vec<Episode>,

@@ -53,7 +53,7 @@ pub const BOARDS: [(&str, &str, &str, &str); 4] = [
 ];
 
 /// 红果源。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct HongguoProvider;
 
 impl HongguoProvider {
