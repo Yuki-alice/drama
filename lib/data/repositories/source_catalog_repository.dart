@@ -61,6 +61,12 @@ class SourceCatalogRepository implements CatalogRepository {
   }
 
   @override
+  /// 一次取回多页（首页续载）。
+  ///
+  /// Rust 侧已把多页**合并成一批**返回（`{items, hasMore, depth}`），
+  /// 这里把它包成单元素列表以适配 [CatalogRepository.catalogPages]
+  /// 的「多页」签名——调用方（首页）只做拼接与水位记录，
+  /// 合并与否对它透明。
   Future<List<CatalogPage>> catalogPages({
     required String categoryId,
     int depth = 0,
@@ -73,15 +79,10 @@ class SourceCatalogRepository implements CatalogRepository {
         if (depth > 0) 'depth': depth,
       },
     );
-    final pages = data['pages'];
-    if (pages is! List) return const <CatalogPage>[];
+    final items = _dramas(data['items']);
+    if (items.isEmpty) return const <CatalogPage>[];
     return <CatalogPage>[
-      for (final page in pages)
-        if (page is Map)
-          CatalogPage(
-            items: _dramas(page['items']),
-            hasMore: page['hasMore'] == true,
-          ),
+      CatalogPage(items: items, hasMore: data['hasMore'] == true),
     ];
   }
 
