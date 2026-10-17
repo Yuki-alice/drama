@@ -270,7 +270,36 @@ cookie_jar: on
 2. 把取流响应里的 `Set-Cookie` 捕获下来，交给本机网关；
 3. 网关回源媒体时附上 `Cookie` 头。
 
-### 5. 多级跳转（详情 → 播放页 → 取流）
+### 5. `css:sel::json:path` —— 脚本里的整包 JSON
+
+黄果AI 这类站把**全部数据**（标题、封面、分集地址映射）塞在
+`<script id="videoInitialData" type="application/json">{…}</script>` 里。
+CSS 拿到的是文本节点，需要二次解析：
+
+```yaml
+title:
+  from: "css:script#videoInitialData::json:title"
+summary:
+  from: "css:script#videoInitialData::json:description"
+```
+
+`::json:` 后面的部分走 JSON 点路径，数字键直接用（`epPlaySrcs.1`）。
+
+**校验器必须剥掉 `::json:` 后缀再验选择器**——后缀不是 CSS，
+不剥会把合法规则包判成「选择器无效」。
+
+**取流里的动态键**：`epPlaySrcs` 是 `{集号: m3u8}` 映射，
+取哪一集由请求决定。`playback.extract` 的 CSS 表达式支持模板：
+
+```yaml
+extract:
+  type: html_attr
+  css: "script#videoInitialData::json:epPlaySrcs.{{episode}}"
+```
+
+引擎在取值前先渲染 `{{episode}}`，即可按请求集号取到对应的地址。
+
+### 6. 多级跳转（详情 → 播放页 → 取流）
 
 MacCMS 的媒体地址通常在**另一个页面**（`/zywplay/{id}-{sid}-{nid}.html`），
 不是详情页本身。所以：

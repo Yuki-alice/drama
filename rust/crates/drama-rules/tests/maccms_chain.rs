@@ -343,3 +343,38 @@ ops:
     assert!(cookie.contains("CloudFront-Signature=sig456"), "got {cookie}");
     done.store(true, Ordering::Relaxed);
 }
+
+#[test]
+fn json_in_script_extraction() {
+    // 黄果AI 形态：数据整包塞在 <script id="videoInitialData"> 里。
+    let page = r#"<html><body>
+<script id="videoInitialData" type="application/json">
+{"title":"神瞳觉醒 第一季","posterSrc":"https://pic.example/poster.jpg","description":"剧情简介","ep":1,"epPlaySrcs":{"1":"https://cdn.example/ep1.m3u8","2":"https://cdn.example/ep2.m3u8"}}
+</script>
+</body></html>"#;
+    let document = scraper::Html::parse_document(page);
+
+    // 标题。
+    let title = drama_rules::extract::value_from_document(
+        &document,
+        "css:script#videoInitialData::json:title",
+        None,
+    );
+    assert_eq!(title.as_deref(), Some("神瞳觉醒 第一季"));
+
+    // 描述。
+    let desc = drama_rules::extract::value_from_document(
+        &document,
+        "css:script#videoInitialData::json:description",
+        None,
+    );
+    assert_eq!(desc.as_deref(), Some("剧情简介"));
+
+    // 分集地址（数字键）。
+    let ep1 = drama_rules::extract::value_from_document(
+        &document,
+        "css:script#videoInitialData::json:epPlaySrcs.1",
+        None,
+    );
+    assert_eq!(ep1.as_deref(), Some("https://cdn.example/ep1.m3u8"));
+}

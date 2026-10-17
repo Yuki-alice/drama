@@ -211,8 +211,34 @@ pub fn value_from_document(
                 .or_else(|| captures.get(0))
                 .map(|m| unescape_js_string(m.as_str()))
         }
-        Source::Css { selector, attr } => html_first(document, &selector, &attr)
-            .map(|value| resolve_if_url(&value, &attr, base_url)),
+        Source::Css { selector, attr } => {
+            // `css:sel::json.path` —— 取到文本后按 JSON 解析再走点路径。
+            //
+            // 典型场景：`<script id="videoInitialData">{…}</script>`，
+            // 站点把整包数据（含分集地址）塞在脚本标签里。CSS 拿到的是
+            // 文本节点，需要二次解析才能取 `epPlaySrcs.1`。
+            //
+            // 这个分支必须在通用取值**之前**：`::json:` 不是合法 CSS，
+            // 先跑通用取值会直接返回 None，后面的解析永远到不了。
+            if let Some((css_expr, json_path)) = selector.split_once("::json:") {
+                let (sel, attr) = match css_expr.split_once('@') {
+                    Some((sel, attr)) => (sel.trim(), attr.trim().to_owned()),
+                    None => (css_expr.trim(), String::new()),
+                };
+                let text = html_first(document, sel, &attr)?;
+                let parsed: serde_json::Value = serde_json::from_str(text.trim())
+                    .map_err(|e| {
+                        eprintln!("[json-in-script] parse failed: {e}; head={}", {
+                            let t = text.trim();
+                            t.chars().take(80).collect::<String>()
+                        })
+                    })
+                    .ok()?;
+                return json_string(&parsed, json_path);
+            }
+            let raw = html_first(document, &selector, &attr)?;
+            Some(resolve_if_url(&raw, &attr, base_url))
+        }
         Source::JsonPath(path) => {
             // 文档上下文里的点路径：先尝试把整篇 HTML 当 JSON（罕见），
             // 失败就按「选择器取文本」理解，方便作者少写 `css:`。

@@ -674,12 +674,17 @@ impl SourceProvider for RuleEngine {
                     Some(&self.base_url),
                 )
             }
-            Some(crate::manifest::Extract::Html { css }) => document
-                .as_ref()
-                .and_then(|d| extract::value_from_document(d, &format!("css:{css}"), Some(&self.base_url))),
-            Some(crate::manifest::Extract::HtmlAttr { css, attr }) => document.as_ref().and_then(|d| {
-                extract::value_from_document(d, &format!("css:{css}@{attr}"), Some(&self.base_url))
+            Some(crate::manifest::Extract::Html { css }) => document.as_ref().and_then(|d| {
+                let css = self.render(css, &ctx);
+                extract::value_from_document(d, &format!("css:{css}"), Some(&self.base_url))
             }),
+            Some(crate::manifest::Extract::HtmlAttr { css, attr }) => {
+                document.as_ref().and_then(|d| {
+                    let css = self.render(css, &ctx);
+                    let attr = self.render(attr, &ctx);
+                    extract::value_from_document(d, &format!("css:{css}@{attr}"), Some(&self.base_url))
+                })
+            }
             Some(crate::manifest::Extract::Text) => Some(body.clone()),
             None => return Err(DramaError::Unsupported("playback.extract")),
         }

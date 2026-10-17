@@ -130,7 +130,7 @@ pub fn validate(manifest: &Manifest, allowed_size: usize) -> Vec<ValidationError
             crate::manifest::Extract::Html { css } => Some(css.clone()),
             crate::manifest::Extract::HtmlAttr { css, .. } => Some(css.clone()),
             _ => None,
-        }) && scraper::Selector::parse(&css).is_err()
+        }) && scraper::Selector::parse(strip_json_suffix(&css)).is_err()
         {
             errors.push(ValidationError::BadSelector(css));
         }
@@ -183,6 +183,11 @@ fn is_valid_id(id: &str) -> bool {
 fn is_valid_base(base: &str) -> bool {
     matches!(url::Url::parse(base), Ok(parsed)
         if matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some_and(|h| !h.is_empty()))
+}
+
+/// 剥掉 CSS 表达式里的 `::json:` 后缀（后缀部分不是选择器）。
+fn strip_json_suffix(selector: &str) -> &str {
+    selector.split("::json:").next().unwrap_or(selector)
 }
 
 /// 校验鉴权步骤。
@@ -269,7 +274,7 @@ fn check_operation(
     // items 的 HTML 选择器。
     if op.items.starts_with("css:") {
         let selector = op.items.trim_start_matches("css:").trim();
-        if scraper::Selector::parse(selector).is_err() {
+        if scraper::Selector::parse(strip_json_suffix(selector)).is_err() {
             errors.push(ValidationError::BadSelector(selector.to_owned()));
         }
     }
@@ -277,7 +282,7 @@ fn check_operation(
     // 字段映射的表达式与过滤器。
     for (field, map) in &op.map {
         if let extract::Source::Css { selector, .. } = extract::parse_source(&map.from)
-            && scraper::Selector::parse(&selector).is_err()
+            && scraper::Selector::parse(strip_json_suffix(&selector)).is_err()
         {
             errors.push(ValidationError::BadSelector(selector));
         }
@@ -296,7 +301,10 @@ fn check_operation(
     if let Some(chapters) = &op.chapters {
         if !chapters.items.is_empty()
             && chapters.items.starts_with("css:")
-            && scraper::Selector::parse(chapters.items.trim_start_matches("css:")).is_err()
+            && scraper::Selector::parse(strip_json_suffix(
+                chapters.items.trim_start_matches("css:"),
+            ))
+            .is_err()
         {
             errors.push(ValidationError::BadSelector(chapters.items.clone()));
         }
