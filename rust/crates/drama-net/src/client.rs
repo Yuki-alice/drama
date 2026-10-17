@@ -167,6 +167,12 @@ impl RequestSpec {
         self
     }
 
+    /// 批量设置请求头（已有同名头会被覆盖语义上追加在后）。
+    pub fn headers_vec(mut self, headers: Vec<(String, String)>) -> Self {
+        self.headers.extend(headers);
+        self
+    }
+
     pub fn body(mut self, body: Vec<u8>) -> Self {
         self.body = Some(body);
         self

@@ -48,6 +48,8 @@ fn base_params(device_id: &str, install_id: &str) -> Vec<(String, String)> {
 #[derive(Debug)]
 pub struct SignedRequest {
     pub url: String,
+    /// 参与签名的原始 query 串（注释签名要对同一串再算一次）。
+    pub raw_query: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
     /// 便于测试与诊断。
@@ -108,6 +110,7 @@ pub fn build_request(
     let _ = method_post;
     Ok(SignedRequest {
         url,
+        raw_query,
         headers,
         body: body_bytes,
         signature,
