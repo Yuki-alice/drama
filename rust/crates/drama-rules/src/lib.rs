@@ -18,6 +18,7 @@
 //! - [`validate`]：结构 + 语义校验
 //! - [`store`]：已安装源的管理（安装/卸载/启停）
 
+pub mod engine;
 pub mod extract;
 pub mod manifest;
 pub mod template;
@@ -27,5 +28,6 @@ pub mod validate;
 
 pub use manifest::{Auth, ChapterSpec, Manifest, ManifestError, Method, Operation, Pagination,
     PlaybackSpec, RequestSpec};
+pub use engine::{RequestContext, RuleEngine, RuleError};
 pub use store::{InstallError, InstalledSource, SourceStore};
 pub use validate::{ValidationError, validate_default};
