@@ -311,26 +311,9 @@ impl Engine {
                 })
             }),
             "episodeGroups" => self.op_episode_groups(request),
-            "play" => self.op_read(request, |p, params| {
-                let play_request = parse_play_request(params)?;
-                p.play(play_request).map(|media| {
-                    serde_json::to_value(&media).unwrap_or_default()
-                })
-            }),
-            "preload" => self.op_read(request, |p, params| {
-                let play_request = parse_play_request(params)?;
-                p.preload(play_request).map(|media| {
-                    serde_json::to_value(&media).unwrap_or_default()
-                })
-            }),
-            "playQuality" => self.op_read(request, |p, params| {
-                let id = str_param(params, "id").ok_or(DramaError::BadRequest("missing id".to_owned()))?;
-                let vid = str_param(params, "vid").ok_or(DramaError::BadRequest("missing vid".to_owned()))?;
-                let quality = params.get("quality").and_then(Value::as_i64).unwrap_or(0);
-                p.play_variant(id, vid, quality).map(|media| {
-                    serde_json::to_value(&media).unwrap_or_default()
-                })
-            }),
+            "play" => self.op_play(request, Mode::Play),
+            "preload" => self.op_play(request, Mode::Preload),
+            "playQuality" => self.op_play(request, Mode::Quality),
             "danmaku" => self.op_read(request, |p, params| {
                 let series_id = str_param(params, "id").ok_or(DramaError::BadRequest("missing id".to_owned()))?;
                 let vid = str_param(params, "vid").ok_or(DramaError::BadRequest("missing vid".to_owned()))?;
@@ -503,6 +486,93 @@ impl Engine {
             .collect();
         let groups = EpisodeGroups::build(episodes, group_size);
         ok(serde_json::to_value(&groups).unwrap_or_default())
+    }
+
+    // ── 取流（注册网关会话 → 返回 PlayPlan）──────────────────
+
+    /// 取流入口。
+    ///
+    /// **必须返回 `proxyUrl`**：播放器只打开本机回环地址。
+    /// 直链留在 `url` 里仅供诊断/复制，不作为播放路径——
+    /// Referer 鉴权与 CENC 解密不能散落到播放器配置里。
+    fn op_play(&self, request: &Request, mode: Mode) -> Response {
+        let params = &request.params;
+        let id = match str_param(params, "id") {
+            Some(id) => id.to_owned(),
+            None => return Response::err(&DramaError::BadRequest("missing id".to_owned())),
+        };
+        let episode = params.get("episode").and_then(Value::as_u64).unwrap_or(1) as u32;
+        let quality = params.get("quality").and_then(Value::as_i64).unwrap_or(0);
+        let quality_pref = params.get("quality").and_then(Value::as_i64);
+
+        let provider = match self.provider(request.source.as_deref()) {
+            Ok(provider) => provider,
+            Err(e) => return Response::err(&e),
+        };
+
+        // 仲裁：与读类共用同一套 session/sequence 语义。
+        let token = match self.begin_read(request.session.as_deref(), request.sequence) {
+            Ok(token) => token,
+            Err(e) => return Response::err(&e),
+        };
+        let result = match mode {
+            Mode::Play => provider.play(PlayRequest {
+                series_id: id.clone(),
+                episode,
+                vid: str_param(params, "vid").map(str::to_owned),
+                quality,
+            }),
+            Mode::Preload => provider.preload(PlayRequest {
+                series_id: id.clone(),
+                episode,
+                vid: str_param(params, "vid").map(str::to_owned),
+                quality,
+            }),
+            Mode::Quality => {
+                let vid = match str_param(params, "vid") {
+                    Some(vid) => vid.to_owned(),
+                    None => {
+                        self.end_read(request.session.as_deref());
+                        return Response::err(&DramaError::BadRequest(
+                            "missing vid".to_owned(),
+                        ));
+                    }
+                };
+                provider.play_variant(&id, &vid, quality)
+            }
+        };
+        self.end_read(request.session.as_deref());
+
+        let media = match result {
+            Ok(media) => media,
+            Err(e) => return Response::err(&e),
+        };
+
+        // 注册网关会话：播放器只打开 proxyUrl。
+        let vid = media.danmaku_vid.clone();
+        let key = media.key_hex.clone();
+        let referer = media.referer.clone();
+        let url = media.url.clone();
+        let proxy_url = match drama_gateway::register_hex(
+            &url,
+            referer,
+            if key.is_empty() { None } else { Some(key) },
+        ) {
+            Ok(proxy) => proxy,
+            Err(e) => {
+                // 网关起不来不该让播放彻底失败——降级为直链，
+                // 由播放器自己带 Referer（多数 CDN 不校验）。
+                tracing::warn!("gateway unavailable, falling back to direct url: {e}");
+                url.clone()
+            }
+        };
+
+        let mut plan = drama_types::PlayPlan::from_media(&media, &vid, proxy_url);
+        if let Some(pref) = quality_pref {
+            let _ = pref;
+        }
+        plan.stale = token.is_cancelled();
+        ok(plan.to_wire())
     }
 
     // ── 读类通用包装（缓存 + 仲裁）──────────────────────────
@@ -890,6 +960,14 @@ fn download_result(result: Result<Value, DramaError>) -> Response {
     }
 }
 
+/// 取流模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Play,
+    Preload,
+    Quality,
+}
+
 /// 目录页的 wire 形态（`items` + `hasMore`）。
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -912,17 +990,6 @@ fn str_param<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
     params.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
-/// 构造取流请求。
-fn parse_play_request(params: &Value) -> Result<PlayRequest, DramaError> {
-    let id = str_param(params, "id")
-        .ok_or(DramaError::BadRequest("missing id".to_owned()))?;
-    Ok(PlayRequest {
-        series_id: id.to_owned(),
-        episode: params.get("episode").and_then(Value::as_u64).unwrap_or(1) as u32,
-        vid: str_param(params, "vid").map(str::to_owned),
-        quality: params.get("quality").and_then(Value::as_i64).unwrap_or(0),
-    })
-}
 
 /// 递归列出目录下的文件（上限 20 万条目，防病态目录卡死）。
 fn walkdir(root: &std::path::Path) -> Vec<std::path::PathBuf> {

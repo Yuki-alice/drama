@@ -46,7 +46,7 @@ struct CachedPlan {
 
 struct Session {
     url: String,
-    referer: &'static str,
+    referer: String,
     user_agent: String,
     key: Option<[u8; 16]>,
     /// 本地文件源（离线播放）；`Some` 时忽略 url 回源，读磁盘。
@@ -139,9 +139,64 @@ async fn ensure_running() -> Result<u16, String> {
 /// 注册一次播放会话，返回播放器可直接打开的本地 URL。
 /// 同步函数：在独立网关运行时上 block_on，与调用方所在的运行时
 /// （FFI 线程无运行时、或元数据 RUNTIME worker）永远不嵌套。
+/// 注册一个媒体会话（十六进制密钥 + 拥有所有权的 Referer）。
+///
+/// 这是 engine 层的入口：它手里只有源站给的字符串，
+/// 拿不到 `&'static str` 或 `[u8; 16]`。转换与校验都在这里做，
+/// 避免把密钥解析这种易错细节散到调用方。
+pub fn register_hex(
+    url: &str,
+    referer: String,
+    key_hex: Option<String>,
+) -> Result<String, String> {
+    let key = match key_hex.as_deref().filter(|k| !k.is_empty()) {
+        Some(hex) => Some(hex_to_key(hex)?),
+        None => None,
+    };
+    // Referer 需要 `'static`：会话表持有它直到过期。
+    // 用 `Box::leak` 会泄漏内存——改为把 referer 存进会话（下面 `register_owned`）。
+    register_owned(url, referer, key)
+}
+
+/// 注册会话（Referer 按所有权存储）。
+fn register_owned(url: &str, referer: String, key: Option<[u8; 16]>) -> Result<String, String> {
+    let port = ensure_port_blocking()?;
+    sweep_and_evict();
+    let token = new_token();
+    let now = Instant::now();
+    let session = Session {
+        url: url.to_owned(),
+        referer,
+        user_agent: drama_net::USER_AGENT_VALUE.to_owned(),
+        key,
+        plan: Mutex::new(None),
+        expires: now + SESSION_TTL,
+        last_used: now,
+        file: None,
+    };
+    SESSIONS
+        .lock()
+        .expect("sessions poisoned")
+        .insert(token.clone(), session);
+    Ok(format!("http://127.0.0.1:{port}/play/{token}/video.mp4"))
+}
+
+/// 十六进制密钥解码。
+fn hex_to_key(hex: &str) -> Result<[u8; 16], String> {
+    if hex.len() != 32 {
+        return Err("密钥长度无效".to_owned());
+    }
+    let mut out = [0u8; 16];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let pair = &hex[i * 2..i * 2 + 2];
+        *slot = u8::from_str_radix(pair, 16).map_err(|_| "密钥格式无效".to_owned())?;
+    }
+    Ok(out)
+}
+
 pub fn register(
     url: &str,
-    referer: &'static str,
+    referer: String,
     user_agent: String,
     key: Option<[u8; 16]>,
 ) -> Result<String, String> {
@@ -182,7 +237,7 @@ pub fn register_file(
     let now = Instant::now();
     let session = Session {
         url: String::new(),
-        referer: "file",
+        referer: String::new(),
         user_agent,
         key,
         file: Some(path.to_owned()),
@@ -245,7 +300,7 @@ fn sweep_and_evict() {
 
 struct SessionView {
     url: String,
-    referer: &'static str,
+    referer: String,
     user_agent: String,
     key: Option<[u8; 16]>,
     file: Option<std::path::PathBuf>,
@@ -261,7 +316,7 @@ fn lookup(token: &str) -> Option<SessionView> {
     session.last_used = Instant::now();
     Some(SessionView {
         url: session.url.clone(),
-        referer: session.referer,
+        referer: session.referer.clone(),
         user_agent: session.user_agent.clone(),
         key: session.key,
         file: session.file.clone(),
@@ -275,7 +330,7 @@ async fn source_size(view: &SessionView) -> Result<u64, String> {
             .map(|m| m.len())
             .map_err(|e| format!("local file: {e}"));
     }
-    upstream_size(&view.url, view.referer, &view.user_agent).await
+    upstream_size(&view.url, &view.referer, &view.user_agent).await
 }
 
 /// 数据源区间读：文件直接读磁盘，回源走 Range。
@@ -286,7 +341,7 @@ async fn source_range(view: &SessionView, start: u64, end: u64) -> Result<Vec<u8
     if let Some(path) = view.file.as_deref() {
         return read_file_range(path, start, end).map_err(|e| format!("local file: {e}"));
     }
-    upstream_range(&view.url, view.referer, &view.user_agent, start, end).await
+    upstream_range(&view.url, &view.referer, &view.user_agent, start, end).await
 }
 
 fn read_file_range(path: &std::path::Path, start: u64, end: u64) -> Result<Vec<u8>, String> {
@@ -424,7 +479,7 @@ async fn serve_connection(mut stream: tokio::net::TcpStream) -> Result<(), Strin
         forward(
             &mut stream,
             &view.url,
-            view.referer,
+            &view.referer,
             &view.user_agent,
             range,
             is_head,
@@ -510,7 +565,7 @@ async fn respond_simple(
 /// 回源请求构造（Range 可选）。
 async fn upstream_get(
     url: &str,
-    referer: &'static str,
+    referer: &str,
     user_agent: &str,
     range: Option<&str>,
 ) -> Result<reqwest::Response, String> {
@@ -528,7 +583,7 @@ async fn upstream_get(
 async fn forward(
     stream: &mut tokio::net::TcpStream,
     url: &str,
-    referer: &'static str,
+    referer: &str,
     user_agent: &str,
     range: Option<String>,
     is_head: bool,
@@ -725,7 +780,7 @@ fn finish_plan(plan: decrypt::MoviePlan, file_size: u64) -> CachedPlan {
     }
 }
 
-async fn upstream_size(url: &str, referer: &'static str, user_agent: &str) -> Result<u64, String> {
+async fn upstream_size(url: &str, referer: &str, user_agent: &str) -> Result<u64, String> {
     let resp = MEDIA_CLIENT
         .head(url)
         .header("Referer", referer)
@@ -757,7 +812,7 @@ async fn upstream_size(url: &str, referer: &'static str, user_agent: &str) -> Re
 
 async fn upstream_range(
     url: &str,
-    referer: &'static str,
+    referer: &str,
     user_agent: &str,
     start: u64,
     end: u64,
