@@ -254,6 +254,7 @@ impl Engine {
                     serde_json::to_value(CatalogWire::from(page)).unwrap_or_default()
                 })
             }),
+            "catalogPages" => self.op_catalog_pages(request),
             "categories" => self.op_read(request, |p, _| {
                 p.categories().map(|items| {
                     Value::Array(
@@ -486,6 +487,94 @@ impl Engine {
             .collect();
         let groups = EpisodeGroups::build(episodes, group_size);
         ok(serde_json::to_value(&groups).unwrap_or_default())
+    }
+
+    /// 一次取回多页目录并合并（首页续载）。
+    ///
+    /// 与 `catalog` 的区别只在**批量**：单页仍是主路径，
+    /// 但首页需要「第一屏就有 60 条」，逐页往返会让首屏等太久。
+    ///
+    /// `depth` 是**已取页数**（缓存水位），返回的是从该水位起最多
+    /// `MAX_PAGES_PER_REQUEST` 页的合并结果——缓存命中的页不发网络。
+    fn op_catalog_pages(&self, request: &Request) -> Response {
+        const MAX_PAGES_PER_REQUEST: u32 = 8;
+        let category = str_param(&request.params, "category")
+            .unwrap_or("")
+            .to_owned();
+        // `depth` 是调用方**已持有的页数**：从这一页开始取。
+        // 传 0 表示「从缓存水位开始」（引擎自己记进度）。
+        let requested_depth = request
+            .params
+            .get("depth")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok());
+
+        let source_key = request
+            .source
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(BUILTIN)
+            .to_owned();
+        let provider = match self.provider(Some(&source_key)) {
+            Ok(provider) => provider,
+            Err(e) => return Response::err(&e),
+        };
+        // 能力协商。
+        if !provider.caps().catalog {
+            return Response::err(&DramaError::Unsupported("catalog"));
+        }
+
+        let cache = drama_store::cache::global();
+        let depth_key = drama_store::cache::key_catalog_depth(&source_key, &category);
+        let start = requested_depth.unwrap_or_else(|| cache.read_depth(&depth_key).unwrap_or(0));
+        let mut items: Vec<Value> = Vec::new();
+        let mut page = start;
+        let mut has_more = true;
+
+        for _ in 0..MAX_PAGES_PER_REQUEST {
+            let key = drama_store::cache::key_catalog(&source_key, &category, page);
+            match cache.get(&key, drama_store::cache::TTL_CATALOG) {
+                Some(hit) if !hit.stale => {
+                    if let Some(list) = hit.value.get("items").and_then(Value::as_array) {
+                        items.extend(list.iter().cloned());
+                    }
+                    has_more = hit.value.get("hasMore").and_then(Value::as_bool).unwrap_or(true);
+                }
+                _ => match provider.catalog(&category, page) {
+                    Ok(result) => {
+                        let mut wire = Vec::with_capacity(result.items.len());
+                        for drama in &result.items {
+                            wire.push(drama.to_wire());
+                        }
+                        has_more = result.has_more;
+                        let value = serde_json::json!({
+                            "items": wire.clone(),
+                            "hasMore": has_more,
+                        });
+                        cache.put(&key, &source_key, value);
+                        items.extend(wire);
+                    }
+                    Err(e) => {
+                        // 已有部分结果时保留它们（首页不该整屏空）。
+                        if items.is_empty() {
+                            return Response::err(&e);
+                        }
+                        break;
+                    }
+                },
+            }
+            page += 1;
+            if !has_more {
+                break;
+            }
+        }
+        cache.write_depth(&depth_key, page);
+
+        ok(serde_json::json!({
+            "items": items,
+            "hasMore": has_more,
+            "depth": page,
+        }))
     }
 
     // ── 取流（注册网关会话 → 返回 PlayPlan）──────────────────
@@ -1143,6 +1232,43 @@ mod tests {
         let big = "x".repeat(drama_types::MAX_INPUT_BYTES + 1);
         let response = global().dispatch(&big);
         assert!(!response.is_ok());
+    }
+
+    #[test]
+    fn every_contract_op_is_dispatched() {
+        // 契约表与实现必须一一对应：表里有、代码没有 → 前端按文档调会拿到
+        // UNSUPPORTED；代码有、表里没有 → 前端根本不知道能调。
+        // 这个测试把两边钉在一起，避免文档漂移。
+        let data = dispatch_ok("ops", json!({}));
+        let names: Vec<String> = data
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|o| o["name"].as_str().map(str::to_owned))
+            .collect();
+        for name in &names {
+            // 用最小参数探一次：只要不是 UNSUPPORTED 就说明已经分发。
+            let value = dispatch(name, json!({}));
+            let code = value["error"]["code"].as_str().unwrap_or("");
+            assert_ne!(
+                code, "UNSUPPORTED",
+                "契约表登记了 {name} 但 dispatch 没有实现它"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires network"]
+    fn catalog_pages_aggregates_and_tracks_depth() {
+        let _guard = serial();
+        let data = dispatch_ok("catalogPages", json!({"category": "", "depth": 0}));
+        let items = data["items"].as_array().expect("items");
+        assert!(!items.is_empty(), "首页续载应有条目");
+        // depth 返回已取页数，且 > 0。
+        assert!(data["depth"].as_u64().unwrap_or(0) > 0);
+        // 再取一次应当从水位继续（depth 增大或不返回重复首屏）。
+        let again = dispatch_ok("catalogPages", json!({"category": "", "depth": 0}));
+        assert!(again["depth"].as_u64().unwrap_or(0) >= data["depth"].as_u64().unwrap_or(0));
     }
 
     #[test]

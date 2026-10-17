@@ -114,7 +114,6 @@ pub const OPS: &[OpSpec] = &[
     OpSpec { name: "sourceUninstall", arbitrated: false, budget_ms: 10_000, needs_source: false, summary: "卸载规则源" },
     OpSpec { name: "sourceEnable", arbitrated: false, budget_ms: 10_000, needs_source: false, summary: "启用/停用规则源" },
     OpSpec { name: "sourceValidate", arbitrated: false, budget_ms: 30_000, needs_source: false, summary: "校验规则源包（不安装）" },
-    OpSpec { name: "sourceTest", arbitrated: true, budget_ms: 60_000, needs_source: false, summary: "对规则源做连通性与解析自测" },
 
     // 局域网同步（lan）与多用户（users）**不在范围内**：
     // 已按产品决定移除，契约表里不留空位——留着一个永远返回
