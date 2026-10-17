@@ -53,6 +53,8 @@ tokio = { version = "1", features = [
 ] }
 tokio-util = "0.7"
 regex = "1"
+# 规则源的 SHA1 支持（部分旧站签名用）。
+sha1 = "0.11"
 url = "2"
 scraper = "0.27"
 # 进程间文件锁（避免 unsafe 手写 flock）。
