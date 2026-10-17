@@ -22,6 +22,10 @@ pub mod extract;
 pub mod manifest;
 pub mod template;
 pub mod transform;
+pub mod store;
+pub mod validate;
 
 pub use manifest::{Auth, ChapterSpec, Manifest, ManifestError, Method, Operation, Pagination,
     PlaybackSpec, RequestSpec};
+pub use store::{InstallError, InstalledSource, SourceStore};
+pub use validate::{ValidationError, validate_default};

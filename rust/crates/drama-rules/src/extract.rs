@@ -220,6 +220,7 @@ pub fn items_from_html<'a>(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use serde_json::json;

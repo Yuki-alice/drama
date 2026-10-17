@@ -10,6 +10,7 @@ description = "规则扩展源：YAML 作者态 → JSON 分发态 + 执行引�
 [dependencies]
 drama-types.workspace = true
 drama-net.workspace = true
+drama-store = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
@@ -25,6 +26,9 @@ cbc.workspace = true
 scraper.workspace = true
 sha1.workspace = true
 once_cell.workspace = true
+
+[dev-dependencies]
+drama-store = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

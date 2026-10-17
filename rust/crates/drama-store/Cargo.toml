@@ -18,5 +18,8 @@ fs2.workspace = true
 url.workspace = true
 sha2.workspace = true
 
+[features]
+test-support = []
+
 [lints]
 workspace = true

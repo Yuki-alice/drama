@@ -530,6 +530,7 @@ impl Manifest {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

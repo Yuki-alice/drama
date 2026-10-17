@@ -83,13 +83,22 @@ pub fn file_in_data_dir(name: &str) -> Option<PathBuf> {
     data_dirs().map(|d| d.data_dir.join(name))
 }
 
-#[cfg(test)]
-pub(crate) mod test_support {
+/// 测试辅助（供同工程其他 crate 的测试复用）。
+///
+/// 只在 `cfg(test)` 下编译会泄漏不到外部 crate；这里用 feature 控制。
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
     use super::*;
 
     /// 测试用临时目录（进程内唯一，Drop 时清理）。
     pub struct TempDir {
         path: PathBuf,
+    }
+
+    impl std::fmt::Debug for TempDir {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("TempDir").field("path", &self.path).finish()
+        }
     }
 
     impl TempDir {

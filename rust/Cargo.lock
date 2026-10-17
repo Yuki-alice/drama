@@ -485,6 +485,7 @@ dependencies = [
  "base64 0.23.1",
  "cbc",
  "drama-net",
+ "drama-store",
  "drama-types",
  "md5",
  "once_cell",
