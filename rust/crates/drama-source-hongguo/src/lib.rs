@@ -30,7 +30,11 @@ pub mod ssr;
 
 
 /// 站点根。
-pub const WEB_BASE: &str = "https://www.hongguoduanju.com";
+/// 站点主域（**不带 www**）。
+///
+/// `www.hongguoduanju.com` 会对分类/榜单等路径返回 301 到裸域；
+/// 直接用裸域省一次往返，也避免某些 CDN 在 301 后丢掉 UA/Referer。
+pub const WEB_BASE: &str = "https://hongguoduanju.com";
 /// App 接口根。
 pub const APP_BASE: &str = "https://api5-normal-sinfonlineb.fqnovel.com";
 /// 播放器侧 Referer（取流地址要求）。

@@ -396,8 +396,16 @@ impl SourceProvider for HongguoProvider {
             format!("{WEB_BASE}/rank/{route}?page={page}")
         };
         let html = drama_net::fetch_text_throttled(&url).map_err(map_error)?;
-        let data = ssr::extract_router_data(&html).map_err(map_error)?;
-        let rows = ssr::parse_ranking(&data, route, page).map_err(map_error)?;
+        // 两条路：先试 loaderData（站点结构完整时最省事），
+        // 失败则回落到渲染后的 DOM——实测榜单的 `content` 常是空对象，
+        // 条目只存在于 HTML 里。
+        let rows = match ssr::extract_router_data(&html)
+            .map_err(|e| e.to_string())
+            .and_then(|data| ssr::parse_ranking(&data, route, page).map_err(|e| e.to_string()))
+        {
+            Ok(rows) => rows,
+            Err(_) => ssr::parse_ranking_html(&html, page).map_err(map_error)?,
+        };
 
         let items = rows
             .iter()

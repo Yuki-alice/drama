@@ -500,6 +500,146 @@ pub fn parse_ranking(
     Ok(out)
 }
 
+/// 从**渲染后的 HTML** 解析榜单。
+///
+/// ## 为什么需要这条路
+///
+/// 榜单页的 `loaderData["rank_xxx/page"].content` 实测是**空对象**——
+/// 条目由客户端 hydration 后插入。但服务端同时把完整条目渲染进了 DOM：
+///
+/// ```html
+/// <ol aria-label="红果热播榜">
+///   <li><article aria-labelledby="rank-title-{seriesId}">
+///     <a aria-label="查看{标题}" href="/detail?series_id={id}">
+///       <img src="{封面}">
+///     </a>
+///     ... {rank} {标题} {热度} {标签}
+/// </article></li>
+/// ```
+///
+/// 所以「content 为空」不等于「没有榜单」，必须再试一次 DOM。
+pub fn parse_ranking_html(html: &str, page: u32) -> Result<Vec<RankingRow>, SsrError> {
+    let document = scraper::Html::parse_document(html);
+    // 每条是一个带 `rank-title-` 标注的 article。
+    let article_selector =
+        scraper::Selector::parse("article[aria-labelledby^='rank-title-']")
+            .map_err(|_| SsrError::MissingPayload("article"))?;
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for article in document.select(&article_selector) {
+        let label = article.value().attr("aria-labelledby").unwrap_or("");
+        let series_id = match label.strip_prefix("rank-title-") {
+            Some(id) if crate::is_numeric_id(id) => id.to_owned(),
+            _ => continue,
+        };
+        if !seen.insert(series_id.clone()) {
+            continue;
+        }
+        let text = article.text().collect::<Vec<_>>().join(" ");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // 标题与封面来自「查看 X」链接。
+        let link_selector = scraper::Selector::parse("a[aria-label^='查看']")
+            .map_err(|_| SsrError::MissingPayload("link"))?;
+        let (title, cover) = article
+            .select(&link_selector)
+            .next()
+            .map(|link| {
+                let title = link
+                    .value()
+                    .attr("aria-label")
+                    .unwrap_or("")
+                    .trim_start_matches("查看")
+                    .trim()
+                    .to_owned();
+                let img_selector = scraper::Selector::parse("img").expect("static selector");
+                let cover = link
+                    .select(&img_selector)
+                    .next()
+                    .and_then(|img| img.value().attr("src"))
+                    .unwrap_or("")
+                    .to_owned();
+                (title, cover)
+            })
+            .unwrap_or_default();
+        if title.is_empty() {
+            continue;
+        }
+
+        // 名次：区块开头的那串纯数字。
+        let rank = text
+            .split_whitespace()
+            .find_map(|token| token.parse::<u32>().ok())
+            .unwrap_or(0);
+
+        let tags = extract_tags(article, &title);
+        rows.push(RankingRow {
+            series_id,
+            title,
+            cover,
+            heat: extract_heat(&text),
+            score: String::new(),
+            description: String::new(),
+            tags,
+            rank,
+        });
+    }
+    if rows.is_empty() {
+        return Err(SsrError::NoItems);
+    }
+    // 名次缺失时按出现顺序补。
+    for (index, row) in rows.iter_mut().enumerate() {
+        if row.rank == 0 {
+            row.rank = (index + 1) as u32 + (page.saturating_sub(1)) * 20;
+        }
+    }
+    Ok(rows)
+}
+
+/// 从文本里提取 `9200万热度` 这类指标。
+fn extract_heat(text: &str) -> String {
+    static PATTERN: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"([0-9]+(?:\.[0-9]+)?[万亿]?\s*热度)").expect("valid")
+    });
+    PATTERN
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().split_whitespace().collect::<String>())
+        .unwrap_or_default()
+}
+
+/// 从 article 里提取标签（短文本 span，**排除标题**）。
+///
+/// 标题本身也常裹在 `<span>` 里，只按文本长度过滤会把它误收成标签——
+/// 故先收集标题文本，命中即跳过。
+fn extract_tags(article: scraper::ElementRef<'_>, title: &str) -> Vec<String> {
+    let Ok(selector) = scraper::Selector::parse("span") else {
+        return Vec::new();
+    };
+    let mut tags = Vec::new();
+    for span in article.select(&selector) {
+        let text = span.text().collect::<String>();
+        let trimmed = text.trim();
+        // 标签是 2~8 字的中文短语；标题/热度/名次/集数都不算。
+        if trimmed.is_empty()
+            || trimmed == title
+            || trimmed.chars().count() > 8
+            || trimmed.chars().any(|c| c.is_ascii_digit())
+            || trimmed.contains("热度")
+            || trimmed.contains('集')
+        {
+            continue;
+        }
+        if !tags.iter().any(|t: &String| t == trimmed) {
+            tags.push(trimmed.to_owned());
+        }
+        if tags.len() == 4 {
+            break;
+        }
+    }
+    tags
+}
+
 /// 封面字段可能是字符串、对象或数组，统一取出路径。
 fn cover_path_of(value: &Value) -> String {
     match value {
@@ -842,6 +982,57 @@ mod tests {
             parse_ranking(&data, "hot-drama", 1).unwrap_err(),
             SsrError::NotSuccessful
         );
+    }
+
+    #[test]
+    fn parses_ranking_from_rendered_html() {
+        // 实测页面的结构缩影：content 为空，条目只在 DOM 里。
+        let html = r#"
+        <ol aria-label="红果热播榜">
+          <li><article aria-labelledby="rank-title-111">
+            <a aria-label="查看甲剧" href="/detail?series_id=111">
+              <picture><img src="https://cdn/a.jpg"></picture>
+            </a>
+            <span>1</span><span>甲剧</span><span>9200万热度</span><span>都市</span>
+          </article></li>
+          <li><article aria-labelledby="rank-title-222">
+            <a aria-label="查看乙剧" href="/detail?series_id=222">
+              <img src="https://cdn/b.jpg">
+            </a>
+            <span>2</span><span>乙剧</span><span>7287万热度</span><span>甜宠</span>
+          </article></li>
+        </ol>"#;
+        let rows = parse_ranking_html(html, 1).expect("parse");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].series_id, "111");
+        assert_eq!(rows[0].title, "甲剧");
+        assert_eq!(rows[0].cover, "https://cdn/a.jpg");
+        assert_eq!(rows[0].rank, 1);
+        assert_eq!(rows[0].heat, "9200万热度");
+        assert_eq!(rows[0].tags, vec!["都市"]);
+        assert_eq!(rows[1].rank, 2);
+    }
+
+    #[test]
+    fn ranking_html_rejects_non_numeric_ids() {
+        let html = r#"<article aria-labelledby="rank-title-notanid">
+            <a aria-label="查看X"><img src="c.jpg"></a><span>1</span>
+        </article>"#;
+        assert_eq!(
+            parse_ranking_html(html, 1).unwrap_err(),
+            SsrError::NoItems
+        );
+    }
+
+    #[test]
+    fn ranking_html_fills_missing_rank_by_order() {
+        // 页面没有名次数字时按顺序补，且第二页要偏移 20。
+        let html = r#"
+        <article aria-labelledby="rank-title-1"><a aria-label="查看A"><img src="a.jpg"></a></article>
+        <article aria-labelledby="rank-title-2"><a aria-label="查看B"><img src="b.jpg"></a></article>"#;
+        let rows = parse_ranking_html(html, 2).expect("parse");
+        assert_eq!(rows[0].rank, 21);
+        assert_eq!(rows[1].rank, 22);
     }
 
     #[test]
