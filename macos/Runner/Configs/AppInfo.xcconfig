@@ -1,0 +1,11 @@
+// Application-level settings for the Runner target.
+
+// ASCII product name keeps the .app path stable; the Chinese display name is
+// set through CFBundleDisplayName in Info.plist.
+PRODUCT_NAME = HongGuoJian
+
+// Keep the same bundle identifier as iOS so local settings and the app group
+// name stay consistent across Apple platforms.
+PRODUCT_BUNDLE_IDENTIFIER = com.duanju.duanjuApp
+
+PRODUCT_COPYRIGHT = Copyright © 2026 com.duanju. All rights reserved.
