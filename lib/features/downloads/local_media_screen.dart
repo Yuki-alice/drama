@@ -3,11 +3,13 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/local_store.dart';
-import 'package:duanju_app/features/downloads/media_library.dart';
+import 'package:duanju_app/data/media/media_library.dart';
 import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/features/lan/lan_controller_provider.dart';
 import 'package:duanju_app/features/player/player_screen.dart';
 import 'package:duanju_app/features/settings/settings_screen.dart';
 import 'package:duanju_app/features/downloads/merge_queue_screen.dart';
@@ -17,16 +19,17 @@ class LocalMediaScreen extends StatefulWidget {
     super.key,
     required this.repository,
     required this.store,
+    required this.library,
   });
   final AppRepository repository;
   final LocalStore store;
+  final MediaLibrary library;
   @override
   State<LocalMediaScreen> createState() => _LocalMediaScreenState();
 }
 
 class _LocalMediaScreenState extends State<LocalMediaScreen> {
-  late final MediaLibrary library =
-      MediaLibrary.current ?? MediaLibrary(widget.repository, widget.store);
+  MediaLibrary get library => widget.library;
   List<DownloadJob> _jobs = [];
   bool _loading = true, _merged = true;
   String? _error;
@@ -35,12 +38,6 @@ class _LocalMediaScreenState extends State<LocalMediaScreen> {
   void initState() {
     super.initState();
     _refresh();
-  }
-
-  @override
-  void dispose() {
-    if (library != MediaLibrary.current && !library.busy) library.dispose();
-    super.dispose();
   }
 
   Future<void> _refresh() async {
@@ -140,6 +137,10 @@ class _LocalMediaScreenState extends State<LocalMediaScreen> {
           localOnly: true,
           allowOnlineFallback: false,
           mediaId: item.id,
+          lan: ProviderScope.containerOf(
+            context,
+            listen: false,
+          ).read(lanControllerProvider),
         ),
       ),
     );

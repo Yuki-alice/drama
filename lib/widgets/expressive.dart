@@ -102,9 +102,7 @@ class _ExpressiveActionState extends State<ExpressiveAction> {
           clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
             color: widget.color,
-            borderRadius: _pressed
-                ? BorderRadius.circular(16)
-                : widget.radius,
+            borderRadius: _pressed ? BorderRadius.circular(16) : widget.radius,
           ),
           child: Material(
             type: MaterialType.transparency,
@@ -160,7 +158,11 @@ class AdaptivePair extends StatelessWidget {
     if (stack) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [first, SizedBox(height: gap), second],
+        children: [
+          first,
+          SizedBox(height: gap),
+          second,
+        ],
       );
     }
     return IntrinsicHeight(

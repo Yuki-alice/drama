@@ -3,8 +3,10 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:duanju_app/features/lan/lan_controller.dart';
+import 'package:duanju_app/features/lan/lan_controller_provider.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/widgets/settings_widgets.dart';
 import 'package:duanju_app/widgets/widgets.dart';
@@ -71,13 +73,10 @@ Future<LanConnection?> chooseLanDevice(
 }
 
 void openLanSync(BuildContext context) {
-  final controller = LanController.current;
-  if (controller == null) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('设备互联尚未就绪')));
-    return;
-  }
+  final controller = ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(lanControllerProvider);
   Navigator.push(
     context,
     MaterialPageRoute<void>(
@@ -978,8 +977,10 @@ class LanPushButton extends StatelessWidget {
   final VoidCallback? onPressed;
   @override
   Widget build(BuildContext context) {
-    final link = LanController.current;
-    if (link == null) return const SizedBox.shrink();
+    final link = ProviderScope.containerOf(
+      context,
+      listen: false,
+    ).read(lanControllerProvider);
     return AnimatedBuilder(
       animation: link,
       builder: (context, _) => IconButton(

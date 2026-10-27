@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'package:duanju_app/core/app_platform.dart';
 import 'package:duanju_app/app/app_layout.dart';
 import 'package:duanju_app/app/app_screen.dart';
 import 'package:duanju_app/app/app_theme.dart';
@@ -16,8 +17,8 @@ import 'package:duanju_app/core/diary_service.dart';
 import 'package:duanju_app/core/download_preferences.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/playback_preferences.dart';
-import 'package:duanju_app/features/downloads/background_downloads.dart';
-import 'package:duanju_app/features/lan/lan_controller.dart';
+import 'package:duanju_app/data/media/background_downloads.dart';
+import 'package:duanju_app/features/lan/lan_controller_provider.dart';
 import 'package:duanju_app/features/lan/lan_screen.dart';
 import 'package:duanju_app/features/settings/resource_settings_screen.dart';
 import 'package:duanju_app/features/sources/sources_screen.dart';
@@ -96,10 +97,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           label: '规则管理',
           description: '站源规则的启用、更新与检测',
           icon: Icons.extension_rounded,
-          build: (_) => SourcesScreen(
-            repository: widget.repository,
-            store: widget.store,
-          ),
+          build: (_) =>
+              SourcesScreen(repository: widget.repository, store: widget.store),
         ),
         _SettingsCategory(
           id: 'download',
@@ -113,10 +112,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           label: '下载目录与空间',
           description: '存储用量与迁移已下载文件',
           icon: Icons.storage_rounded,
-          build: (_) => StorageScreen(
-            repository: widget.repository,
-            store: widget.store,
-          ),
+          build: (_) =>
+              StorageScreen(repository: widget.repository, store: widget.store),
         ),
       ],
     ),
@@ -164,7 +161,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           label: '备份与恢复',
           description: '导出或恢复本机配置数据',
           icon: Icons.backup_outlined,
-          build: (_) => _BackupPane(repository: widget.repository, store: widget.store),
+          build: (_) =>
+              _BackupPane(repository: widget.repository, store: widget.store),
         ),
         _SettingsCategory(
           id: 'about',
@@ -182,12 +180,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ];
 
   String _resolveCategory(String? id) {
-    final all = [
-      for (final group in _groups) ...group.categories,
-    ];
-    return all.any((category) => category.id == id)
-        ? id!
-        : all.first.id;
+    final all = [for (final group in _groups) ...group.categories];
+    return all.any((category) => category.id == id) ? id! : all.first.id;
   }
 
   void _open(_SettingsCategory category, {required bool wide}) {
@@ -195,10 +189,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() => _selected = category.id);
       return;
     }
-    Navigator.push(
-      context,
-      MaterialPageRoute<void>(builder: category.build),
-    );
+    Navigator.push(context, MaterialPageRoute<void>(builder: category.build));
   }
 
   @override
@@ -363,13 +354,11 @@ class _AppearancePane extends StatelessWidget {
                   onTap: () =>
                       saveUserChange(context, () => store.setThemeMode(mode)),
                   title: Text(AppTheme.label(mode)),
-                  subtitle: Text(
-                    switch (mode) {
-                      'system' => '跟随设备的浅色/深色设置',
-                      'light' => '始终使用浅色',
-                      _ => '始终使用深色',
-                    },
-                  ),
+                  subtitle: Text(switch (mode) {
+                    'system' => '跟随设备的浅色/深色设置',
+                    'light' => '始终使用浅色',
+                    _ => '始终使用深色',
+                  }),
                   trailing: Icon(
                     store.themeMode == mode
                         ? Icons.check_circle_rounded
@@ -465,9 +454,7 @@ class _PlaybackPane extends StatelessWidget {
                         for (final value in DownloadPreferences.qualities)
                           SimpleDialogOption(
                             onPressed: () => Navigator.pop(context, value),
-                            child: Text(
-                              value == 0 ? '自动 · 优先高清' : '$value P',
-                            ),
+                            child: Text(value == 0 ? '自动 · 优先高清' : '$value P'),
                           ),
                       ],
                     ),
@@ -515,17 +502,10 @@ class _LanPane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final controller = LanController.current;
-    if (controller == null) {
-      return const SettingsDetailScaffold(
-        title: '设备互联',
-        body: StatusPanel(
-          title: '设备互联未就绪',
-          message: '同一局域网内的另一台设备启动后即可发现。',
-          icon: Icons.devices_rounded,
-        ),
-      );
-    }
+    final controller = ProviderScope.containerOf(
+      context,
+      listen: false,
+    ).read(lanControllerProvider);
     return LanSyncScreen(controller: controller);
   }
 }
@@ -574,10 +554,8 @@ class _DiaryPaneState extends State<_DiaryPane> {
           return ListView.separated(
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
             itemCount: entries.length,
-            separatorBuilder: (_, _) => Divider(
-              height: 1,
-              color: colors.outlineVariant,
-            ),
+            separatorBuilder: (_, _) =>
+                Divider(height: 1, color: colors.outlineVariant),
             itemBuilder: (context, index) => SelectableText(
               entries[index],
               style: Theme.of(context).textTheme.bodySmall,
@@ -707,15 +685,19 @@ class _BackupPaneState extends State<_BackupPane> {
                         }
                         await widget.store.setAutoExport(value);
                       } catch (error) {
-                        if (mounted) setState(() => _message = error.toString());
+                        if (mounted) {
+                          setState(() => _message = error.toString());
+                        }
                       }
                     },
             ),
             SwitchListTile(
               value: widget.store.exportPosters,
               title: const Text('同时导出海报文件'),
-              subtitle: const Text('默认只写海报 URL；'
-                  '源站海报需要解密或外部读取失败时可开启。'),
+              subtitle: const Text(
+                '默认只写海报 URL；'
+                '源站海报需要解密或外部读取失败时可开启。',
+              ),
               onChanged: _busy
                   ? null
                   : (value) => saveUserChange(
@@ -766,9 +748,7 @@ class _AboutPane extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.play_circle_fill_rounded),
               title: const Text('独立运行'),
-              subtitle: const Text(
-                '打开即可浏览和播放，观看记录与追剧收藏保存在当前设备。',
-              ),
+              subtitle: const Text('打开即可浏览和播放，观看记录与追剧收藏保存在当前设备。'),
             ),
             ListTile(
               leading: const Icon(Icons.dns_outlined),
@@ -839,10 +819,10 @@ class _StorageScreenState extends State<StorageScreen> {
 
   Future<void> _move() async {
     String? parent;
-    if (Platform.isAndroid || Platform.isIOS) {
+    if (isAndroidPlatform || isIOSPlatform) {
       final support = await getApplicationSupportDirectory();
       final directories = <String, String>{support.path: '应用内部存储'};
-      if (Platform.isAndroid) {
+      if (isAndroidPlatform) {
         final external = await getExternalStorageDirectories() ?? [];
         for (var i = 0; i < external.length; i++) {
           directories[external[i].path] = i == 0

@@ -25,10 +25,7 @@ class MeScreen extends StatelessWidget {
             style: FilledButton.styleFrom(
               backgroundColor: theme.colorScheme.surfaceContainerHigh,
               foregroundColor: theme.colorScheme.onSurface,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 18,
-                vertical: 12,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
             ),
             onPressed: () => context.push('/settings'),
             icon: const Icon(Icons.tune_rounded, size: 20),
@@ -40,8 +37,7 @@ class MeScreen extends StatelessWidget {
         animation: store,
         builder: (_, _) => _MeSpace(
           store: store,
-          supportsDownloads:
-              repository.supportsDownloads && store.canDownload,
+          supportsDownloads: repository.supportsDownloads && store.canDownload,
         ),
       ),
     );
@@ -49,10 +45,7 @@ class MeScreen extends StatelessWidget {
 }
 
 class _MeSpace extends StatelessWidget {
-  const _MeSpace({
-    required this.store,
-    required this.supportsDownloads,
-  });
+  const _MeSpace({required this.store, required this.supportsDownloads});
 
   final LocalStore store;
   final bool supportsDownloads;
@@ -100,9 +93,7 @@ class _MeSpace extends StatelessWidget {
                       caption:
                           '${store.history.length} 部最近观看 · '
                           '在追剧页切换查看',
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.secondaryContainer,
+                      color: Theme.of(context).colorScheme.secondaryContainer,
                       foreground: Theme.of(
                         context,
                       ).colorScheme.onSecondaryContainer,
@@ -114,9 +105,7 @@ class _MeSpace extends StatelessWidget {
                       caption: supportsDownloads
                           ? '任务、合并队列与本地媒体库'
                           : '当前环境未开放本地下载',
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.tertiaryContainer,
+                      color: Theme.of(context).colorScheme.tertiaryContainer,
                       foreground: Theme.of(
                         context,
                       ).colorScheme.onTertiaryContainer,
@@ -133,9 +122,7 @@ class _MeSpace extends StatelessWidget {
                       icon: Icons.devices_rounded,
                       title: '设备互联',
                       caption: '局域网追剧同步与推送播放',
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.surfaceContainerHigh,
+                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
                       foreground: Theme.of(context).colorScheme.onSurface,
                       onTap: () => context.push('/settings?category=lan'),
                     ),
@@ -145,9 +132,7 @@ class _MeSpace extends StatelessWidget {
                       caption:
                           'v${AppLayout.versionOf(context)} · '
                           '数据只保存在这台设备',
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.surfaceContainerHigh,
+                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
                       foreground: Theme.of(context).colorScheme.onSurface,
                       onTap: () => context.push('/settings?category=about'),
                     ),
@@ -413,8 +398,10 @@ class _PreferencesPanel extends StatelessWidget {
       children: [
         for (var i = 0; i < _entries.length; i++) ...[
           if (i > 0) const SizedBox(width: 4, height: 4),
-          if (stack) _button(context, i)
-          else Expanded(child: _button(context, i)),
+          if (stack)
+            _button(context, i)
+          else
+            Expanded(child: _button(context, i)),
         ],
       ],
     );
@@ -450,15 +437,11 @@ class _PreferencesPanel extends StatelessWidget {
     final radius = stack
         ? BorderRadius.vertical(
             top: Radius.circular(index == 0 ? 24 : 8),
-            bottom: Radius.circular(
-              index == _entries.length - 1 ? 24 : 8,
-            ),
+            bottom: Radius.circular(index == _entries.length - 1 ? 24 : 8),
           )
         : BorderRadius.horizontal(
             left: Radius.circular(index == 0 ? 24 : 8),
-            right: Radius.circular(
-              index == _entries.length - 1 ? 24 : 8,
-            ),
+            right: Radius.circular(index == _entries.length - 1 ? 24 : 8),
           );
     return ExpressiveAction(
       color: colors.secondaryContainer,
@@ -501,11 +484,7 @@ class _ArrowCue extends StatelessWidget {
         color: color,
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Icon(
-        Icons.arrow_forward_rounded,
-        color: foreground,
-        size: 20,
-      ),
+      child: Icon(Icons.arrow_forward_rounded, color: foreground, size: 20),
     ),
   );
 }
@@ -529,8 +508,7 @@ class _ExpressivePanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ExpressiveAction(
     color: color,
-    foreground:
-        foreground ?? Theme.of(context).colorScheme.onSurface,
+    foreground: foreground ?? Theme.of(context).colorScheme.onSurface,
     radius: radius,
     onTap: onTap,
     child: child,

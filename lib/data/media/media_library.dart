@@ -6,15 +6,17 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 
-import 'package:duanju_app/features/downloads/background_downloads.dart';
+import 'package:duanju_app/core/app_platform.dart';
+import 'package:duanju_app/data/media/background_downloads.dart';
 import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/data/native_repository.dart';
 import 'package:duanju_app/core/local_store.dart';
-import 'package:duanju_app/features/downloads/media_pipeline.dart';
+import 'package:duanju_app/data/media/media_pipeline.dart';
 import 'package:duanju_app/core/models.dart';
 
-part 'package:duanju_app/features/downloads/media_merge_queue.dart';
-part 'package:duanju_app/features/downloads/media_merge.dart';
-part 'package:duanju_app/features/downloads/media_exports.dart';
+part 'package:duanju_app/data/media/media_merge_queue.dart';
+part 'package:duanju_app/data/media/media_merge.dart';
+part 'package:duanju_app/data/media/media_exports.dart';
 
 class LocalMediaItem {
   LocalMediaItem({
@@ -130,11 +132,39 @@ class MediaLibrary extends ChangeNotifier {
   }) : executor = executor ?? FFmpegExecutor() {
     store.addListener(_accessChanged);
   }
+
+  /// 平台相关的自动导出：Android 拉起前台下载服务，桌面平台额外挂一个
+  /// 后台仓库实例做定时导出。
+  factory MediaLibrary.attached(AppRepository repository, LocalStore store) {
+    final library = MediaLibrary(repository, store);
+    if (isAndroidPlatform && store.autoExport) {
+      unawaited(
+        BackgroundDownloads.ensureStarted().catchError((Object error) {
+          library.error = error.toString();
+        }),
+      );
+    }
+    if (!isAndroidPlatform) {
+      final automatic = MediaLibrary(
+        repository is NativeRepository
+            ? NativeRepository(background: true)
+            : repository,
+        store,
+        automaticWorker: true,
+      );
+      library._automatic = automatic;
+      library._timer = Timer.periodic(
+        const Duration(seconds: 8),
+        (_) => unawaited(automatic.maybeExport()),
+      );
+    }
+    return library;
+  }
+
   final AppRepository repository;
   final LocalStore store;
   final MediaExecutor executor;
   final bool automaticWorker;
-  static MediaLibrary? current;
   MergeQueue? _merges;
   MergeQueue get merges => _merges ??= MergeQueue(this);
   Set<String> _taskSources = const {};
@@ -172,33 +202,6 @@ class MediaLibrary extends ChangeNotifier {
   String status = '', error = '';
   double progress = 0;
   DateTime _retryAfter = DateTime(2000);
-
-  static void attach(AppRepository repository, LocalStore store) {
-    current?.dispose();
-    final library = MediaLibrary(repository, store);
-    current = library;
-    if (Platform.isAndroid && store.autoExport) {
-      unawaited(
-        BackgroundDownloads.ensureStarted().catchError((Object error) {
-          library.error = error.toString();
-        }),
-      );
-    }
-    if (!Platform.isAndroid) {
-      final automatic = MediaLibrary(
-        repository is NativeRepository
-            ? NativeRepository(background: true)
-            : repository,
-        store,
-        automaticWorker: true,
-      );
-      library._automatic = automatic;
-      library._timer = Timer.periodic(
-        const Duration(seconds: 8),
-        (_) => unawaited(automatic.maybeExport()),
-      );
-    }
-  }
 
   List<LocalMediaItem> get items =>
       _items

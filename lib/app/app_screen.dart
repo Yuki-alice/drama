@@ -36,8 +36,7 @@ class _AppScreenState extends State<AppScreen> {
   bool _scrolled = false;
 
   bool _onScroll(ScrollUpdateNotification notification) {
-    if (notification.depth > 0 ||
-        notification.metrics.axis != Axis.vertical) {
+    if (notification.depth > 0 || notification.metrics.axis != Axis.vertical) {
       return false;
     }
     final next = notification.metrics.pixels > 24;
@@ -78,10 +77,7 @@ class _AppScreenState extends State<AppScreen> {
             ),
           ),
         ),
-        actions: [
-          ...widget.actions,
-          const SizedBox(width: 4),
-        ],
+        actions: [...widget.actions, const SizedBox(width: 4)],
       ),
       floatingActionButton: widget.floatingActionButton,
       bottomNavigationBar: widget.bottomBar,

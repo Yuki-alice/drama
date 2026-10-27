@@ -12,8 +12,16 @@ class AppShell extends StatelessWidget {
 
   static const _destinations = [
     (icon: Icons.explore_outlined, selected: Icons.explore, label: '发现'),
-    (icon: Icons.bookmark_border_rounded, selected: Icons.bookmark_rounded, label: '追剧'),
-    (icon: Icons.person_outline_rounded, selected: Icons.person_rounded, label: '我的'),
+    (
+      icon: Icons.bookmark_border_rounded,
+      selected: Icons.bookmark_rounded,
+      label: '追剧',
+    ),
+    (
+      icon: Icons.person_outline_rounded,
+      selected: Icons.person_rounded,
+      label: '我的',
+    ),
   ];
 
   void _select(BuildContext context, int index) => navigationShell.goBranch(

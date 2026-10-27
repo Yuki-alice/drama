@@ -1,3 +1,4 @@
+import 'package:duanju_app/core/app_platform.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -70,7 +71,7 @@ class VideoEnhancementAssets {
     File? previous;
     try {
       await temporary.writeAsBytes(bytes, flush: true);
-      if (Platform.isWindows && await destination.exists()) {
+      if (isWindowsPlatform && await destination.exists()) {
         previous = await destination.rename('${temporary.path}.previous');
       }
       await temporary.rename(destination.path);

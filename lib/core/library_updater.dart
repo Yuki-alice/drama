@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/gateways.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
 import 'package:duanju_app/core/source_status.dart';
@@ -10,7 +10,7 @@ import 'package:duanju_app/core/source_status.dart';
 class LibraryUpdater extends ChangeNotifier {
   LibraryUpdater(this.repository, this.store, {this.onCatalogChanged});
 
-  final AppRepository repository;
+  final SourceGateway repository;
   final LocalStore store;
   final ValueChanged<String>? onCatalogChanged;
   final _statuses = <String, SourceStatus>{};

@@ -3,7 +3,7 @@ import 'dart:ui';
 
 import 'package:media_kit/media_kit.dart';
 
-import 'package:duanju_app/features/player/video_enhancement_preferences.dart';
+import 'package:duanju_app/core/video_enhancement_preferences.dart';
 import 'package:duanju_app/features/player/video_output_size.dart';
 
 enum VideoEnhancementBackend {

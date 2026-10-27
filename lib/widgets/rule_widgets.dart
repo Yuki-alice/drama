@@ -48,8 +48,9 @@ class RulePageIntro extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             description,
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(color: colors.onPrimaryContainer),
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: colors.onPrimaryContainer,
+            ),
           ),
           if (actions.isNotEmpty) ...[
             const SizedBox(height: 20),
@@ -69,8 +70,10 @@ InputDecoration ruleInputDecoration(
   Widget? suffix,
 }) {
   final colors = Theme.of(context).colorScheme;
-  OutlineInputBorder border(BorderSide side) =>
-      OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: side);
+  OutlineInputBorder border(BorderSide side) => OutlineInputBorder(
+    borderRadius: BorderRadius.circular(16),
+    borderSide: side,
+  );
   return InputDecoration(
     labelText: label,
     hintText: hint,
@@ -231,11 +234,7 @@ class RuleCard extends StatelessWidget {
                               ],
                               if (tags.isNotEmpty) ...[
                                 const SizedBox(height: 8),
-                                Wrap(
-                                  spacing: 6,
-                                  runSpacing: 6,
-                                  children: tags,
-                                ),
+                                Wrap(spacing: 6, runSpacing: 6, children: tags),
                               ],
                               if (caption != null) ...[
                                 const SizedBox(height: 6),
@@ -286,11 +285,7 @@ class RuleCard extends StatelessWidget {
                     if (details == null) return header;
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        header,
-                        const SizedBox(height: 14),
-                        details!,
-                      ],
+                      children: [header, const SizedBox(height: 14), details!],
                     );
                   },
                 ),

@@ -39,6 +39,7 @@ class PlayerControls extends StatefulWidget {
     this.onPush,
     this.onPictureInPicture,
     this.enhancement,
+    this.link,
   });
 
   final Player player;
@@ -69,6 +70,7 @@ class PlayerControls extends StatefulWidget {
   final Future<void> Function()? onPush;
   final Future<void> Function()? onPictureInPicture;
   final VideoEnhancementController? enhancement;
+  final LanController? link;
 
   @override
   State<PlayerControls> createState() => _PlayerControlsState();
@@ -679,7 +681,7 @@ class _PlayerControlsState extends State<PlayerControls> {
       Row(mainAxisSize: MainAxisSize.min, children: children);
 
   Widget _lanPushTool(Key key) {
-    final link = LanController.current;
+    final link = widget.link;
     if (link == null) return const SizedBox.shrink();
     return AnimatedBuilder(
       animation: link,

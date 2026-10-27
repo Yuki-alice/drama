@@ -1,5 +1,5 @@
+import 'package:duanju_app/core/app_platform.dart';
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -33,7 +33,7 @@ class VideoOutputSizeAdapter {
   Future<void> _initialize() async {
     await video.platform.future;
     if (_closed) return;
-    if (Platform.isAndroid) {
+    if (isAndroidPlatform) {
       _subscription = video.player.stream.videoParams.listen((_) {
         if (_closed || _target == null) return;
         unawaited(
@@ -53,7 +53,7 @@ class VideoOutputSizeAdapter {
         : Size(value.width.roundToDouble(), value.height.roundToDouble());
     final changed = _target != normalized;
     _target = normalized;
-    if (Platform.isAndroid) {
+    if (isAndroidPlatform) {
       await _resizeAndroid();
     } else if (changed || normalized == null) {
       await video.setSize(

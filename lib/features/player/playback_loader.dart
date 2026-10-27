@@ -1,10 +1,11 @@
+import 'package:duanju_app/core/gateways.dart';
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/models.dart';
 
 class PlaybackLoader {
   PlaybackLoader(this.repository);
 
-  final AppRepository repository;
+  final PlaybackGateway repository;
   int _generation = 0;
   bool _closed = false;
 

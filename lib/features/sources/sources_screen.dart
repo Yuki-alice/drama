@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +9,7 @@ import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
 import 'package:duanju_app/core/source_status.dart';
+import 'package:duanju_app/features/sources/sources_view_model.dart';
 import 'package:duanju_app/widgets/rule_widgets.dart';
 import 'package:duanju_app/widgets/settings_widgets.dart';
 
@@ -42,25 +42,23 @@ class SourcesScreen extends StatefulWidget {
 }
 
 class _SourcesScreenState extends State<SourcesScreen> {
-  final _statuses = <String, SourceStatus>{};
-  final _errors = <String, String>{};
-  final _pending = <String>{};
-  final _revisions = <String, int>{};
+  late final SourcesViewModel _model;
   final _expanded = <String>{};
   final _search = TextEditingController();
   final _selected = <String>{};
   Timer? _timer;
-  bool _polling = false;
   bool _selecting = false;
-  bool _updatingAll = false;
-  bool _deleting = false;
   _RuleFilter _filter = _RuleFilter.all;
 
-  /// 已安装扩展的元数据（id -> 行），用于版本标签与卸载。
-  final _installed = <String, Map<String, dynamic>>{};
-  List<Map<String, dynamic>> _catalog = const [];
-  String? _catalogError;
-  final _catalogBusy = <String>{};
+  Map<String, SourceStatus> get _statuses => _model.statuses;
+  Map<String, String> get _errors => _model.errors;
+  Set<String> get _pending => _model.pending;
+  Map<String, Map<String, dynamic>> get _installed => _model.installed;
+  List<Map<String, dynamic>> get _catalog => _model.catalog;
+  String? get _catalogError => _model.catalogError;
+  Set<String> get _catalogBusy => _model.catalogBusy;
+  bool get _updatingAll => _model.updatingAll;
+  bool get _deleting => _model.deleting;
 
   bool get _canManageRules => widget.repository.supportsSourceManagement;
 
@@ -70,170 +68,59 @@ class _SourcesScreenState extends State<SourcesScreen> {
     if (widget.initialSource != null) {
       _expanded.add(widget.initialSource!);
     }
-    unawaited(_refresh());
-    unawaited(_loadExtensions());
+    _model = SourcesViewModel(
+      repository: widget.repository,
+      store: widget.store,
+      drama: widget.drama,
+    )..addListener(_modelChanged);
+    unawaited(_model.refresh());
+    unawaited(_model.loadExtensions());
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_statuses.values.any((status) => status.retryAt != null)) {
+      if (_model.statuses.values.any((status) => status.retryAt != null)) {
         setState(() {});
       }
-      if (_statuses.values.any((status) => status.running)) {
-        unawaited(_refresh());
+      if (_model.statuses.values.any((status) => status.running)) {
+        unawaited(_model.refresh());
       }
     });
+  }
+
+  void _modelChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _timer?.cancel();
     _search.dispose();
+    _model.removeListener(_modelChanged);
+    _model.dispose();
     super.dispose();
   }
 
-  Future<void> _loadExtensions() async {
-    String? error;
-    var rows = const <Map<String, dynamic>>[];
-    try {
-      rows = await widget.repository.installedExtensions();
-      SourceSite.setInstalledExtensions(rows);
-      widget.store.refreshSources();
-    } catch (failure) {
-      error = failure.toString();
+  Future<void> _loadExtensions() => _model.loadExtensions();
+
+  Future<void> _toggleInCatalog(Map<String, dynamic> entry) =>
+      _model.toggleInCatalog(entry);
+
+  Future<void> _refresh() => _model.refresh();
+
+  Future<void> _run(SourceSite source, String operation) {
+    if (operation == 'check' || operation == 'checkCatalog') {
+      setState(() => _expanded.add(source.id));
     }
-    final installed = {
-      for (final row in rows) row['id'] as String? ?? '': row,
-    };
-    try {
-      final raw = await rootBundle.loadString('extensions-repo/index.json');
-      final entries = [
-        for (final row in jsonDecode(raw) as List)
-          if (row is Map)
-            {
-              ...Map<String, dynamic>.from(row),
-              'bundled': true,
-              'installed': installed.containsKey(row['id']),
-            },
-      ];
-      if (!mounted) return;
-      setState(() {
-        _installed
-          ..clear()
-          ..addAll(installed);
-        _catalog = entries;
-        _catalogError = error;
-      });
-    } catch (failure) {
-      if (!mounted) return;
-      setState(() {
-        _installed
-          ..clear()
-          ..addAll(installed);
-        _catalog = [
-          for (final entry in installed.values)
-            {...entry, 'bundled': true, 'installed': true},
-        ];
-        _catalogError = error ?? failure.toString();
-      });
-    }
+    return _model.run(source, operation);
   }
 
-  Future<void> _toggleInCatalog(Map<String, dynamic> entry) async {
-    final id = entry['id'] as String? ?? '';
-    if (id.isEmpty || _catalogBusy.contains(id)) return;
-    setState(() => _catalogBusy.add(id));
-    try {
-      if (entry['installed'] == true) {
-        await widget.repository.uninstallExtension(id);
-      } else {
-        final code = await rootBundle.loadString(
-          'extensions-repo/extensions/$id.js',
-        );
-        await widget.repository.installExtension(id, code: code);
-      }
-      await _loadExtensions();
-      await _refresh();
-    } catch (failure) {
-      if (mounted) setState(() => _catalogError = failure.toString());
-    } finally {
-      if (mounted) setState(() => _catalogBusy.remove(id));
-    }
-  }
+  Future<void> _updateAll(List<SourceSite> sources) =>
+      _model.updateAll(sources);
 
-  Future<void> _refresh() async {
-    if (_polling) return;
-    _polling = true;
-    try {
-      final targets = widget.store.sources;
-      await Future.wait([
-        for (final source in targets)
-          (() async {
-            final revision = _revisions[source.id] ?? 0;
-            try {
-              final status = await widget.repository.sourceStatus(source.id);
-              if (!mounted || revision != (_revisions[source.id] ?? 0)) return;
-              setState(() {
-                _statuses[source.id] = status;
-                _errors.remove(source.id);
-              });
-            } catch (failure) {
-              if (mounted && revision == (_revisions[source.id] ?? 0)) {
-                setState(() => _errors[source.id] = failure.toString());
-              }
-            }
-          })(),
-      ]);
-    } finally {
-      _polling = false;
-    }
-  }
-
-  Future<void> _run(SourceSite source, String operation) async {
-    if (_pending.contains(source.id)) return;
-    setState(() {
-      _pending.add(source.id);
-      _errors.remove(source.id);
-      _revisions[source.id] = (_revisions[source.id] ?? 0) + 1;
-      if (operation == 'check' || operation == 'checkCatalog') {
-        _expanded.add(source.id);
-      }
-    });
-    try {
-      final status = operation == 'cancel'
-          ? await widget.repository.cancelSourceJob(source.id)
-          : await widget.repository.startSourceJob(
-              source.id,
-              operation,
-              drama: source.id == widget.drama?.source ? widget.drama : null,
-            );
-      if (mounted) setState(() => _statuses[source.id] = status);
-    } catch (error) {
-      if (mounted) setState(() => _errors[source.id] = error.toString());
-    } finally {
-      if (mounted) setState(() => _pending.remove(source.id));
-    }
-  }
-
-  Future<void> _updateAll(List<SourceSite> sources) async {
-    if (_updatingAll || sources.isEmpty) return;
-    setState(() => _updatingAll = true);
-    for (final source in sources) {
-      await _run(source, 'update');
-    }
-    if (mounted) setState(() => _updatingAll = false);
-  }
-
-  Future<void> _toggle(SourceSite source, bool enabled) async {
-    setState(() => _errors.remove(source.id));
-    try {
-      await widget.store.setSourceEnabled(source.id, enabled);
-      if (enabled) unawaited(_refresh());
-    } catch (error) {
-      if (mounted) setState(() => _errors[source.id] = error.toString());
-    }
-  }
+  Future<void> _toggle(SourceSite source, bool enabled) =>
+      _model.toggle(source, enabled);
 
   Future<void> _uninstall(List<SourceSite> sources) async {
     if (_deleting || sources.isEmpty) return;
-    setState(() => _deleting = true);
+    _model.setDeleting(true);
     final names = sources.map((source) => source.displayEntryName).join('、');
     final confirmed = await showDialog<bool>(
       context: context,
@@ -256,29 +143,18 @@ class _SourcesScreenState extends State<SourcesScreen> {
       ),
     );
     if (confirmed != true) {
-      if (mounted) setState(() => _deleting = false);
+      _model.setDeleting(false);
       return;
     }
-    for (final source in sources) {
-      try {
-        await widget.repository.uninstallExtension(source.id);
-      } catch (error) {
-        if (mounted) {
-          setState(() => _errors[source.id] = error.toString());
-        }
-      }
-    }
-    await _loadExtensions();
-    if (mounted) {
-      setState(() {
-        _deleting = false;
-        _selecting = false;
-        _selected.clear();
-      });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('已卸载 ${sources.length} 条规则')));
-    }
+    await _model.uninstall(sources);
+    if (!mounted) return;
+    setState(() {
+      _selecting = false;
+      _selected.clear();
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已卸载 ${sources.length} 条规则')));
   }
 
   Future<void> _copy(SourceSite source, SourceStatus? status) async {
@@ -336,7 +212,8 @@ class _SourcesScreenState extends State<SourcesScreen> {
         final all = SourceSite.values;
         final query = _search.text.trim().toLowerCase();
         final visible = all.where((source) {
-          if (_filter == _RuleFilter.enabled && !widget.store.sourceEnabled(source.id)) {
+          if (_filter == _RuleFilter.enabled &&
+              !widget.store.sourceEnabled(source.id)) {
             return false;
           }
           if (_filter == _RuleFilter.disabled &&
@@ -415,9 +292,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
                           ),
                           onPressed: _updatingAll
                               ? null
-                              : () => _updateAll(
-                                  widget.store.sources,
-                                ),
+                              : () => _updateAll(widget.store.sources),
                           icon: _updatingAll
                               ? const SizedBox(
                                   width: 18,
@@ -470,9 +345,10 @@ class _SourcesScreenState extends State<SourcesScreen> {
                         if (_catalogError != null)
                           Text(
                             '规则仓库暂不可用：$_catalogError',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).colorScheme.error,
-                            ),
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.error,
+                                ),
                           ),
                       ],
                     ),
@@ -500,8 +376,8 @@ class _SourcesScreenState extends State<SourcesScreen> {
                               }),
                               child: Text(
                                 selectedSources.length ==
-                                        uninstallable.length &&
-                                    uninstallable.isNotEmpty
+                                            uninstallable.length &&
+                                        uninstallable.isNotEmpty
                                     ? '取消全选'
                                     : '全选可卸载',
                               ),
@@ -527,7 +403,9 @@ class _SourcesScreenState extends State<SourcesScreen> {
                                   ? Icons.extension_rounded
                                   : Icons.search_off_rounded,
                               size: 40,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
                             ),
                             const SizedBox(height: 12),
                             Text(
@@ -567,11 +445,13 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final seconds = status?.retrySeconds ?? 0;
     final enabled = widget.store.sourceEnabled(source.id);
     final builtIn = source.id == SourceSite.hongguo.id;
-    final version = _installed[source.id]?['version'] as String? ??
+    final version =
+        _installed[source.id]?['version'] as String? ??
         (_catalog.firstWhere(
               (entry) => entry['id'] == source.id,
               orElse: () => const {},
-            )['version'] as String?);
+            )['version']
+            as String?);
     final health = status?.health;
     final expanded = _expanded.contains(source.id);
     final subtitle = source.group.isEmpty
@@ -587,19 +467,21 @@ class _SourcesScreenState extends State<SourcesScreen> {
           ? (builtIn
                 ? null
                 : () => setState(() {
-                      if (!_selected.remove(source.id)) _selected.add(source.id);
-                    }))
+                    if (!_selected.remove(source.id)) _selected.add(source.id);
+                  }))
           : () => setState(() {
-                if (expanded) {
-                  _expanded.remove(source.id);
-                } else {
-                  _expanded.add(source.id);
-                }
-              }),
+              if (expanded) {
+                _expanded.remove(source.id);
+              } else {
+                _expanded.add(source.id);
+              }
+            }),
       tags: [
         RuleTag(
           label: enabled ? '已启用' : '已关闭',
-          background: enabled ? colors.secondaryContainer : colors.surfaceContainerHighest,
+          background: enabled
+              ? colors.secondaryContainer
+              : colors.surfaceContainerHighest,
           foreground: enabled
               ? colors.onSecondaryContainer
               : colors.onSurfaceVariant,
@@ -655,7 +537,9 @@ class _SourcesScreenState extends State<SourcesScreen> {
               onChanged: builtIn
                   ? null
                   : (_) => setState(() {
-                      if (!_selected.remove(source.id)) _selected.add(source.id);
+                      if (!_selected.remove(source.id)) {
+                        _selected.add(source.id);
+                      }
                     }),
             )
           else
@@ -744,10 +628,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
         ],
         if (status != null && status.storageError.isNotEmpty) ...[
           const SizedBox(height: 8),
-          Text(
-            status.storageError,
-            style: TextStyle(color: colors.error),
-          ),
+          Text(status.storageError, style: TextStyle(color: colors.error)),
           TextButton.icon(
             key: ValueKey('save-${source.id}'),
             onPressed: enabled ? () => _run(source, 'retrySave') : null,
@@ -800,10 +681,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
             ),
         ] else ...[
           const SizedBox(height: 8),
-          Text(
-            '尚未检测连接与播放。',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+          Text('尚未检测连接与播放。', style: Theme.of(context).textTheme.bodySmall),
         ],
       ],
     );
@@ -835,9 +713,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
           leadingIcon: Icon(
             enabled ? Icons.toggle_on_rounded : Icons.toggle_off_rounded,
           ),
-          onPressed: busy
-              ? null
-              : () => _toggle(source, !enabled),
+          onPressed: busy ? null : () => _toggle(source, !enabled),
           child: Text(enabled ? '关闭此规则' : '启用此规则'),
         ),
         MenuItemButton(
@@ -903,11 +779,13 @@ class _RuleCatalogSheetState extends State<_RuleCatalogSheet> {
     final colors = Theme.of(context).colorScheme;
     final query = _search.text.trim().toLowerCase();
     final entries = widget.catalog
-        .where((entry) =>
-            query.isEmpty ||
-            '${entry['name']} ${entry['id']} ${entry['description']}'
-                .toLowerCase()
-                .contains(query))
+        .where(
+          (entry) =>
+              query.isEmpty ||
+              '${entry['name']} ${entry['id']} ${entry['description']}'
+                  .toLowerCase()
+                  .contains(query),
+        )
         .toList();
     final height = MediaQuery.sizeOf(context).height * .82;
     return SizedBox(
@@ -919,16 +797,16 @@ class _RuleCatalogSheetState extends State<_RuleCatalogSheet> {
           children: [
             Text(
               '规则仓库',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 6),
             Text(
               '随包附带官方规则，安装后才可作为站源使用。',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: colors.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
             ),
             const SizedBox(height: 16),
             TextField(
@@ -975,8 +853,8 @@ class _RuleCatalogSheetState extends State<_RuleCatalogSheet> {
                           padding: const EdgeInsets.only(bottom: 8),
                           child: RuleCard(
                             title: '${entry['name'] ?? id}',
-                            subtitle: entry['description'] as String? ??
-                                '官方扩展源',
+                            subtitle:
+                                entry['description'] as String? ?? '官方扩展源',
                             installed: installed,
                             caption: entry['changelog'] as String?,
                             tags: [

@@ -2,13 +2,15 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:duanju_app/core/core_bridge.dart';
-import 'package:duanju_app/features/downloads/download_collections.dart';
+import 'package:duanju_app/data/media/download_collections.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/features/lan/lan_controller_provider.dart';
 import 'package:duanju_app/features/player/player_screen.dart';
 import 'package:duanju_app/features/settings/settings_screen.dart';
 import 'package:duanju_app/widgets/widgets.dart';
@@ -247,6 +249,10 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
                 repository: widget.repository,
                 store: widget.store,
                 localOnly: true,
+                lan: ProviderScope.containerOf(
+                  context,
+                  listen: false,
+                ).read(lanControllerProvider),
               ),
         ),
       );

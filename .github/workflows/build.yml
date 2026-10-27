@@ -16,7 +16,9 @@ env:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 这些检查现在会阻塞全部平台构建与 release，超时必须以「失败原因可信」为先：
+    # 宁可冗余，也不要因冷缓存编译慢而被误判成代码有问题。
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - &setup-go
@@ -31,19 +33,13 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get --enforce-lockfile
+      # 以下检查全部阻塞：release 依赖 checks，五个平台 job 同样依赖 checks，
+      # 因此此处任一失败都不会进入构建，更不会出包。
       - run: dart format --output=none --set-exit-if-changed lib test
-        continue-on-error: true
       - run: dart analyze --fatal-infos lib test
-        continue-on-error: true
-      # 测试当前不阻塞出包（开发优先、集中验证暂缓），结果仍会显示在运行详情里。
       - run: flutter test --dart-define=DISABLE_REMOTE_IMAGES=true
-        continue-on-error: true
-        continue-on-error: true
       - run: go test -race ./...
         working-directory: native
-        continue-on-error: true
-        working-directory: native
-        continue-on-error: true
 
   prepare:
     runs-on: ubuntu-latest
@@ -76,7 +72,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   android:
-    needs: prepare
+    needs: [checks, prepare]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy: &editions
@@ -154,7 +150,7 @@ jobs:
           retention-days: 14
 
   windows:
-    needs: prepare
+    needs: [checks, prepare]
     runs-on: windows-latest
     timeout-minutes: 45
     strategy: *editions
@@ -183,7 +179,7 @@ jobs:
           retention-days: 14
 
   ios:
-    needs: prepare
+    needs: [checks, prepare]
     runs-on: macos-latest
     timeout-minutes: 60
     strategy: *editions
@@ -217,7 +213,7 @@ jobs:
           retention-days: 14
 
   macos:
-    needs: prepare
+    needs: [checks, prepare]
     runs-on: macos-latest
     timeout-minutes: 60
     strategy: *editions
@@ -244,7 +240,7 @@ jobs:
           retention-days: 14
 
   linux:
-    needs: prepare
+    needs: [checks, prepare]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy: *editions

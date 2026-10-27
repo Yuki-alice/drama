@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -11,6 +10,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:duanju_app/app/app_layout.dart';
 import 'package:duanju_app/app/app_orientation.dart';
 import 'package:duanju_app/app/app_theme.dart';
+import 'package:duanju_app/core/app_platform.dart';
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/diary_service.dart';
 import 'package:duanju_app/features/player/playback_diagnostics.dart';
@@ -25,11 +25,15 @@ import 'package:duanju_app/core/models.dart';
 import 'package:duanju_app/core/responsive/window_type.dart';
 import 'package:duanju_app/features/player/playback_loader.dart';
 import 'package:duanju_app/features/player/playback_preloader.dart';
-import 'package:duanju_app/features/player/playback_recovery.dart';
+import 'package:duanju_app/features/player/playback_health_controller.dart';
+import 'package:duanju_app/features/player/playback_progress_controller.dart';
+import 'package:duanju_app/features/player/playback_recovery_scheduler.dart';
 import 'package:duanju_app/core/playback_preferences.dart';
 import 'package:duanju_app/features/player/player_controls.dart';
 import 'package:duanju_app/features/player/player_interactions.dart';
+import 'package:duanju_app/features/player/player_session_controller.dart';
 import 'package:duanju_app/features/player/player_menu.dart';
+import 'package:duanju_app/widgets/drama_labels.dart';
 import 'package:duanju_app/widgets/widgets.dart';
 import 'package:duanju_app/features/sources/sources_screen.dart';
 import 'package:duanju_app/features/lan/lan_controller.dart';
@@ -53,6 +57,7 @@ class PlayerScreen extends StatefulWidget {
     this.playerFactory,
     this.videoBuilder,
     this.handoff,
+    this.lan,
   });
   final DramaDetail detail;
   final int initialIndex;
@@ -63,6 +68,7 @@ class PlayerScreen extends StatefulWidget {
   final AppRepository repository;
   final LocalStore store;
   final LanIncomingPlayback? handoff;
+  final LanController? lan;
   @visibleForTesting
   final Player Function()? playerFactory;
   @visibleForTesting
@@ -72,76 +78,79 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver
+    implements PlayerPlaybackHost {
   late final Player _player;
   late final VideoController? _video;
   late final VideoEnhancementController _enhancement;
   late final PlaybackLoader _loader;
   late final PlaybackPreloader _preloader;
-  bool _preloadEnabled = true;
   late final DanmakuController _danmaku;
   int _seekSequence = 0;
-  bool _danmakuEnabled = true;
   late final PlayerInteractions _interactions;
+  late final PlaybackProgressController _progress;
+  late final PlaybackRecoveryScheduler _recoveryScheduler;
+  int get _openedIndex => _progress.openedIndex;
+  String? get _saveWarning => _progress.warning;
   final _playerFocus = FocusNode(debugLabel: 'player-surface');
   final _videoPaneKey = GlobalKey();
   final _menuRevision = ValueNotifier<int>(0);
   final List<StreamSubscription<dynamic>> _subscriptions = [];
-  final _recovery = PlaybackRecovery();
-  Object _lanIdentity = Object();
-  bool _handoffOwned = true;
   double? _lanFirstPosition;
-  String? _savedProgressKey;
-  final _health = PlaybackHealth();
+  late final PlaybackHealthController _health;
   Timer? _saveTimer;
-  Timer? _healthTimer;
-  Timer? _errorTimer;
   Timer? _pictureInPictureExitTimer;
-  Future<void> _operations = Future<void>.value();
-  late int _index;
-  int _openedIndex = -1;
-  int _generation = 0;
-  int _requestedQuality = 0;
-  bool _loading = true;
-  bool _forceOnline = false;
-  bool _localFailure = false;
   bool _fullscreen = false;
   bool _automaticFullscreenSuppressed = false;
   bool _panelOpen = false;
   int _mobileTab = 0;
-  bool _autoAdvance = true;
   bool? _systemFullscreen;
   Orientation? _lastOrientation;
   bool _closed = false;
-  bool _acceptErrors = false;
   bool _foreground = true;
-  bool _playIntent = true;
-  bool _showControlsOnPlaybackReady = true;
-  bool _pendingError = false;
   bool _pictureInPictureSupported = false;
   bool _pictureInPictureActive = false;
   bool _pictureInPictureRequested = false;
   bool _pictureInPictureHandlerInstalled = false;
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
-  String _loadingMessage = '正在准备播放';
-  String? _error;
-  String? _saveWarning;
-  PlaybackPlan? _plan;
-  double _speed = 1;
   double _aspectRatio = 9 / 16;
-  double _resumePosition = 0;
   bool _rotating = false;
   AppOrientationController? _orientationController;
+  late final PlayerSessionController _session;
+
+  int get _index => _session.index;
+  int get _generation => _session.generation;
+  PlaybackPlan? get _plan => _session.plan;
+  bool get _loading => _session.loading;
+  String get _loadingMessage => _session.loadingMessage;
+  String? get _error => _session.error;
+  bool get _localFailure => _session.localFailure;
+  int get _requestedQuality => _session.requestedQuality;
+  set _requestedQuality(int value) => _session.requestedQuality = value;
+  double get _speed => _session.speed;
+  set _speed(double value) => _session.speed = value;
+  bool get _autoAdvance => _session.autoAdvance;
+  set _autoAdvance(bool value) => _session.autoAdvance = value;
+  bool get _danmakuEnabled => _session.danmakuEnabled;
+  set _danmakuEnabled(bool value) => _session.danmakuEnabled = value;
+  bool get _preloadEnabled => _session.preloadEnabled;
+  set _preloadEnabled(bool value) => _session.preloadEnabled = value;
+  bool get _acceptErrors => _session.acceptErrors;
+  bool get _playIntent => _session.playIntent;
+  set _playIntent(bool value) => _session.playIntent = value;
+  double get _resumePosition => _session.resumePosition;
+  set _resumePosition(double value) => _session.resumePosition = value;
+  bool get _showControlsOnPlaybackReady => _session.showControlsOnPlaybackReady;
+
+  bool get _handoffOwned => _session.handoffOwned;
+  set _handoffOwned(bool value) => _session.handoffOwned = value;
   bool get _pictureInPictureVisible =>
       _pictureInPictureActive || _pictureInPictureRequested;
   bool get _canUsePictureInPicture =>
       defaultTargetPlatform == TargetPlatform.android &&
       _pictureInPictureSupported;
-  bool get _mobile =>
-      defaultTargetPlatform == TargetPlatform.android ||
-      defaultTargetPlatform == TargetPlatform.iOS;
-  bool get _desktop =>
-      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+  bool get _mobile => isMobilePlatform;
+  bool get _desktop => isDesktopPlatform;
   VideoEnhancementController? get _enhancementForUi =>
       _enhancement.supported ? _enhancement : null;
   PlaybackPreferences get _preferences => PlaybackPreferences(
@@ -157,7 +166,6 @@ class _PlayerScreenState extends State<PlayerScreen>
       : _requestedQuality == 0
       ? '自动'
       : '${_requestedQuality}P';
-  String get _session => _plan?.session ?? '';
   double get _currentPosition =>
       _openedIndex == _index && _player.state.position.inMilliseconds > 0
       ? _player.state.position.inMilliseconds / 1000
@@ -167,13 +175,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _index = widget.initialIndex;
     final preferences = widget.store.playbackPreferences;
-    _speed = preferences.speed;
-    _requestedQuality = preferences.quality;
-    _autoAdvance = true;
-    _danmakuEnabled = preferences.danmaku;
-    _preloadEnabled = true;
     _loader = PlaybackLoader(widget.repository);
     _preloader = PlaybackPreloader(widget.repository);
     _danmaku = DanmakuController(widget.repository)
@@ -191,7 +193,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         ? VideoController(
             _player,
             configuration: VideoControllerConfiguration(
-              enableHardwareAcceleration: !Platform.isIOS,
+              enableHardwareAcceleration: !isIOSPlatform,
             ),
           )
         : null;
@@ -214,13 +216,47 @@ class _PlayerScreenState extends State<PlayerScreen>
         final next = _index + direction;
         if (next < 0) return '已经是第一集';
         if (next >= widget.detail.episodes.length) return '已经是最后一集';
-        unawaited(_play(next));
+        unawaited(_session.play(next));
         return '第 ${widget.detail.episodes[next].number} 集';
       },
     );
     _playerFocus.addListener(() {
       if (!_playerFocus.hasPrimaryFocus && !_closed) _interactions.cancel();
     });
+    _progress = PlaybackProgressController(
+      store: widget.store,
+      repository: widget.repository,
+      detail: widget.detail,
+      mediaId: widget.mediaId,
+      flushLan: () => widget.lan?.flush(),
+    )..addListener(_progressChanged);
+    _recoveryScheduler = PlaybackRecoveryScheduler(
+      recover: (reason) => unawaited(_recover(reason: reason)),
+      canRecover: () => !_closed && _acceptErrors && _error == null,
+      isForeground: () => _foreground,
+      generation: () => _generation,
+      position: () => _player.state.position,
+      playerState: () {
+        final state = _player.state;
+        return (
+          playing: state.playing,
+          buffering: state.buffering,
+          width: state.width ?? 0,
+          position: state.position,
+        );
+      },
+    );
+    _session = PlayerSessionController(
+      repository: widget.repository,
+      detail: widget.detail,
+      loader: _loader,
+      preloader: _preloader,
+      progress: _progress,
+      host: this,
+      initialIndex: widget.initialIndex,
+      preferences: preferences,
+      handoff: widget.handoff,
+    )..addListener(_sessionChanged);
     _configurePictureInPicture();
     _subscriptions.add(
       _player.stream.error.listen((error) {
@@ -265,7 +301,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               _foreground &&
               !_panelOpen &&
               _index + 1 < widget.detail.episodes.length) {
-            _play(_index + 1, showControlsOnReady: false);
+            _session.play(_index + 1, showControlsOnReady: false);
           } else {
             _playIntent = false;
             _interactions.cancel();
@@ -317,20 +353,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       const Duration(seconds: 5),
       (_) => _saveProgress(),
     );
-    _healthTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!_closed &&
-          _acceptErrors &&
-          !_loading &&
-          _error == null &&
-          _health.stalled(
-            position: _player.state.position,
-            playing: _player.state.playing && _playIntent,
-            foreground: _foreground,
-            now: DateTime.now(),
-          )) {
-        unawaited(_recover(reason: 'position_stalled_20s'));
-      }
-    });
+    _health = PlaybackHealthController(
+      recover: (reason) => unawaited(_recover(reason: reason)),
+      snapshot: () => PlaybackHealthSnapshot(
+        closed: _closed,
+        acceptErrors: _acceptErrors,
+        loading: _loading,
+        failed: _error != null,
+        position: _player.state.position,
+        playing: _player.state.playing && _playIntent,
+        foreground: _foreground,
+      ),
+    )..start();
     final handoff = widget.handoff;
     if (handoff != null) {
       handoff.consumed = true;
@@ -343,10 +377,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (handoff != null) {
         unawaited(_releasePlayback(handoff.plan.session, 'handoff_discarded'));
       }
-      _loading = false;
-      _error = '播放接收已取消';
+      _session.markHandoffCancelled('播放接收已取消');
     } else {
-      _play(
+      _session.play(
         _index,
         position: widget.initialPosition,
         handoffPlan: handoff?.plan,
@@ -360,6 +393,14 @@ class _PlayerScreenState extends State<PlayerScreen>
         );
       }
     });
+  }
+
+  void _progressChanged() {
+    if (mounted && !_closed) setState(() {});
+  }
+
+  void _sessionChanged() {
+    if (mounted && !_closed) setState(() {});
   }
 
   void _accessChanged() {
@@ -472,7 +513,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       unawaited(_player.pause());
       unawaited(_saveProgress(flush: true));
     }
-    if (visible && _pendingError) {
+    if (visible && _recoveryScheduler.pending) {
       _queueRecovery(reason: 'foreground_pending_error');
     }
   }
@@ -557,12 +598,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     return {'left': left, 'top': top, 'right': right, 'bottom': bottom};
   }
 
-  void _attachLanPlayback() {
-    LanController.current?.attachPlayback(
+  void _attachLanPlayback(PlayerSessionController controller) {
+    widget.lan?.attachPlayback(
       LanPlaybackHost(
-        identity: _lanIdentity,
+        identity: controller.lanIdentity,
         title:
-            '${widget.detail.drama.title} · 第 ${widget.detail.episodes[_index].number} 集',
+            '${widget.detail.drama.title} · 第 ${widget.detail.episodes[controller.index].number} 集',
         stop: _stopForLan,
       ),
     );
@@ -615,7 +656,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Future<void> _pushToDevice() async {
-    final link = LanController.current;
+    final link = widget.lan;
     if (link == null ||
         _panelOpen ||
         _closed ||
@@ -745,360 +786,31 @@ class _PlayerScreenState extends State<PlayerScreen>
     _applyLifecycleVisibility();
   }
 
-  Future<void> _releasePlayback(String session, String reason) async {
-    DiaryService.add(
-      '[Recovery] release reason=$reason generation=$_generation session=${playbackDiagnosticId(session)}',
-    );
-    await widget.repository.release(session);
-  }
+  Future<void> _releasePlayback(String session, String reason) =>
+      _session.release(session, reason);
 
   void _queueRecovery({required String reason}) {
-    if (_closed || !_acceptErrors || _error != null) {
-      return;
-    }
-    _pendingError = true;
-    if (!_foreground || (_errorTimer?.isActive ?? false)) {
-      return;
-    }
-    final ticket = _generation;
-    final position = _player.state.position;
-    DiaryService.add('[Recovery] queued reason=$reason generation=$ticket');
-    _errorTimer = Timer(const Duration(milliseconds: 900), () {
-      if (_closed || ticket != _generation || !_foreground || !_acceptErrors) {
-        return;
-      }
-      _pendingError = false;
-      final state = _player.state;
-      if (state.playing &&
-          !state.buffering &&
-          (state.width ?? 0) > 0 &&
-          state.position > position + const Duration(milliseconds: 300)) {
-        return;
-      }
-      unawaited(_recover(reason: reason));
-    });
+    DiaryService.add(
+      '[Recovery] queued reason=$reason generation=$_generation',
+    );
+    _recoveryScheduler.queue(reason);
   }
 
-  Future<void> _recover({required String reason}) async {
-    final current = _plan;
-    if (_closed ||
-        !_acceptErrors ||
-        !_foreground ||
-        current == null ||
-        _error != null) {
-      return;
-    }
-    _acceptErrors = false;
-    _danmaku.setPlan(null);
-    _errorTimer?.cancel();
-    _pendingError = false;
-    final position = _currentPosition;
-    final action = current.local
-        ? PlaybackRecoveryAction.stop
-        : _recovery.next(current);
-    DiaryService.add(
-      '[Recovery] start reason=$reason action=${action.name} generation=$_generation route=${current.routeIndex}/${current.routeCount} session=${playbackDiagnosticId(current.session)} position=${_player.state.position.inMilliseconds} duration=${_player.state.duration.inMilliseconds} buffering=${_player.state.buffering}',
-    );
-    if (action == PlaybackRecoveryAction.stop) {
-      _resumePosition = position;
-      final ticket = _generation;
-      try {
-        await _serialize(() async {
-          if (_closed || ticket != _generation) {
-            return;
-          }
-          try {
-            await _saveProgress();
-            _openedIndex = -1;
-            await _player.stop();
-          } finally {
-            await _releasePlayback(current.session, 'recovery_stop');
-          }
-        });
-      } catch (_) {}
-      if (mounted && !_closed && ticket == _generation) {
-        setState(() {
-          _loading = false;
-          _localFailure = current.local;
-          _error = current.local
-              ? widget.allowOnlineFallback
-                    ? '本地视频读取失败，请重试或重新下载；也可以手动改为在线播放。'
-                    : '本地成品读取失败，请重试或重新生成。'
-              : '自动恢复未成功，请检查网络后重试，也可换一集或选择其他清晰度。';
-        });
-      }
-      return;
-    }
-    await _play(_index, position: position, recoveryAction: action);
-  }
+  Future<void> _recover({required String reason}) =>
+      _session.recover(reason: reason);
 
   void _togglePlayback() {
-    if (_closed || _loading || _error != null) return;
-    _handoffOwned = false;
-    widget.handoff?.fail('接收端已操作播放');
-    _interactions.cancel();
-    _playIntent = !_player.state.playing;
-    if (_playIntent) _enhancement.mediaReady();
-    _health.reset();
-    if (_playIntent && _player.state.completed) {
-      unawaited(_play(_index));
-      return;
-    }
-    unawaited(_player.playOrPause());
-    if (!_playIntent) unawaited(_saveProgress(flush: true));
-    _syncDanmaku();
+    unawaited(_session.togglePlayback());
   }
 
-  Future<void> _saveProgress({bool flush = false}) async {
-    if (_openedIndex < 0) {
-      return;
-    }
-    final position = _player.state.position.inMilliseconds / 1000;
-    final duration = _player.state.duration.inMilliseconds / 1000;
-    if (position < .1) {
-      return;
-    }
-    final store = widget.store;
-    final progressKey =
-        '${widget.mediaId ?? widget.detail.drama.id}:$_openedIndex:$position:$duration';
-    if (_savedProgressKey == progressKey && _saveWarning == null) {
-      if (flush && widget.mediaId == null) LanController.current?.flush();
-      return;
-    }
-    final entry = WatchEntry(
-      drama: widget.repository.catalogUpdates.current(widget.detail.drama),
-      episode: widget.detail.episodes[_openedIndex].number,
-      position: position,
-      duration: duration,
-      updatedAt: DateTime.now(),
-    );
-    try {
-      await Future<void>.value();
-      if (widget.mediaId == null) {
-        await store.saveWatch(entry);
-        if (flush) LanController.current?.flush();
-      } else {
-        await store.saveMediaWatch(widget.mediaId!, entry);
-      }
-      _savedProgressKey = progressKey;
-      if (mounted && !_closed && _saveWarning != null) {
-        setState(() => _saveWarning = null);
-      }
-    } catch (_) {
-      if (mounted && !_closed && _saveWarning == null) {
-        setState(() => _saveWarning = '观看进度尚未保存，请检查存储空间后重试。');
-      }
-    }
-  }
+  Future<void> _saveProgress({bool flush = false}) => _progress.save(
+    position: _player.state.position,
+    duration: _player.state.duration,
+    flush: flush,
+  );
 
-  Future<void> _serialize(Future<void> Function() operation) {
-    final next = _operations.catchError((Object _) {}).then((_) => operation());
-    _operations = next;
-    return next;
-  }
-
-  Future<void> _play(
-    int index, {
-    double position = 0,
-    PlaybackRecoveryAction? recoveryAction,
-    bool playWhenReady = true,
-    PlaybackPlan? handoffPlan,
-    bool showControlsOnReady = true,
-  }) async {
-    if (_closed || index < 0 || index >= widget.detail.episodes.length) {
-      return;
-    }
-    _interactions.cancel();
-    if (widget.handoff != null &&
-        handoffPlan == null &&
-        recoveryAction == null) {
-      _handoffOwned = false;
-      widget.handoff?.fail('接收端已更换播放内容');
-    }
-    if (index != _index) _forceOnline = false;
-    final warmed =
-        handoffPlan ??
-        (recoveryAction == null && _preloadEnabled && !widget.localOnly
-            ? _preloader.take(
-                widget.detail.drama,
-                widget.detail.episodes[index],
-                quality: _requestedQuality,
-                online: _forceOnline,
-              )
-            : null);
-    _preloader.clear();
-    final ticket = ++_generation;
-    _enhancement.suspend();
-    _seekSequence++;
-    _danmaku.setPlan(null);
-    _acceptErrors = false;
-    _pendingError = false;
-    _errorTimer?.cancel();
-    _health.reset();
-    if (recoveryAction == null) {
-      _recovery.reset();
-      _playIntent = playWhenReady;
-    }
-    _resumePosition = position;
-    _showControlsOnPlaybackReady = showControlsOnReady;
-    setState(() {
-      _index = index;
-      _loading = true;
-      _error = null;
-      _localFailure = false;
-      _loadingMessage = switch (recoveryAction) {
-        PlaybackRecoveryAction.alternative => '正在切换备用线路',
-        PlaybackRecoveryAction.refresh => '正在重新获取播放地址',
-        _ => '正在准备播放',
-      };
-    });
-    LanController.current?.detachPlayback(_lanIdentity);
-    _lanIdentity = Object();
-    _attachLanPlayback();
-    PlaybackPlan? prepared;
-    PlaybackPlan? retained;
-    bool installed = false;
-    try {
-      await _serialize(() async {
-        if (_closed || ticket != _generation) {
-          return;
-        }
-        await _saveProgress(flush: true);
-        await _enhancement.beforeMedia();
-        if (_closed || ticket != _generation) return;
-        _openedIndex = -1;
-        await _player.stop();
-        final previous = _plan;
-        _plan = null;
-        if (recoveryAction == PlaybackRecoveryAction.alternative) {
-          retained = previous;
-        } else if (previous != null) {
-          await _releasePlayback(previous.session, 'replace_or_refresh');
-        }
-      });
-      if (_closed || ticket != _generation) {
-        return;
-      }
-      prepared = retained != null
-          ? await _loader.fallback(retained!)
-          : warmed != null
-          ? await _loader.use(warmed)
-          : await _loader.load(
-              widget.detail.drama,
-              widget.detail.episodes[index],
-              quality: _requestedQuality,
-              localOnly: widget.localOnly,
-              online: _forceOnline,
-            );
-      if (prepared == null) {
-        return;
-      }
-      final plan = prepared;
-      await _serialize(() async {
-        if (_closed || ticket != _generation) {
-          await _releasePlayback(plan.session, 'stale_generation');
-          return;
-        }
-        if (plan.url.isEmpty) {
-          throw AppFailure('站源未返回播放地址，请重试');
-        }
-        final platform = _player.platform;
-        if (platform is NativePlayer) {
-          if (Platform.isAndroid) {
-            await platform.setProperty('hwdec', 'auto-safe');
-            await platform.setProperty('hwdec-codecs', 'all');
-            await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
-            await platform.setProperty('vd-lavc-threads', '4');
-            await platform.setProperty('vd-lavc-fast', 'yes');
-            await platform.setProperty('video-sync', 'audio');
-            await platform.setProperty('framedrop', 'vo');
-          } else if (Platform.isWindows) {
-            await platform.setProperty('hwdec', 'd3d11va-copy');
-          }
-          await platform.setProperty(
-            'demuxer-lavf-o',
-            [
-              'seg_max_retry=3',
-              'strict=experimental',
-              'allowed_extensions=ALL',
-              plan.local
-                  ? 'protocol_whitelist=[file,crypto,data]'
-                  : 'protocol_whitelist=[http,https,tcp,tls,crypto,data,file]',
-              if (plan.decryptionKey.isNotEmpty)
-                'decryption_key=${plan.decryptionKey}',
-            ].join(','),
-          );
-          await platform.setProperty('network-timeout', '20');
-        }
-        _plan = plan;
-        installed = true;
-        _acceptErrors = true;
-        DiaryService.add(
-          '[Play] open generation=$ticket route=${plan.routeIndex}/${plan.routeCount} session=${playbackDiagnosticId(plan.session)} url=${playbackDiagnosticUrl(plan.url)} headers=${plan.headers.keys.toList()}',
-        );
-        await _player.open(
-          Media(
-            plan.url,
-            httpHeaders: plan.headers,
-            start: position > 0
-                ? Duration(milliseconds: (position * 1000).round())
-                : null,
-          ),
-          play: _foreground && _playIntent,
-        );
-        if (_closed || ticket != _generation) {
-          return;
-        }
-        _openedIndex = index;
-        _enhancement.mediaReady();
-        _attachLanPlayback();
-        _health.reset();
-        await _interactions.applySpeed();
-        if (mounted && !_closed && ticket == _generation) {
-          setState(() {
-            _loading = false;
-          });
-          _danmaku.setPlan(plan);
-          _syncDanmaku();
-          _acknowledgeHandoff();
-          _menuRevision.value++;
-        }
-      });
-    } catch (error) {
-      DiaryService.add(
-        '[Play] flow_error generation=$ticket error=${playbackDiagnosticError(error)}',
-      );
-      if (!_closed && mounted && ticket == _generation) {
-        if (prepared != null && identical(_plan, prepared)) {
-          _acceptErrors = true;
-          _queueRecovery(reason: 'open_exception');
-        } else {
-          if (prepared != null) {
-            await _releasePlayback(prepared.session, 'failed_preparation');
-          }
-          if (mounted && !_closed && ticket == _generation) {
-            setState(() {
-              _loading = false;
-              _localFailure =
-                  (error is AppFailure && error.code == 'local_media') ||
-                  (widget.localOnly && !_forceOnline);
-              _error = error is AppFailure ? error.message : '无法播放这一集，请重试或换一集。';
-              widget.handoff?.fail(_error!);
-            });
-          }
-        }
-      } else if (prepared != null && !installed) {
-        await _releasePlayback(prepared.session, 'failed_preparation');
-      }
-    } finally {
-      if (warmed != null && !installed) {
-        await _releasePlayback(warmed.session, 'unused_preload');
-      }
-      if (retained != null) {
-        await _releasePlayback(retained!.session, 'fallback_previous');
-      }
-    }
-  }
+  Future<void> _serialize(Future<void> Function() operation) =>
+      _session.serialize(operation);
 
   Future<void> _logVideoOutput(VideoParams parameters) async {
     final platform = _player.platform;
@@ -1118,22 +830,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     } catch (_) {}
   }
 
-  Future<void> _switchOnline() async {
-    _forceOnline = true;
-    await _retry();
-  }
+  Future<void> _switchOnline() => _session.switchOnline();
 
-  Future<void> _retry({int? quality}) async {
-    final position = _currentPosition;
-    if (quality != null) {
-      _requestedQuality = quality;
-    }
-    await _play(
-      _index,
-      position: position,
-      playWhenReady: quality == null || _error != null || _player.state.playing,
-    );
-  }
+  Future<void> _retry({int? quality}) => _session.retry(quality: quality);
 
   bool get _showFullscreen =>
       _fullscreen ||
@@ -1320,7 +1019,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
       );
       if (mounted && !_closed && index != null && index != _index) {
-        await _play(index);
+        await _session.play(index);
       }
     } finally {
       if (mounted && !_closed) {
@@ -1352,19 +1051,154 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   @override
+  bool get closed => _closed;
+
+  @override
+  bool get foreground => _foreground;
+
+  @override
+  bool get localOnly => widget.localOnly;
+
+  @override
+  bool get allowOnlineFallback => widget.allowOnlineFallback;
+
+  @override
+  bool get playerPlaying => _player.state.playing;
+
+  @override
+  bool get playerCompleted => _player.state.completed;
+
+  @override
+  double get playheadSeconds => _player.state.position.inMilliseconds / 1000;
+
+  @override
+  Future<void> saveProgress({bool flush = false}) =>
+      _saveProgress(flush: flush);
+
+  @override
+  void cancelInteractions() => _interactions.cancel();
+
+  @override
+  void resetSeekSequence() => _seekSequence++;
+
+  @override
+  void suspendEnhancement() => _enhancement.suspend();
+
+  @override
+  Future<void> beforeMedia() => _enhancement.beforeMedia();
+
+  @override
+  Future<void> stopPlayer() => _player.stop();
+
+  @override
+  Future<void> openPlan(
+    PlaybackPlan plan, {
+    required double position,
+    required bool play,
+  }) async {
+    final platform = _player.platform;
+    if (platform is NativePlayer) {
+      if (isAndroidPlatform) {
+        await platform.setProperty('hwdec', 'auto-safe');
+        await platform.setProperty('hwdec-codecs', 'all');
+        await platform.setProperty('vd-lavc-skiploopfilter', 'nonkey');
+        await platform.setProperty('vd-lavc-threads', '4');
+        await platform.setProperty('vd-lavc-fast', 'yes');
+        await platform.setProperty('video-sync', 'audio');
+        await platform.setProperty('framedrop', 'vo');
+      } else if (isWindowsPlatform) {
+        await platform.setProperty('hwdec', 'd3d11va-copy');
+      }
+      await platform.setProperty(
+        'demuxer-lavf-o',
+        [
+          'seg_max_retry=3',
+          'strict=experimental',
+          'allowed_extensions=ALL',
+          plan.local
+              ? 'protocol_whitelist=[file,crypto,data]'
+              : 'protocol_whitelist=[http,https,tcp,tls,crypto,data,file]',
+          if (plan.decryptionKey.isNotEmpty)
+            'decryption_key=${plan.decryptionKey}',
+        ].join(','),
+      );
+      await platform.setProperty('network-timeout', '20');
+    }
+    await _player.open(
+      Media(
+        plan.url,
+        httpHeaders: plan.headers,
+        start: position > 0
+            ? Duration(milliseconds: (position * 1000).round())
+            : null,
+      ),
+      play: play,
+    );
+  }
+
+  @override
+  void mediaReady() => _enhancement.mediaReady();
+
+  @override
+  Future<void> applySpeed() => _interactions.applySpeed();
+
+  @override
+  Future<void> playOrPause() => _player.playOrPause();
+
+  @override
+  void setDanmakuPlan(PlaybackPlan? plan) => _danmaku.setPlan(plan);
+
+  @override
+  void syncDanmaku() => _syncDanmaku();
+
+  @override
+  void acknowledgeHandoff() => _acknowledgeHandoff();
+
+  @override
+  void bumpMenu() => _menuRevision.value++;
+
+  @override
+  void attachLan(PlayerSessionController controller) =>
+      _attachLanPlayback(controller);
+
+  @override
+  void detachLan() {
+    widget.lan?.detachPlayback(_session.lanIdentity);
+  }
+
+  @override
+  void resetHealth() => _health.reset();
+
+  @override
+  void queueRecovery(String reason) => _queueRecovery(reason: reason);
+
+  @override
+  void cancelPendingRecovery() {
+    _recoveryScheduler.cancel();
+    _recoveryScheduler.clearPending();
+  }
+
+  @override
+  void failHandoff(String message) => widget.handoff?.fail(message);
+
+  @override
+  void releaseHandoffOwnership() => _handoffOwned = false;
+
+  @override
   void dispose() {
     _closed = true;
     final enhancementClosed = _enhancement.close();
-    LanController.current?.detachPlayback(_lanIdentity);
+    _session.removeListener(_sessionChanged);
+    _session.dispose();
+    widget.lan?.detachPlayback(_session.lanIdentity);
     widget.handoff?.fail('接收端已退出播放');
     widget.store.removeListener(_accessChanged);
     _danmaku.dispose();
     _preloader.dispose();
-    _generation++;
     WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
-    _healthTimer?.cancel();
-    _errorTimer?.cancel();
+    _health.dispose();
+    _recoveryScheduler.dispose();
     _pictureInPictureExitTimer?.cancel();
     if (_pictureInPictureHandlerInstalled) {
       AppDevice.channel.setMethodCallHandler(null);
@@ -1372,14 +1206,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     _interactions.dispose();
     _playerFocus.dispose();
     _menuRevision.dispose();
-    unawaited(_saveProgress(flush: true));
+    _progress.removeListener(_progressChanged);
+    unawaited(_saveProgress(flush: true).whenComplete(_progress.dispose));
     for (final subscription in _subscriptions) {
       subscription.cancel();
     }
-    unawaited(_releasePlayback(_session, 'screen_dispose'));
+    unawaited(_session.releaseSession('screen_dispose'));
     unawaited(_loader.close().catchError((Object _) {}));
     unawaited(
-      _operations.catchError((Object _) {}).then((_) async {
+      _session.operations.catchError((Object _) {}).then((_) async {
         await _interactions.pendingRates.catchError((Object _) {});
         await enhancementClosed.catchError((Object _) {});
         await _player.dispose();
@@ -1504,7 +1339,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       SourceSite.byId(drama.source).name,
       if (drama.episodes > 0) '共 ${drama.episodes} 集',
       if (drama.releaseStatus.isNotEmpty && drama.releaseStatus != 'unknown')
-        drama.releaseLabel,
+        releaseLabelOf(drama.releaseStatus),
       if (drama.category.isNotEmpty) drama.category,
     ];
     final body = drama.description.trim().isEmpty ? '暂无简介' : drama.description;
@@ -1672,9 +1507,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       note:
           widget.detail.drama.releaseStatus.isNotEmpty &&
               widget.detail.drama.releaseStatus != 'unknown'
-          ? widget.detail.drama.releaseLabel
+          ? releaseLabelOf(widget.detail.drama.releaseStatus)
           : '',
-      onSelected: (index) => _play(index),
+      onSelected: (index) => _session.play(index),
     ),
   );
 }

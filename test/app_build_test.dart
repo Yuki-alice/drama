@@ -1,5 +1,6 @@
 import 'package:duanju_app/core/app_build.dart';
 import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/data/native_repository.dart';
 import 'package:duanju_app/core/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';

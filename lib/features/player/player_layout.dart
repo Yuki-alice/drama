@@ -114,6 +114,7 @@ extension _PlayerLayout on _PlayerScreenState {
             interactions: _interactions,
             enabled: !_loading && _error == null,
             enhancement: _enhancementForUi,
+            link: widget.lan,
             panelOpen: _panelOpen,
             fullscreen: _showFullscreen,
             showOnPlaybackReady: _showControlsOnPlaybackReady,
@@ -142,9 +143,9 @@ extension _PlayerLayout on _PlayerScreenState {
             onPictureInPicture: _canUsePictureInPicture
                 ? _enterPictureInPicture
                 : null,
-            onPrevious: _index > 0 ? () => _play(_index - 1) : null,
+            onPrevious: _index > 0 ? () => _session.play(_index - 1) : null,
             onNext: _index + 1 < widget.detail.episodes.length
-                ? () => _play(_index + 1)
+                ? () => _session.play(_index + 1)
                 : null,
           );
     final layeredControls = Stack(

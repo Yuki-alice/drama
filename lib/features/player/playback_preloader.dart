@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'package:duanju_app/core/gateways.dart';
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/models.dart';
 
@@ -9,7 +10,7 @@ class PlaybackPreloader extends ChangeNotifier {
   PlaybackPreloader(this.repository, {DateTime Function()? now})
     : _now = now ?? DateTime.now;
 
-  final AppRepository repository;
+  final PlaybackGateway repository;
   final DateTime Function() _now;
   PlaybackPlan? _ready;
   String? _identity;

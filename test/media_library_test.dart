@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:duanju_app/core/local_store.dart';
-import 'package:duanju_app/features/downloads/media_library.dart';
-import 'package:duanju_app/features/downloads/media_pipeline.dart';
+import 'package:duanju_app/data/media/media_library.dart';
+import 'package:duanju_app/data/media/media_pipeline.dart';
 import 'package:duanju_app/core/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';

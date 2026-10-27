@@ -37,10 +37,17 @@
 lib/
 ├── app/            bootstrap(main.dart)、router、theme、layout、orientation、底部导航
 ├── core/           models、core_bridge(FFI)、local_store(存储)、providers(Riverpod)、
-│                   responsive/window_type、catalog_*、follow_* 等
+│                   responsive/window_type、catalog_*、follow_*、
+│                   video_enhancement_preferences 等
+├── data/           2026-10-26 新增的中间层，用于切断 features/widgets -> core 的反向依赖
+│   └── media/      background_downloads、download_collections、media_exports、
+│                   media_library、media_merge、media_merge_queue、media_pipeline、
+│                   cover_decoder（原在 features/downloads 与 widgets）
 ├── features/       home / player / downloads / lan / detail / settings / sources
-└── widgets/        共享组件、键盘焦点、封面解码、VIP 图标
+└── widgets/        共享组件、键盘焦点、VIP 图标（封面解码已迁至 data/media）
 ```
+
+依赖方向（单向，不得反向）：`app → features → {data, core, widgets} → core`。
 
 **关键约定**
 
@@ -183,7 +190,7 @@ parity 测试在 `native/core/extension_parity_test.go`，用 HTTP fixture 覆�
 ## 5. 发布前置条件（**发布前必须处理**）
 
 1. **官方扩展仓库**：将 `extensions-repo/` 推为独立 GitHub 仓库，用 `build.py --base-url <真实地址>` 生成并提交 `index.json`，再替换 `native/core/extension_store.go` 的 `extensionIndexURL`。
-2. **CI 检查不阻塞**：`.github/workflows/build.yml` 中 format/analyze/test 仍有 `continue-on-error: true`，建议改为阻塞，避免回归进 Release。
+2. ~~**CI 检查不阻塞**~~ **已于 2026-10-26 修复**：`checks` job 已移除全部 `continue-on-error`（原目标 7 处，其中 TG 推送 1 处保留为非阻塞——发布已完成，通知失败不应回滚 Release）；同时修复了 `dart analyze` / `go test` 两段重复 YAML 键。五个平台 job 由 `needs: prepare` 改为 `needs: [checks, prepare]`，analysis 不再先白烧五平台产物再失败。`checks` 超时由 20 分钟放宽到 30 分钟，避免冷缓存编译慢被误判成代码缺陷。
 3. **真机验证手动安装**：Android / Windows / macOS / Linux 各跑一次全新安装，确认首启只有红果，随包扩展需手动安装，受限源默认关闭。
 4. **更新扩展验证**：安装/更新/卸载、离线打开站源管理页各验证一次。
 5. **macOS 公证**：当前构建为 ad-hoc 签名，正式分发需 Developer ID 签名与公证，否则用户首次打开需右键「打开」。
@@ -194,9 +201,18 @@ parity 测试在 `native/core/extension_parity_test.go`，用 HTTP fixture 覆�
 
 | 债务 | 位置 | 说明 |
 | --- | --- | --- |
-| `player_screen.dart` 仍约 1685 行 | `lib/features/player/` | 布局已抽出；面板拆分需先抽 `PlayerController` |
-| `home_screen.dart` 约 1320 行 | `lib/features/home/` | 导航壳与内容区未彻底分离 |
-| 路由未用 StatefulShellRoute | `lib/app/router.dart` | 底部导航仍由 home 内部 `_tab` 管理 |
+| `player_screen.dart` 1680 行 | `lib/features/player/` | 布局已抽出（该目录已有 21 个文件）；但 `_PlayerScreenState` 仍是单类 State，面板拆分需先抽 `PlayerController` |
+| `discovery_screen.dart` 901 行 | `lib/features/home/` | 已由原 `home_screen.dart` 更名并瘦身；导航壳与内容区仍未彻底分离 |
+| ~~路由未用 StatefulShellRoute~~ | `lib/app/router.dart` | **已解决**：`router.dart:55` 现为 `StatefulShellRoute.indexedStack`，三个分支各自保留状态；本行待下次清理时删除 |
+| Riverpod 只作 DI、未作状态管理 | `lib/core/providers.dart` | 全 app 仅 6 个 provider 且全部集中在此文件，领域级 provider 为 0；真实状态在 `LocalStore` + 44 处手工 `addListener`/`removeListener` |
+| `LocalStore` 上帝类 | `lib/core/local_store.dart` | 903 行、约 35 个公开方法，单一 ChangeNotifier 同时承担站源开关/追剧/收藏/搜索历史/各类设置/观看进度/备份导入导出 |
+| ~~`core` 反向依赖 `features`~~ | `lib/core/*`、`lib/widgets/*` | **已于 2026-10-26 由在途重构解决**：新增 `lib/data/media/` 层，`background_downloads`/`download_collections`/`media_exports`/`media_library`/`media_merge`/`media_merge_queue`/`media_pipeline`/`cover_decoder` 迁出 `features`/`widgets`，`video_enhancement_preferences` 迁入 `lib/core`。现 `core`/`data`/`widgets` 均不再 import 任何 `features`，依赖方向为 `features → data/media`。本行待该改动合入后删除 |
+| `player` ↔ `downloads` 双向依赖 | `lib/features/` | `player_screen.dart` 与 `downloads_screen.dart` 互相 import。上一行的 `core`/`widgets` 反向依赖已清，这一组模块级双向仍在；建议抽出「本地媒体」接口层由两侧共同依赖 |
+| `Config.CDNURL` 未被引用 | `native/core/app_runtime.go:42` | 全仓库零引用；配对的 `defaultCDNURL`（`config_defaults.go:5`）目前只被 `network_media_test.go` 一处断言 `c=` 用到，而生产代码中 **没有任何地方生成 `c=` 参数**。疑似 CDN 可配置特性未接线完成，**先确认意图再删**，勿当无主死代码清理。注：其余站源 URL 字段（`HuangdouURL`/`YeguoURL`/`DSDURL`/`SoraniURL`/`GuipianURL`/`HanxiaoquanURL` 等）均被 `provider_media.go:27` 的 `providerBaseURL` 使用——宿主侧封面请求的 Referer 与诊断日志站点标识依赖它们（见该函数 24-26 行注释），**有意保留**，不是遗留化石 |
+| `Downloader` 命名误导 | `native/core/app_runtime.go` | 实为整个 app runtime，被 30+ 文件引用；`nativeDispatch` 为约 40 分支扁平 switch，`nativeInput` 是全体 action 的字段并集 |
+| Dart 测试配比失衡 | `test/` | 21 文件 2940 行集中在 danmaku/follow/media_library；discovery(901)/player(1680)/sources(1050)/settings(971)/search(723) 几乎无覆盖 |
+| `pubspec.lock` 可能已过期 | 仓库根 | 本地（Flutter 3.47.7 / Dart 3.13.5）`flutter pub get --enforce-lockfile` 直接失败，常规 `pub get` 会漂移 177 个包。CI 第 4 步就是 `--enforce-lockfile`，且该步从未加过 `continue-on-error`，**若 CI 所用的 3.47.4 同样不一致，则所有 CI run 都会在此变红**。需在与 CI 完全一致的 SDK 上复核后再决定是否重新 lock |
+| `dart format` 结果依赖 SDK 版本 | `.github/workflows/build.yml` | CI 固定 Flutter 3.47.4；用 Dart 3.13.5 跑会报 46 个文件不合格式（列表字面量尾逗号规则变更）。勿在不升 SDK pin 的情况下用新版 SDK 重排格式 |
 | 两种依赖注入风格并存 | 全局 | 路由新屏用 provider，老屏用构造参数 |
 | `SourceSite` 仍保留 1+10 源静态元数据 | `lib/core/models.dart` | 作为旧数据兜底；运行期可用列表只含红果+已安装扩展 |
 | LAN `user` 字段是常量 | `lan_controller.dart` | 多用户移除后固定为 `'本机用户'` |
@@ -246,11 +262,17 @@ python3 scripts/build_native.py --platform linux    # 需在 Linux 上执行
 
 ## 9. 下一步建议（按优先级）
 
-1. **发布前置**：推官方扩展仓库、替换索引地址、改 CI 为阻塞。
-2. **真机验收**：全新安装只有红果、随包扩展手动安装/更新/卸载、受限源默认关闭。
-3. **视觉第三批**：播放器控件与设置页分组（用户感知最强）。
-4. **player_screen Controller 化**：把状态机从 State 类抽到 `PlayerController`。
-5. **可选清理**：把 `SourceSite` 的静态元数据进一步收敛为仅用于旧数据展示，完全由扩展清单驱动。
+1. **先确认 CI 能不能跑起来**（新晋最高优先）：在与 CI 一致的 Flutter 3.47.4 上验证两件事——
+   - `flutter pub get --enforce-lockfile` 是否通过。该步从未加 `continue-on-error`，若 fail 则 CI 第 4 步就红，后面全白搭。
+   - `dart format` 与 `flutter test` 是否真的为绿。这两项此前长期 `continue-on-error`，**无人知道它们的真实状态**；现已改为阻塞，首次手动跑 CI 有可能暴露历史遗留失败（注意 format 结论依赖 SDK 版本，勿用 Dart 3.13.x 的結果判断）。
+2. **发布前置**：推官方扩展仓库、替换 `extensionIndexURL`（CI 阻塞已于 2026-10-26 完成）。
+3. **真机验收**：全新安装只有红果、随包扩展手动安装/更新/卸载、受限源默认关闭。
+4. **砍 `core`/`widgets` → `features` 的反向依赖**：共 4 处 import（`core_bridge.dart` 2 处 → `downloads`、`core/playback_preferences.dart` 1 处 → `player`、`widgets/cover_decoder.dart` 1 处 → `downloads`），改动面小、边界清晰，是让 `core` 真正成为底座的前提。另有一组 `player` ↔ `downloads` 模块级双向 import 需一并断开。
+5. **清理 `native/core/app_runtime.go`**：仅限确认过的项——见第 6 节 `Config.CDNURL`。**不要**删除其余站源 URL 字段，`providerBaseURL` 在用。`Downloader` 建议更名为 `Runtime`（跨 30+ 文件，可先用类型别名过渡减少扩散）。
+6. **补齐高风险屏幕的 widget 测试**：优先级低于第 4、5 项，但在 discovery/player/sources/settings 各有真实崩溃风险。
+7. **player_screen Controller 化**：把状态机从 State 类抽到 `PlayerController`。
+8. **视觉第三批**：播放器控件与设置页分组（用户感知最强）。
+9. **可选清理**：把 `SourceSite` 的静态元数据进一步收敛为仅用于旧数据展示，完全由扩展清单驱动。
 
 ---
 

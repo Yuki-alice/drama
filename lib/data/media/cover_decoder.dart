@@ -5,7 +5,7 @@ import 'dart:isolate';
 import 'package:path/path.dart' as path;
 
 import 'package:duanju_app/core/core_bridge.dart';
-import 'package:duanju_app/features/downloads/media_pipeline.dart';
+import 'package:duanju_app/data/media/media_pipeline.dart';
 
 class CoverDecoder {
   CoverDecoder({MediaExecutor Function()? createExecutor})

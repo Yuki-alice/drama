@@ -11,14 +11,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
 
-import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/app_platform.dart';
+import 'package:duanju_app/data/native_repository.dart';
 import 'package:duanju_app/app/app_layout.dart';
 import 'package:duanju_app/app/app_orientation.dart';
 import 'package:duanju_app/app/app_theme.dart';
+import 'package:duanju_app/core/catalog_updates.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
-import 'package:duanju_app/features/downloads/media_library.dart';
-import 'package:duanju_app/features/lan/lan_controller.dart';
+import 'package:duanju_app/data/media/media_library_provider.dart';
+import 'package:duanju_app/features/lan/lan_controller_provider.dart';
 import 'package:duanju_app/features/player/video_enhancement_assets.dart';
 import 'package:duanju_app/app/router.dart';
 import 'package:duanju_app/core/providers.dart';
@@ -26,17 +28,17 @@ import 'package:duanju_app/core/diary_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (Platform.isAndroid) {
+  if (isAndroidPlatform) {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
   }
-  if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+  if (isDesktopPlatform) {
     await windowManager.ensureInitialized();
   }
   MediaKit.ensureInitialized();
   VideoEnhancementAssets.registerLicenses();
   final device = await AppDevice.detect();
-  final rendering = Platform.isAndroid
+  final rendering = isAndroidPlatform
       ? ', 渲染: ${await AppDevice.compatibleRendering() ? 'skia' : 'impeller'}'
       : '';
   DiaryService.add(
@@ -61,7 +63,8 @@ class AppBootstrap extends StatefulWidget {
 
 class _AppBootstrapState extends State<AppBootstrap>
     with WidgetsBindingObserver {
-  final repository = NativeRepository();
+  final catalogUpdates = CatalogUpdates();
+  late final repository = NativeRepository(updates: catalogUpdates);
   late final LocalStore store;
   late final ProviderContainer container;
   late AppDevice device = widget.device;
@@ -70,10 +73,6 @@ class _AppBootstrapState extends State<AppBootstrap>
   void dispose() {
     container.dispose();
     WidgetsBinding.instance.removeObserver(this);
-    LanController.current?.dispose();
-    LanController.current = null;
-    MediaLibrary.current?.dispose();
-    MediaLibrary.current = null;
     store.dispose();
     super.dispose();
   }
@@ -88,6 +87,7 @@ class _AppBootstrapState extends State<AppBootstrap>
     container = ProviderContainer(
       overrides: [
         bootstrapRetryProvider.overrideWithValue(_initialize),
+        catalogUpdatesProvider.overrideWithValue(catalogUpdates),
         repositoryProvider.overrideWithValue(repository),
         storeProvider.overrideWith((_) => store),
       ],
@@ -97,24 +97,23 @@ class _AppBootstrapState extends State<AppBootstrap>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && Platform.isAndroid) {
+    if (state == AppLifecycleState.resumed && isAndroidPlatform) {
       unawaited(_refreshDevice());
     }
-    if (!Platform.isIOS) return;
-    final library = MediaLibrary.current;
+    if (!isIOSPlatform) return;
+    if (!container.read(appReadyProvider)) return;
+    final library = container.read(mediaLibraryProvider);
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      if (library != null) {
-        library.suspended = true;
-        unawaited(library.cancel());
-      }
+      library.suspended = true;
+      unawaited(library.cancel());
       unawaited(
         NativeRepository(
           background: true,
         ).controlDownloads('pauseAll').catchError((Object _) {}),
       );
     } else if (state == AppLifecycleState.resumed) {
-      if (library != null) library.suspended = false;
+      library.suspended = false;
     }
   }
 
@@ -143,16 +142,8 @@ class _AppBootstrapState extends State<AppBootstrap>
       await _loadInstalledSources();
       if (!mounted) return;
       repository.access = store;
-      MediaLibrary.attach(repository, store);
-      LanController.current?.dispose();
-      final link = LanController(
-        repository,
-        store,
-        kind: Platform.isWindows || Platform.isMacOS || Platform.isLinux
-            ? 'computer'
-            : 'phone',
-      );
-      LanController.current = link;
+      container.read(mediaLibraryProvider);
+      final link = container.read(lanControllerProvider);
       link.openPlayback = (request) async {
         if (request.cancelled ||
             !mounted ||
@@ -165,14 +156,16 @@ class _AppBootstrapState extends State<AppBootstrap>
         if (request.cancelled || !mounted || !link.receiving) {
           throw StateError('播放接收已取消');
         }
-        router.go(
-          '/player',
-          extra: PlayerRouteArgs(
-            detail: request.detail,
-            initialIndex: request.index,
-            initialPosition: request.position,
-          ),
-        );
+        container
+            .read(routerProvider)
+            .go(
+              '/player',
+              extra: PlayerRouteArgs(
+                detail: request.detail,
+                initialIndex: request.index,
+                initialPosition: request.position,
+              ),
+            );
       };
       container.read(appReadyProvider.notifier).state = true;
     } catch (failure) {
@@ -201,7 +194,7 @@ class DuanjuApp extends ConsumerWidget {
   }
 
   Widget _application(WidgetRef ref) => MaterialApp.router(
-    routerConfig: router,
+    routerConfig: ref.watch(routerProvider),
     title: appName,
     debugShowCheckedModeBanner: false,
     locale: const Locale('zh', 'CN'),

@@ -65,9 +65,9 @@ class _SearchScreenState extends State<SearchScreen> {
 
   SourceGroup _defaultGroup() {
     final current = SourceSite.byId(widget.store.source);
-    return SourceGroup.fromSources(widget.store.sources)
-            .where((entry) => entry.id == current.displayGroupId)
-            .firstOrNull ??
+    return SourceGroup.fromSources(
+          widget.store.sources,
+        ).where((entry) => entry.id == current.displayGroupId).firstOrNull ??
         SourceGroup(current.id, current.name, [current]);
   }
 
@@ -126,7 +126,9 @@ class _SearchScreenState extends State<SearchScreen> {
       return;
     }
     _input.text = query;
-    unawaited(saveUserChange(context, () => widget.store.rememberSearch(query)));
+    unawaited(
+      saveUserChange(context, () => widget.store.rememberSearch(query)),
+    );
     setState(() {
       _submitted = query;
       _loading = true;
@@ -193,7 +195,10 @@ class _SearchScreenState extends State<SearchScreen> {
       _group = result.group;
       _view = result.view;
     });
-    await saveUserChange(context, () => widget.store.setHideVip(result.hideVip));
+    await saveUserChange(
+      context,
+      () => widget.store.setHideVip(result.hideVip),
+    );
     if (!mounted) return;
     if (_hasSearched) await _requery();
   }
@@ -223,7 +228,8 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final pinHeader = _hasSearched &&
+    final pinHeader =
+        _hasSearched &&
         MediaQuery.sizeOf(context).height >= 420 &&
         MediaQuery.textScalerOf(context).scale(16) <= 24;
     return AppScreen(
@@ -261,10 +267,7 @@ class _SearchScreenState extends State<SearchScreen> {
                           )
                         : Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              _header(theme),
-                              _discovery(theme),
-                            ],
+                            children: [_header(theme), _discovery(theme)],
                           ),
                   ),
                 ),
@@ -394,7 +397,11 @@ class _SearchScreenState extends State<SearchScreen> {
                   color: theme.colorScheme.onSurfaceVariant,
                   size: 22,
                 ),
-                title: Text(entry, maxLines: 2, overflow: TextOverflow.ellipsis),
+                title: Text(
+                  entry,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 trailing: _managingHistory
                     ? IconButton(
                         tooltip: '删除这条搜索记录',
@@ -482,7 +489,7 @@ class _SearchScreenState extends State<SearchScreen> {
             _loading && results.isEmpty
                 ? '正在搜索…'
                 : '${results.length} 部'
-                    '${results.length < _items.length ? ' · 已筛选 ${_items.length - results.length} 部' : ''}',
+                      '${results.length < _items.length ? ' · 已筛选 ${_items.length - results.length} 部' : ''}',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -503,9 +510,10 @@ class _SearchScreenState extends State<SearchScreen> {
     if (results.isEmpty) {
       return StatusPanel(
         title: _error == null ? '没有找到「$_query」' : '搜索失败',
-        message:
-            _error ?? '可以换个关键词，或切换站源范围再搜索一次。',
-        icon: _error == null ? Icons.search_off_rounded : Icons.wifi_off_rounded,
+        message: _error ?? '可以换个关键词，或切换站源范围再搜索一次。',
+        icon: _error == null
+            ? Icons.search_off_rounded
+            : Icons.wifi_off_rounded,
         onRetry: _error == null ? null : _requery,
       );
     }
@@ -657,9 +665,8 @@ class _FilterSheetState extends State<_FilterSheet> {
                 ChoiceChip(
                   label: Text(label),
                   selected: _view.release == value,
-                  onSelected: (_) => setState(
-                    () => _view = _view.copyWith(release: value),
-                  ),
+                  onSelected: (_) =>
+                      setState(() => _view = _view.copyWith(release: value)),
                 ),
             ],
           ),

@@ -124,7 +124,9 @@ abstract final class AppTheme {
   static ThemeData _theme(Brightness brightness) {
     final dark = brightness == Brightness.dark;
     // 导航层与顶栏滚动后的着色；内容层始终使用接近纯色的 canvas。
-    final navContainer = dark ? const Color(0xFF251D1B) : const Color(0xFFF4E8E3);
+    final navContainer = dark
+        ? const Color(0xFF251D1B)
+        : const Color(0xFFF4E8E3);
     final canvas = dark ? const Color(0xFF15100F) : const Color(0xFFFFFBF9);
     // Expressive 变体：secondary/tertiary 从种子派生，带来更鲜明的高彩度点缀色；
     // 品牌主色与表面阶梯保持手调，确保视觉延续。

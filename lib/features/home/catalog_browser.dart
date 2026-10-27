@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:duanju_app/core/gateways.dart';
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/models.dart';
 
@@ -37,7 +38,7 @@ class _CatalogSession {
 
 class CatalogBrowser {
   CatalogBrowser(this.repository);
-  final AppRepository repository;
+  final CatalogGateway repository;
   final _menus = <String, List<CatalogCategory>>{};
   final _library = <String, Map<String, Drama>>{};
   final _sessions = <String, _CatalogSession>{};

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -7,10 +6,11 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import 'package:duanju_app/core/app_platform.dart';
 import 'package:duanju_app/features/player/video_enhancement_assets.dart';
 import 'package:duanju_app/features/player/video_enhancement_mpv.dart';
 import 'package:duanju_app/features/player/video_enhancement_policy.dart';
-import 'package:duanju_app/features/player/video_enhancement_preferences.dart';
+import 'package:duanju_app/core/video_enhancement_preferences.dart';
 import 'package:duanju_app/features/player/video_output_size.dart';
 
 class VideoEnhancementController extends ChangeNotifier {
@@ -22,7 +22,7 @@ class VideoEnhancementController extends ChangeNotifier {
     required List<String> tags,
   }) : _animationHint = videoHasAnimationTags(category, tags) {
     final native = player.platform;
-    supported = video != null && native is NativePlayer && Platform.isWindows;
+    supported = video != null && native is NativePlayer && isWindowsPlatform;
     if (!supported) {
       _status = '当前平台暂不支持画质增强';
       return;
@@ -263,7 +263,7 @@ class VideoEnhancementController extends ChangeNotifier {
       parameters: player.state.videoParams,
       viewport: _viewport,
       ready: _ready && _foreground,
-      android: Platform.isAndroid,
+      android: isAndroidPlatform,
       television: _television,
       gpu: _gpu,
       luma: _luma,
@@ -382,14 +382,14 @@ class VideoEnhancementController extends ChangeNotifier {
         !_softwareRenderer &&
         (vo == 'gpu' ||
             vo == 'libmpv' &&
-                (Platform.isWindows || _renderer.isNotEmpty || passes is Map));
+                (isWindowsPlatform || _renderer.isNotEmpty || passes is Map));
     final parameters = player.state.videoParams;
     final format = videoEnhancementPixelFormat(parameters);
     _luma =
-        !(Platform.isAndroid && hwdec == 'mediacodec') &&
+        !(isAndroidPlatform && hwdec == 'mediacodec') &&
         (format.startsWith('yuv') || format == 'nv12' || format == 'nv21');
     _opaque8Bit = false;
-    if (Platform.isAndroid && hwdec == 'mediacodec' && format == 'mediacodec') {
+    if (isAndroidPlatform && hwdec == 'mediacodec' && format == 'mediacodec') {
       final tracks = native.read('track-list');
       if (tracks is List) {
         for (final track in tracks.whereType<Map>()) {
@@ -575,7 +575,7 @@ class VideoEnhancementController extends ChangeNotifier {
         parameters: player.state.videoParams,
         viewport: _viewport,
         ready: true,
-        android: Platform.isAndroid,
+        android: isAndroidPlatform,
         television: _television,
         gpu: _gpu,
         luma: _luma,

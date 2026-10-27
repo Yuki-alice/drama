@@ -6,24 +6,6 @@ import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
 
-class DownloadBatchResult {
-  const DownloadBatchResult({
-    this.completed = const [],
-    this.failures = const {},
-  });
-  final List<String> completed;
-  final Map<String, String> failures;
-  factory DownloadBatchResult.fromJson(Map<String, dynamic> data) =>
-      DownloadBatchResult(
-        completed: (data['completed'] as List? ?? [])
-            .whereType<String>()
-            .toList(),
-        failures: (data['failures'] as Map? ?? {}).map(
-          (key, value) => MapEntry('$key', '$value'),
-        ),
-      );
-}
-
 class DownloadCollection {
   DownloadCollection(this.drama, this.jobs);
   final Drama drama;

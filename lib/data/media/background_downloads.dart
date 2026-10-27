@@ -1,15 +1,16 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:duanju_app/core/app_platform.dart';
 import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/data/native_repository.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
-import 'package:duanju_app/features/downloads/media_library.dart';
+import 'package:duanju_app/data/media/media_library.dart';
 import 'package:duanju_app/core/app_build.dart';
 
 @pragma('vm:entry-point')
@@ -19,7 +20,7 @@ void downloadServiceEntry() {
 
 class BackgroundDownloads {
   static Future<void> prepare() async {
-    if (!Platform.isAndroid) return;
+    if (!isAndroidPlatform) return;
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'zhenguojian_downloads',
@@ -44,7 +45,7 @@ class BackgroundDownloads {
   }
 
   static Future<void> ensureStarted() async {
-    if (!Platform.isAndroid) return;
+    if (!isAndroidPlatform) return;
     await prepare();
     if (await FlutterForegroundTask.isRunningService) return;
     await FlutterForegroundTask.requestNotificationPermission();

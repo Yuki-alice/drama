@@ -5,7 +5,8 @@ import 'package:go_router/go_router.dart';
 
 import 'package:duanju_app/app/app_screen.dart';
 import 'package:duanju_app/app/app_theme.dart';
-import 'package:duanju_app/app/router.dart' show DetailRouteArgs, SourcesRouteArgs;
+import 'package:duanju_app/app/router.dart'
+    show DetailRouteArgs, SourcesRouteArgs;
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/follow_updater.dart';
 import 'package:duanju_app/core/library_updater.dart';
@@ -15,7 +16,7 @@ import 'package:duanju_app/core/ranking_models.dart';
 import 'package:duanju_app/core/responsive/window_type.dart';
 import 'package:duanju_app/features/detail/drama_actions.dart';
 import 'package:duanju_app/features/downloads/batch_downloads.dart';
-import 'package:duanju_app/features/home/catalog_browser.dart';
+import 'package:duanju_app/features/home/discovery_view_model.dart';
 import 'package:duanju_app/features/player/playback_launch_screen.dart';
 import 'package:duanju_app/widgets/widgets.dart';
 
@@ -37,20 +38,9 @@ class DiscoveryScreen extends StatefulWidget {
 class _DiscoveryScreenState extends State<DiscoveryScreen> {
   static const _revealBatch = 60;
   final _scroll = ScrollController();
-  late SourceSite _source;
-  bool _allSources = false;
-  List<Drama> _items = [];
-  bool _loading = true;
-  bool _loadingMore = false;
-  bool _hasMore = true;
-  String? _error;
-  int _generation = 0;
-  late final CatalogBrowser _browser;
+  late final DiscoveryViewModel _model;
   late final LibraryUpdater _updater;
   late final FollowUpdater _followUpdater;
-  final _changedSources = <String>{};
-  Timer? _cacheRefreshTimer;
-  bool _refreshingUpdatedCache = false;
   bool _selectionMode = false;
   final _selectedDramas = <String, Drama>{};
   String _sourceSignature = '';
@@ -59,65 +49,43 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   int? _revealKey;
   bool _hiddenItems = false;
 
-  List<RankingItem> _banner = [];
-  bool _bannerLoading = false;
-  String _bannerBoard = '';
-
   AppRepository get _repository => widget.repository;
-
-  List<SourceGroup> get _sourceGroups {
-    final groups = SourceGroup.fromSources(widget.store.sources);
-    return [
-      if (groups.length > 1) SourceGroup('all', '全部站源', widget.store.sources),
-      ...groups,
-    ];
-  }
-
-  SourceGroup get _group =>
-      _sourceGroups
-          .where(
-            (group) =>
-                group.id == (_allSources ? 'all' : _source.displayGroupId),
-          )
-          .firstOrNull ??
-      SourceGroup(_source.displayGroupId, _source.displayGroupName, [_source]);
-
-  bool get _supportsVipFilter =>
-      _group.sources.any((source) => source.id == 'huangdou');
-  bool get _hideVip => _supportsVipFilter && widget.store.hideVip;
-  bool get _canSelect =>
-      widget.store.canDownload && widget.repository.supportsDownloads;
-
-  List<Drama> get _visible => widget.store.sources.isEmpty
-      ? const []
-      : _items.where((drama) {
-          if (!widget.store.allowsSource(drama.source)) return false;
-          return !_hideVip || drama.source != 'huangdou' || !drama.vip;
-        }).toList();
+  DiscoveryViewModel get _vm => _model;
+  SourceSite get _source => _vm.source;
+  bool get _allSources => _vm.allSources;
+  List<Drama> get _items => _vm.items;
+  bool get _loading => _vm.loading;
+  bool get _loadingMore => _vm.loadingMore;
+  bool get _hasMore => _vm.hasMore;
+  String? get _error => _vm.error;
+  List<RankingItem> get _banner => _vm.banner;
+  List<SourceGroup> get _sourceGroups => _vm.sourceGroups;
+  SourceGroup get _group => _vm.group;
+  bool get _hideVip => _vm.hideVip;
+  bool get _canSelect => _vm.canSelect;
+  bool get _canLoadMore => _vm.canLoadMore;
+  List<Drama> get _visible => _vm.visible;
 
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_onScroll);
-    _source = SourceSite.byId(widget.store.source);
-    _allSources = widget.store.catalogView.allSources;
     _sourceSignature = widget.store.sources.map((site) => site.id).join(',');
-    _browser = CatalogBrowser(widget.repository);
+    _model = DiscoveryViewModel(
+      repository: widget.repository,
+      store: widget.store,
+      updates: widget.repository.catalogUpdates,
+      persist: (action) => saveUserChange(context, action),
+    )..addListener(_updateChanged);
+    _model.start();
     _updater = LibraryUpdater(
       widget.repository,
       widget.store,
-      onCatalogChanged: _catalogUpdated,
+      onCatalogChanged: _vm.catalogUpdated,
     )..addListener(_updateChanged);
     _updater.startWatching();
     _followUpdater = FollowUpdater(widget.repository, widget.store)..start();
     widget.store.addListener(_sourcesChanged);
-    widget.repository.catalogUpdates.addListener(_metadataChanged);
-    if (widget.store.sources.isNotEmpty) {
-      _load(useCache: true);
-      _loadBanner();
-    } else {
-      _loading = false;
-    }
   }
 
   @override
@@ -125,11 +93,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     _updater.removeListener(_updateChanged);
     _updater.dispose();
     _followUpdater.dispose();
-    _cacheRefreshTimer?.cancel();
     widget.store.removeListener(_sourcesChanged);
-    widget.repository.catalogUpdates.removeListener(_metadataChanged);
-    _generation++;
-    unawaited(_browser.cancel());
+    _model.removeListener(_updateChanged);
+    _model.dispose();
     _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
@@ -146,12 +112,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     if (signature == _sourceSignature) return;
     _sourceSignature = signature;
     if (visible.isEmpty) {
-      setState(() {
-        _items = [];
-        _banner = [];
-        _hasMore = false;
-        _loading = false;
-      });
+      _vm.clearContent();
       return;
     }
     if (!visible.any((site) => site.id == _source.id) ||
@@ -160,167 +121,20 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     }
   }
 
-  void _catalogUpdated(String source) {
-    if (!mounted) return;
-    _changedSources.add(source);
-    _cacheRefreshTimer?.cancel();
-    _cacheRefreshTimer = Timer(const Duration(milliseconds: 100), () {
-      unawaited(_reloadUpdatedCache());
-    });
-  }
-
-  Future<void> _reloadUpdatedCache() async {
-    if (_refreshingUpdatedCache) return;
-    _refreshingUpdatedCache = true;
-    try {
-      while (mounted && _changedSources.isNotEmpty) {
-        final sources = Set.of(_changedSources);
-        _changedSources.clear();
-        final updates = <String, Drama>{};
-        for (final source in sources) {
-          if (!widget.store.allowsSource(source)) continue;
-          try {
-            for (final drama in (await _browser.cached(source)).items) {
-              if (widget.store.allowsSource(drama.source)) {
-                updates[drama.id] = drama;
-              }
-            }
-          } catch (error) {
-            if (mounted) setState(() => _error = '更新后读取缓存失败：$error');
-          }
-        }
-        if (!mounted) return;
-        _browser.updateDramas(updates.values);
-        setState(() {
-          _items = [
-            for (final item in _items)
-              updates[item.id] == null ? item : item.merge(updates[item.id]!),
-          ];
-          for (final id in _selectedDramas.keys.toList()) {
-            if (updates[id] != null) {
-              _selectedDramas[id] = _selectedDramas[id]!.merge(updates[id]!);
-            }
-          }
-        });
-        await saveUserChange(
-          context,
-          () => widget.store.refreshDramas(updates.values),
-        );
-        if (!mounted) return;
-        if (_group.sources.any((source) => sources.contains(source.id))) {
-          await _load(cacheOnly: true);
-        }
-      }
-    } finally {
-      _refreshingUpdatedCache = false;
-    }
-  }
-
-  void _metadataChanged() {
-    final drama = widget.repository.catalogUpdates.latest;
-    if (!mounted || drama == null || !widget.store.allowsSource(drama.source)) {
-      return;
-    }
-    _browser.updateDrama(drama);
-    setState(() {
-      _items = [
-        for (final item in _items)
-          item.id == drama.id ? item.merge(drama) : item,
-      ];
-    });
-    unawaited(saveUserChange(context, () => widget.store.refreshDrama(drama)));
-  }
-
   Future<void> _load({
     bool more = false,
     bool useCache = false,
     bool force = false,
     bool cacheOnly = false,
-  }) async {
-    if (more && (_loading || _loadingMore || !_hasMore)) return;
-    final generation = ++_generation;
-    setState(() {
-      _error = null;
-      if (more) {
-        _loadingMore = true;
-      } else {
-        _loading = true;
-        _loadingMore = false;
-      }
-    });
-    CatalogPage? refreshed;
-    void accept(CatalogPage result, {bool cached = false}) {
-      if (!mounted || generation != _generation) return;
-      setState(() {
-        _items = result.items;
-        if (more && result.items.length > _revealed) {
-          _revealed = result.items.length;
-        }
-        _hasMore = result.hasMore;
-        _loading = cached && !result.fresh;
-        _loadingMore = false;
-        _error = result.warning.isEmpty ? null : result.warning;
-      });
-      if (identical(result, refreshed)) return;
-      refreshed = result;
-      unawaited(
-        saveUserChange(context, () => widget.store.refreshDramas(result.items)),
-      );
-    }
+  }) => _vm.load(
+    more: more,
+    useCache: useCache,
+    force: force,
+    cacheOnly: cacheOnly,
+  );
 
-    try {
-      final result = await _browser.load(
-        _group,
-        more: more,
-        useCache: useCache,
-        force: force,
-        cacheOnly: cacheOnly,
-        onCached: (result) => accept(result, cached: true),
-      );
-      accept(result);
-    } catch (error) {
-      if (!mounted || generation != _generation) return;
-      setState(() {
-        _loading = false;
-        _loadingMore = false;
-        _error = error.toString();
-      });
-    }
-  }
-
-  Future<void> _loadBanner({bool force = false}) async {
-    if (_bannerLoading) return;
-    final generation = _generation;
-    setState(() => _bannerLoading = true);
-    try {
-      final boards = (await widget.repository.rankingBoards())
-          .where((board) => _group.sources.any((s) => s.id == board.source))
-          .toList();
-      if (boards.isEmpty) {
-        if (mounted) setState(() => _bannerLoading = false);
-        return;
-      }
-      final board = boards.firstWhere(
-        (item) => item.id == _bannerBoard,
-        orElse: () => boards.first,
-      );
-      final page = await widget.repository.rankings(board.id, force: force);
-      if (!mounted || generation != _generation) return;
-      setState(() {
-        _bannerBoard = board.id;
-        _banner = page.items.take(8).toList();
-        _bannerLoading = false;
-      });
-    } catch (_) {
-      // 榜单失败不阻塞目录浏览，静默隐藏该区块。
-      if (mounted && generation == _generation) {
-        setState(() {
-          _banner = [];
-          _bannerLoading = false;
-        });
-      }
-    }
-  }
+  Future<void> _loadBanner({bool force = false}) =>
+      _vm.loadBanner(force: force);
 
   Future<void> _refresh() async {
     if (widget.repository.supportsSourceManagement) {
@@ -332,45 +146,17 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     await Future.wait([_load(force: true), _loadBanner(force: true)]);
   }
 
-  void _cancelInFlight() {
-    _generation++;
-    unawaited(_browser.cancel());
-  }
-
-  void _pauseCatalog() {
-    _cancelInFlight();
-    setState(() {
-      _loading = false;
-      _loadingMore = false;
-    });
-  }
+  void _pauseCatalog() => _vm.pause();
 
   void _applySource(SourceSite source, {bool allSources = false}) {
     if (_source.id == source.id && _allSources == allSources) return;
-    _cancelInFlight();
     setState(() {
       _selectionMode = false;
       _selectedDramas.clear();
-      _source = source;
-      _allSources = allSources;
-      _items = [];
-      _banner = [];
-      _bannerBoard = '';
-      _hasMore = true;
-      _error = null;
     });
-    unawaited(
-      saveUserChange(
-        context,
-        () => widget.store.setCatalogSource(source.id, allSources: allSources),
-      ),
-    );
     if (_scroll.hasClients) _scroll.jumpTo(0);
-    _load(useCache: true);
-    _loadBanner();
+    _vm.applySource(source, allSources: allSources);
   }
-
-  bool get _canLoadMore => _hasMore && !_loading && !_loadingMore;
 
   void _onScroll() {
     if (!mounted || !(_hiddenItems || _canLoadMore) || !_scroll.hasClients) {
@@ -390,9 +176,15 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   void _showMore() {
     if (_hiddenItems) {
       setState(() => _revealed += _revealBatch);
-    } else {
-      unawaited(_load(more: true));
+      return;
     }
+    unawaited(
+      _load(more: true).then((_) {
+        if (!mounted) return;
+        final shown = _revealed;
+        if (_items.length > shown) setState(() => _revealed = _items.length);
+      }),
+    );
   }
 
   List<Drama> _reveal(List<Drama> items) {
@@ -425,9 +217,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     if (!_canSelect || !widget.store.allowsSource(drama.source)) return;
     if (!_selectedDramas.containsKey(drama.id) &&
         _selectedDramas.length >= BatchDownloads.maxDramas) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('一次最多选择 50 部短剧，请分批下载')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('一次最多选择 50 部短剧，请分批下载')));
       return;
     }
     setState(() {
@@ -446,7 +238,14 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   void _downloadSelected() {
     if (!_canSelect || _selectedDramas.isEmpty) return;
     _pauseCatalog();
-    context.push('/batch', extra: _selectedDramas.values.toList());
+    final latest = <String, Drama>{for (final item in _items) item.id: item};
+    context.push(
+      '/batch',
+      extra: [
+        for (final selected in _selectedDramas.values)
+          latest[selected.id] ?? selected,
+      ],
+    );
   }
 
   void _dramaActions(Drama drama) => showDramaActions(
@@ -635,9 +434,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                             message: _hideVip
                                 ? '可以换个分类，或显示 VIP 内容。'
                                 : '可以切换站源，或下拉刷新后重试。',
-                            onRetry: _hasMore
-                                ? () => _load(more: true)
-                                : null,
+                            onRetry: _hasMore ? () => _load(more: true) : null,
                             action: '加载更多',
                           ),
                         )

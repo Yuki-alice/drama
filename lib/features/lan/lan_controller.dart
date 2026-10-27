@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter/widgets.dart';
 import 'package:nsd/nsd.dart' as nsd;
 
+import 'package:duanju_app/core/app_platform.dart';
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/lan_models.dart';
 import 'package:duanju_app/core/lan_sync_models.dart';
@@ -27,7 +28,6 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
     _storeChanged();
   }
 
-  static LanController? current;
   static const serviceType = '_zgj-link._tcp';
   final AppRepository repository;
   final LocalStore store;
@@ -132,7 +132,7 @@ class LanController extends ChangeNotifier with WidgetsBindingObserver {
     return switch (kind) {
       'tv' => '电视',
       'computer' => '电脑',
-      _ => Platform.isIOS ? 'iPhone' : 'Android 手机',
+      _ => isIOSPlatform ? 'iPhone' : 'Android 手机',
     };
   }
 

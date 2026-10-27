@@ -13,9 +13,11 @@ import 'package:duanju_app/core/follow_state.dart';
 import 'package:duanju_app/core/hongguo_series.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/features/detail/detail_view_model.dart';
 import 'package:duanju_app/features/detail/download_picker.dart';
 import 'package:duanju_app/features/detail/episode_browser.dart';
 import 'package:duanju_app/features/sources/sources_screen.dart';
+import 'package:duanju_app/widgets/drama_labels.dart';
 import 'package:duanju_app/widgets/remote_widgets.dart';
 import 'package:duanju_app/widgets/widgets.dart';
 
@@ -47,16 +49,16 @@ class DetailScreen extends StatefulWidget {
 }
 
 class _DetailScreenState extends State<DetailScreen> {
-  DramaDetail? _detail;
-  String? _error;
-  bool _loading = true;
-  int _generation = 0;
-  int _episodePage = 0;
+  late final DetailViewModel _model;
   bool _expandedDescription = false;
   bool _showEpisodes = false;
   final _scroll = ScrollController();
   final _episodeAnchor = GlobalKey();
-  bool _initialActionHandled = false;
+
+  DramaDetail? get _detail => _model.detail;
+  String? get _error => _model.error;
+  bool get _loading => _model.loading;
+  int get _episodePage => _model.episodePage;
 
   Widget? get _sourceDiagnostics => widget.repository.supportsSourceManagement
       ? SourceDiagnosticsButton(
@@ -70,7 +72,16 @@ class _DetailScreenState extends State<DetailScreen> {
   void initState() {
     super.initState();
     widget.store.addListener(_onStoreChanged);
-    _load();
+    _model = DetailViewModel(
+      repository: widget.repository,
+      store: widget.store,
+      drama: widget.drama,
+      persist: (action) => saveUserChange(context, action),
+    )..addListener(_onModelChanged);
+    _model.load(
+      resumeOnOpen: widget.resumeOnOpen,
+      downloadOnOpen: widget.downloadOnOpen,
+    );
   }
 
   @override
@@ -86,7 +97,8 @@ class _DetailScreenState extends State<DetailScreen> {
   void dispose() {
     _scroll.dispose();
     widget.store.removeListener(_onStoreChanged);
-    _generation++;
+    _model.removeListener(_onModelChanged);
+    _model.dispose();
     super.dispose();
   }
 
@@ -94,83 +106,15 @@ class _DetailScreenState extends State<DetailScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _load() async {
-    final generation = ++_generation;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final detail = await widget.repository.detail(widget.drama);
-      if (!mounted || generation != _generation) return;
-      final merged = widget.repository.catalogUpdates
-          .current(widget.drama)
-          .merge(detail.drama);
-      setState(() {
-        _detail = DramaDetail(merged, detail.episodes, warning: detail.warning);
-        _loading = false;
-        _episodePage =
-            resumeEpisodeIndex(
-              detail.episodes,
-              widget.store.watched(merged.id),
-            ) ~/
-            episodePageSize;
-      });
-      widget.repository.catalogUpdates.publish(merged, retryCover: true);
-      unawaited(_supplement(merged, generation));
-      await saveUserChange(context, () => widget.store.refreshDrama(merged));
-      if (mounted &&
-          generation == _generation &&
-          !_initialActionHandled &&
-          detail.episodes.isNotEmpty) {
-        _initialActionHandled = true;
-        if (widget.resumeOnOpen) {
-          unawaited(
-            _play(
-              resumeEpisodeIndex(
-                detail.episodes,
-                widget.store.watched(merged.id),
-              ),
-              resume: true,
-            ),
-          );
-        } else if (widget.downloadOnOpen && widget.store.canDownload) {
-          unawaited(_download());
-        }
-      }
-    } catch (error) {
-      if (!mounted || generation != _generation) return;
-      setState(() {
-        _error = error.toString();
-        _loading = false;
-      });
-      widget.repository.catalogUpdates.publish(
-        widget.repository.catalogUpdates.current(widget.drama),
-        retryCover: true,
-      );
+  void _onModelChanged() {
+    if (!mounted) return;
+    setState(() {});
+    final action = _model.takeInitialAction();
+    if (action == DetailInitialAction.resume) {
+      unawaited(_play(_model.resumeIndex, resume: true));
+    } else if (action == DetailInitialAction.download) {
+      unawaited(_download());
     }
-  }
-
-  Future<void> _supplement(Drama drama, int generation) async {
-    try {
-      final fresh = await widget.repository.supplementMetadata(drama);
-      if (!mounted ||
-          generation != _generation ||
-          fresh == null ||
-          _detail == null) {
-        return;
-      }
-      final updated = _detail!.drama.merge(fresh);
-      setState(() {
-        _detail = DramaDetail(
-          updated,
-          _detail!.episodes,
-          warning: _detail!.warning,
-        );
-      });
-      widget.repository.catalogUpdates.publish(updated);
-      await saveUserChange(context, () => widget.store.refreshDrama(updated));
-    } catch (_) {}
   }
 
   Future<void> _download() async {
@@ -194,9 +138,7 @@ class _DetailScreenState extends State<DetailScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            added == 0 ? '所选集数已在下载列表中' : '已加入 $added 集，已有任务自动跳过',
-          ),
+          content: Text(added == 0 ? '所选集数已在下载列表中' : '已加入 $added 集，已有任务自动跳过'),
           action: SnackBarAction(
             label: '查看',
             onPressed: () => context.push('/downloads'),
@@ -283,10 +225,8 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _locateEpisode(int index) {
-    setState(() {
-      _episodePage = index ~/ episodePageSize;
-      _showEpisodes = true;
-    });
+    _model.setEpisodePage(index ~/ episodePageSize);
+    setState(() => _showEpisodes = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final context = _episodeAnchor.currentContext;
       if (!mounted || context == null) return;
@@ -322,17 +262,14 @@ class _DetailScreenState extends State<DetailScreen> {
               RefreshAction(
                 loading: _loading,
                 tooltip: '更新剧集信息',
-                onPressed: allowed ? _load : null,
+                onPressed: allowed ? _model.load : null,
               ),
             ],
             bottomBar: pane == _DetailPane.compact && allowed
                 ? _playBar(drama, episodes, watched)
                 : null,
             body: !allowed
-                ? const StatusPanel(
-                    title: '当前用户无权访问',
-                    message: '请返回剧库后重新选择。',
-                  )
+                ? const StatusPanel(title: '当前用户无权访问', message: '请返回剧库后重新选择。')
                 : SingleChildScrollView(
                     controller: _scroll,
                     padding: EdgeInsets.zero,
@@ -519,7 +456,10 @@ class _DetailScreenState extends State<DetailScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('第 ${watched.episode} 集', style: Theme.of(context).textTheme.titleLarge),
+        Text(
+          '第 ${watched.episode} 集',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         const SizedBox(height: 4),
         Text(
           '${formatPosition(watched.position)} / ${formatPosition(watched.duration)} · ${watched.finished ? '已看完' : '观看中'}',
@@ -597,7 +537,9 @@ class _DetailScreenState extends State<DetailScreen> {
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: compact
-              ? theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)
+              ? theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                )
               : theme.textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.w800,
                 ),
@@ -632,7 +574,7 @@ class _DetailScreenState extends State<DetailScreen> {
       if (drama.episodes > 0) '共 ${drama.episodes} 集',
       if (drama.category.isNotEmpty) drama.category,
       if (drama.releaseStatus.isNotEmpty && drama.releaseStatus != 'unknown')
-        drama.releaseLabel,
+        releaseLabelOf(drama.releaseStatus),
     ];
     return parts.join(' · ');
   }
@@ -640,15 +582,9 @@ class _DetailScreenState extends State<DetailScreen> {
   Widget _statsRow(Drama drama) {
     final theme = Theme.of(context);
     final stats = <(String, String)>[
-      (
-        drama.episodes > 0 ? '${drama.episodes}' : '—',
-        '总集数',
-      ),
+      (drama.episodes > 0 ? '${drama.episodes}' : '—', '总集数'),
       (drama.heat.isEmpty ? '—' : drama.heat, '热度'),
-      (
-        drama.onlineDate.isEmpty ? '—' : drama.onlineDate,
-        '上线',
-      ),
+      (drama.onlineDate.isEmpty ? '—' : drama.onlineDate, '上线'),
     ];
     return Row(
       children: [
@@ -695,7 +631,7 @@ class _DetailScreenState extends State<DetailScreen> {
       ('分集', episodeCount > 0 ? '$episodeCount 集' : '待更新'),
       if (drama.category.isNotEmpty) ('分类', drama.category),
       if (drama.releaseStatus.isNotEmpty && drama.releaseStatus != 'unknown')
-        ('状态', drama.releaseLabel),
+        ('状态', releaseLabelOf(drama.releaseStatus)),
       if (drama.views.isNotEmpty) ('播放', drama.views),
     ];
     return Column(
@@ -876,7 +812,7 @@ class _DetailScreenState extends State<DetailScreen> {
       return StatusPanel(
         title: _error != null ? '剧集信息暂时不可用' : '暂时没有可播放的集数',
         message: _error ?? '可以更新剧集信息后重试。',
-        onRetry: _load,
+        onRetry: _model.load,
         secondaryAction: _sourceDiagnostics,
       );
     }
@@ -890,14 +826,10 @@ class _DetailScreenState extends State<DetailScreen> {
       (value, episode) => math.max(value, episode.number.toString().length),
     );
     final scale = MediaQuery.textScalerOf(context);
-    final minimum = math.max(
-      82.0,
-      scale.scale(20) * digits * .65 + 40,
-    );
+    final minimum = math.max(82.0, scale.scale(20) * digits * .65 + 40);
     final columns = ((width - 40) / minimum).floor().clamp(1, 12);
     final extent = math.max(54.0, scale.scale(20) + 30);
-    final cellWidth =
-        (width - (columns - 1) * 10.0 - 8) / math.max(1, columns);
+    final cellWidth = (width - (columns - 1) * 10.0 - 8) / math.max(1, columns);
     return Column(
       key: _episodeAnchor,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -911,10 +843,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 style: theme.textTheme.titleMedium,
               ),
             ),
-            TextButton(
-              onPressed: () => _load(),
-              child: const Text('刷新'),
-            ),
+            TextButton(onPressed: () => _model.load(), child: const Text('刷新')),
           ],
         ),
         EpisodeRangeBar(
@@ -978,7 +907,8 @@ class _DetailScreenState extends State<DetailScreen> {
             checked: state?.status == status,
             child: Text(status.label),
           ),
-        if (state != null) const PopupMenuItem(value: 'remove', child: Text('取消追剧')),
+        if (state != null)
+          const PopupMenuItem(value: 'remove', child: Text('取消追剧')),
       ],
       child: Container(
         constraints: const BoxConstraints(minHeight: 48),
@@ -1037,7 +967,9 @@ class _DetailScreenState extends State<DetailScreen> {
         minimumSize: Size(expand ? double.infinity : 0, 52),
         shape: const StadiumBorder(),
       ),
-      onPressed: episodes.isEmpty ? null : () => _play(resumeIndex, resume: true),
+      onPressed: episodes.isEmpty
+          ? null
+          : () => _play(resumeIndex, resume: true),
       icon: const Icon(Icons.play_arrow_rounded, size: 26),
       label: Text(
         watched != null && episodes.isNotEmpty
@@ -1062,11 +994,7 @@ class _DetailScreenState extends State<DetailScreen> {
       );
 
   /// 紧凑端保留常驻播放条，宽屏的播放入口在左侧栏。
-  Widget _playBar(
-    Drama drama,
-    List<Episode> episodes,
-    WatchEntry? watched,
-  ) {
+  Widget _playBar(Drama drama, List<Episode> episodes, WatchEntry? watched) {
     final resumeIndex = resumeEpisodeIndex(episodes, watched);
     return Material(
       color: AppSurfaces.of(context).navContainer,

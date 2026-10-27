@@ -51,9 +51,9 @@ extension LocalStoreSync on LocalStore {
     if (raw == null) {
       document.reconcile(
         previous: const {},
-        favorites: _favorites,
-        states: _followStates,
-        history: _history,
+        favorites: _lib.rawFavorites,
+        states: _lib.rawFollowStates,
+        history: _lib.rawHistory,
         oldHistory: const {},
       );
     }
@@ -112,11 +112,11 @@ extension LocalStoreSync on LocalStore {
           : FollowState.fromJson(lanMap(rawStates[drama.id]));
     }
     document.reconcile(
-      previous: _favorites,
+      previous: _lib.rawFavorites,
       favorites: favorites,
       states: states,
       history: history,
-      oldHistory: _history,
+      oldHistory: _lib.rawHistory,
       clearProgress: clearProgress,
     );
     values['lanRecords'] = jsonEncode(document.toJson());
@@ -152,9 +152,9 @@ extension LocalStoreSync on LocalStore {
               incoming.length) {
         throw const FormatException('同步记录数量无效');
       }
-      final favorites = Map.of(_favorites);
-      final states = Map.of(_followStates);
-      final history = Map.of(_history);
+      final favorites = Map.of(_lib.rawFavorites);
+      final states = Map.of(_lib.rawFollowStates);
+      final history = Map.of(_lib.rawHistory);
       for (final record in incoming) {
         if (!sources.contains(record.drama.source)) {
           throw StateError('同步包含本次范围外的站源');
@@ -193,7 +193,7 @@ extension LocalStoreSync on LocalStore {
         'favorites': jsonEncode(
           favorites.values.map((drama) => drama.toJson()).toList(),
         ),
-        'followStates': _encodeFollowStates(states),
+        'followStates': _lib.encodeFollowStates(states),
         'history': jsonEncode(
           sorted.take(300).map((entry) => entry.toJson()).toList(),
         ),
@@ -202,7 +202,7 @@ extension LocalStoreSync on LocalStore {
           receipts.reversed.take(64).toList().reversed.toList(),
         ),
       }, trackSync: false);
-      _loadLibrary();
+      _lib.load();
       _notify();
     });
   }
@@ -231,9 +231,9 @@ extension LocalStoreSync on LocalStore {
       }
       final next = record.withField(field, document.edit(cell, choice.value));
       document.records[id] = next;
-      final favorites = Map.of(_favorites);
-      final states = Map.of(_followStates);
-      final history = Map.of(_history);
+      final favorites = Map.of(_lib.rawFavorites);
+      final states = Map.of(_lib.rawFollowStates);
+      final history = Map.of(_lib.rawHistory);
       if (next.followed) {
         favorites[id] = next.drama;
         states[id] = next.following.copyWith(
@@ -254,7 +254,7 @@ extension LocalStoreSync on LocalStore {
         'favorites': jsonEncode(
           favorites.values.map((drama) => drama.toJson()).toList(),
         ),
-        'followStates': _encodeFollowStates(states),
+        'followStates': _lib.encodeFollowStates(states),
         'history': jsonEncode(
           sorted.take(300).map((entry) => entry.toJson()).toList(),
         ),
@@ -262,7 +262,7 @@ extension LocalStoreSync on LocalStore {
       }, trackSync: false);
       _lanRevision++;
       _lanUrgentRevision++;
-      _loadLibrary();
+      _lib.load();
       _notify();
     });
   }

@@ -127,7 +127,7 @@ go test -race ./...
 
 | 目录 | 内容 |
 | --- | --- |
-| `lib/app`、`lib/core`、`lib/features`、`lib/widgets` | 分层前端：bootstrap/路由/主题、模型/FFI/存储、按功能划分的页面、共享组件 |
+| `lib/app`、`lib/core`、`lib/data`、`lib/features`、`lib/widgets` | 分层前端：bootstrap/路由/主题、模型/契约/存储、FFI 仓库与媒资下载服务、按功能划分的页面、共享组件 |
 | `native/core`、`native/ext`、`native/bridge` | 站源核心（registry + 内置 provider）、JS 扩展运行时（goja）、C ABI |
 | `extensions-repo` | 官方扩展源仓库（单文件 JS、校验脚本、index.json；随包提供但需手动安装） |
 | `android`、`windows`、`ios`、`macos`、`linux` | 官方 Flutter 平台工程与必要资源 |
@@ -149,8 +149,9 @@ go test -race ./...
 ## 本轮架构重构（v0.3）
 
 - **功能裁剪**：移除多用户、界面模式手动切换与电视遥控模式；保留并强化响应式布局（`core/responsive` 三档断点）。
-- **分层结构**：`lib/app`（bootstrap/router/theme）、`lib/core`（模型/FFI/存储）、`lib/features/*`（页面）、`lib/widgets`。
-- **状态管理**：Riverpod（`storeProvider` 桥接 LocalStore；根组件只订阅主题）。
+- **分层结构**：`lib/app`（bootstrap/router/theme）、`lib/core`（模型/契约/存储）、`lib/data`（FFI 仓库、媒资与下载服务）、`lib/features/*`（页面）、`lib/widgets`；`test/architecture_test.dart` 约束反向依赖。
+- **状态管理**：Riverpod（`storeProvider` 桥接 LocalStore；根组件只订阅主题）；发现/详情/站源页使用 ChangeNotifier ViewModel，播放页拆分出会话状态机、进度、健康监测与恢复调度控制器。
+- **本地数据**：`LocalStore` 作为门面组合 `LibraryStore`（历史/收藏/追剧）、`SettingsStore`（偏好）与 `SourceAccessPolicy`（站源准入）。
 - **路由**：go_router 集中管理（`lib/app/router.dart`），LAN 投屏等主流程全部路由化。
 - **FFI**：常驻工作 isolate（`NativeChannel`），JSON 编解码与符号解析均离 UI 线程。
 - **站源接口化**：`provider_registry.go` 统一接口；红果保留 Go 内置，其余站源全部为 JS 扩展，由运行期安装表驱动。

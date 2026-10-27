@@ -69,9 +69,7 @@ class DownloadPreferencesScreen extends StatelessWidget {
                     SwitchListTile(
                       value: preferences.includeVip,
                       title: const Text('默认包含 VIP 集'),
-                      subtitle: const Text(
-                        'VIP 集可能仅提供试看内容；下载前仍可调整选择。',
-                      ),
+                      subtitle: const Text('VIP 集可能仅提供试看内容；下载前仍可调整选择。'),
                       onChanged: !store.canDownload
                           ? null
                           : (value) => saveUserChange(
@@ -249,7 +247,8 @@ class _ResourceSettingsScreenState extends State<ResourceSettingsScreen> {
                       helperMaxLines: 3,
                       suffixIcon: IconButton(
                         tooltip: _showProxy ? '隐藏代理地址' : '显示代理地址',
-                        onPressed: () => setState(() => _showProxy = !_showProxy),
+                        onPressed: () =>
+                            setState(() => _showProxy = !_showProxy),
                         icon: Icon(
                           _showProxy
                               ? Icons.visibility_off_outlined

@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/gateways.dart';
 import 'package:duanju_app/core/danmaku_models.dart';
 import 'package:duanju_app/core/models.dart';
 
@@ -10,7 +10,7 @@ class DanmakuController extends ChangeNotifier {
   DanmakuController(this.repository, {DateTime Function()? now})
     : _now = now ?? DateTime.now;
 
-  final AppRepository repository;
+  final PlaybackGateway repository;
   final DateTime Function() _now;
   final _pages = <int, DanmakuPage>{};
   final _failures = <int, DateTime>{};

@@ -57,9 +57,7 @@ class SettingsDetailScaffold extends StatelessWidget {
     }
     final paneLeading =
         leading ??
-        (scope.showBackButton
-            ? BackButton(onPressed: scope.onBack)
-            : null);
+        (scope.showBackButton ? BackButton(onPressed: scope.onBack) : null);
     return Material(
       type: MaterialType.transparency,
       child: Column(
@@ -123,8 +121,9 @@ class SectionHeader extends StatelessWidget {
         if (description != null) ...[
           const SizedBox(height: 4),
           DefaultTextStyle.merge(
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
             child: description!,
           ),
         ],
@@ -288,9 +287,9 @@ class SettingsCategoryTile extends StatelessWidget {
           if (value != null)
             Text(
               value!,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: colors.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
             ),
           const SizedBox(width: 4),
           Icon(Icons.chevron_right_rounded, color: colors.onSurfaceVariant),
@@ -341,9 +340,9 @@ class SettingsRailDestination extends StatelessWidget {
                     label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: foreground,
-                    ),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.labelLarge?.copyWith(color: foreground),
                   ),
                 ),
                 const SizedBox(width: 12),

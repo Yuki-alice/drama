@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:duanju_app/widgets/remote_widgets.dart';
 import 'package:duanju_app/features/player/video_enhancement.dart';
-import 'package:duanju_app/features/player/video_enhancement_preferences.dart';
+import 'package:duanju_app/core/video_enhancement_preferences.dart';
 
 class VideoEnhancementSettings extends StatelessWidget {
   const VideoEnhancementSettings({

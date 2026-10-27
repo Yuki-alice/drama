@@ -1,7 +1,7 @@
 import 'dart:io';
 
-import 'package:duanju_app/widgets/cover_decoder.dart';
-import 'package:duanju_app/features/downloads/media_pipeline.dart';
+import 'package:duanju_app/data/media/cover_decoder.dart';
+import 'package:duanju_app/data/media/media_pipeline.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class CoverExecutor implements MediaExecutor {

@@ -7,7 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 export 'package:duanju_app/core/app_build.dart';
 
-const appVersion = '0.2.64';
+const appVersion = '0.3.0';
 
 class AppDevice {
   const AppDevice({this.version = appVersion});

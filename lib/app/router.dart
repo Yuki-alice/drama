@@ -4,7 +4,8 @@ import 'package:duanju_app/app/app_shell.dart';
 import 'package:duanju_app/app/app_theme.dart';
 import 'package:duanju_app/app/main.dart' show ConfigRecoveryScreen;
 import 'package:duanju_app/core/providers.dart';
-import 'package:duanju_app/features/downloads/media_library.dart';
+import 'package:duanju_app/data/media/media_library_provider.dart';
+import 'package:duanju_app/features/lan/lan_controller_provider.dart';
 import 'package:duanju_app/features/detail/detail_screen.dart';
 import 'package:duanju_app/features/downloads/downloads_screen.dart';
 import 'package:duanju_app/features/downloads/batch_download_screen.dart';
@@ -48,7 +49,9 @@ class SourcesRouteArgs {
   final Drama? drama;
 }
 
-final router = GoRouter(
+final routerProvider = Provider<GoRouter>((_) => _buildRouter());
+
+GoRouter _buildRouter() => GoRouter(
   initialLocation: '/discover',
   routes: [
     // 一级导航：三个分支各自保留状态，二级页面挂在外层全屏渲染。
@@ -79,8 +82,7 @@ final router = GoRouter(
                 (ref, state) => FollowScreen(
                   repository: ref.read(repositoryProvider),
                   store: ref.read(storeProvider),
-                  initialHistory:
-                      state.uri.queryParameters['tab'] == 'history',
+                  initialHistory: state.uri.queryParameters['tab'] == 'history',
                 ),
               ),
             ),
@@ -126,6 +128,7 @@ final router = GoRouter(
           initialPosition: args.initialPosition,
           repository: ref.read(repositoryProvider),
           store: ref.read(storeProvider),
+          lan: ref.read(lanControllerProvider),
         );
       }),
     ),
@@ -145,7 +148,9 @@ final router = GoRouter(
       path: '/search',
       name: 'search',
       pageBuilder: _page((ref, state) {
-        final group = state.extra is SourceGroup ? state.extra as SourceGroup : null;
+        final group = state.extra is SourceGroup
+            ? state.extra as SourceGroup
+            : null;
         return SearchScreen(
           repository: ref.read(repositoryProvider),
           store: ref.read(storeProvider),
@@ -228,6 +233,7 @@ final router = GoRouter(
         (ref, state) => LocalMediaScreen(
           repository: ref.read(repositoryProvider),
           store: ref.read(storeProvider),
+          library: ref.read(mediaLibraryProvider),
         ),
       ),
     ),
@@ -238,7 +244,7 @@ final router = GoRouter(
         final repository = ref.read(repositoryProvider);
         final store = ref.read(storeProvider);
         return MergeQueueScreen(
-          library: MediaLibrary.current ?? MediaLibrary(repository, store),
+          library: ref.read(mediaLibraryProvider),
           repository: repository,
           store: store,
         );
@@ -259,7 +265,10 @@ class _AppGate extends ConsumerWidget {
     }
     final failure = ref.watch(bootstrapErrorProvider);
     if (failure != null) {
-      return _BootScreen(error: failure, onRetry: ref.read(bootstrapRetryProvider));
+      return _BootScreen(
+        error: failure,
+        onRetry: ref.read(bootstrapRetryProvider),
+      );
     }
     final store = ref.watch(storeProvider);
     if (store.locked) return ConfigRecoveryScreen(store: store);

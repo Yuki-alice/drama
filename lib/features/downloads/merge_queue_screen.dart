@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:duanju_app/core/core_bridge.dart';
 import 'package:duanju_app/core/local_store.dart';
-import 'package:duanju_app/features/downloads/media_library.dart';
+import 'package:duanju_app/data/media/media_library.dart';
 import 'package:duanju_app/core/models.dart';
 import 'package:duanju_app/widgets/widgets.dart';
 

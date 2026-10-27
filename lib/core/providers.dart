@@ -2,8 +2,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
+import 'catalog_updates.dart';
 import 'core_bridge.dart';
 import 'local_store.dart';
+
+/// 目录更新事件通道：由组合根与仓库共用同一实例。
+final catalogUpdatesProvider = Provider<CatalogUpdates>((ref) {
+  return CatalogUpdates();
+});
 
 /// FFI 仓库桥：应用启动时由 bootstrap 覆写注入实际实例。
 final repositoryProvider = Provider<AppRepository>((ref) {

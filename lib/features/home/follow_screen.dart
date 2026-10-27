@@ -47,10 +47,8 @@ class _FollowScreenState extends State<FollowScreen> {
     }
   }
 
-  void _open(Drama drama) => context.push(
-    '/detail',
-    extra: DetailRouteArgs(drama: drama),
-  );
+  void _open(Drama drama) =>
+      context.push('/detail', extra: DetailRouteArgs(drama: drama));
 
   void _continue(Drama drama) => unawaited(
     openPlaybackDirectly(
