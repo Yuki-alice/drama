@@ -90,8 +90,7 @@ class DiscoveryViewModel extends ChangeNotifier {
           .firstOrNull ??
       SourceGroup(_source.displayGroupId, _source.displayGroupName, [_source]);
 
-  bool get supportsVipFilter =>
-      group.sources.any((source) => source.id == 'huangdou');
+  bool get supportsVipFilter => group.sources.any((source) => source.vip);
   bool get hideVip => supportsVipFilter && store.hideVip;
   bool get canSelect => store.canDownload && repository.supportsDownloads;
   bool get canLoadMore => _hasMore && !_loading && !_loadingMore;
@@ -100,7 +99,9 @@ class DiscoveryViewModel extends ChangeNotifier {
       ? const []
       : _items.where((drama) {
           if (!store.allowsSource(drama.source)) return false;
-          return !hideVip || drama.source != 'huangdou' || !drama.vip;
+          if (!hideVip || !drama.vip) return true;
+          // 只有声明了 VIP 能力的源才参与过滤，避免误伤未声明源的同名字段。
+          return !SourceSite.byId(drama.source).vip;
         }).toList();
 
   Future<void> load({

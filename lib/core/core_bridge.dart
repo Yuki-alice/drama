@@ -142,6 +142,15 @@ abstract class AppRepository
   Future<SourceStatus> cancelSourceJob(String source) async =>
       throw AppFailure('当前环境不支持站源管理');
   @override
+  Future<List<Map<String, dynamic>>> sourceSettings(String source) async =>
+      const [];
+  @override
+  Future<void> saveSourceSetting(
+    String source,
+    String key,
+    String value,
+  ) async => throw AppFailure('当前环境不支持站源设置');
+  @override
   Future<List<String>> suggestions(String query) async => const [];
   @override
   Future<Map<String, dynamic>> storage() async => {};

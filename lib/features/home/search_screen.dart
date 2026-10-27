@@ -187,7 +187,7 @@ class _SearchScreenState extends State<SearchScreen> {
         group: _group,
         view: _view,
         hideVip: widget.store.hideVip,
-        supportsVipFilter: _group.sources.any((s) => s.id == 'huangdou'),
+        supportsVipFilter: _group.sources.any((s) => s.vip),
       ),
     );
     if (result == null || !mounted) return;

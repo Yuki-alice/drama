@@ -31,6 +31,8 @@ import 'package:duanju_app/features/player/playback_recovery_scheduler.dart';
 import 'package:duanju_app/core/playback_preferences.dart';
 import 'package:duanju_app/features/player/player_controls.dart';
 import 'package:duanju_app/features/player/player_interactions.dart';
+import 'package:duanju_app/features/player/player_surface.dart';
+import 'package:duanju_app/features/player/picture_in_picture_controller.dart';
 import 'package:duanju_app/features/player/player_session_controller.dart';
 import 'package:duanju_app/features/player/player_menu.dart';
 import 'package:duanju_app/widgets/drama_labels.dart';
@@ -81,6 +83,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     with WidgetsBindingObserver
     implements PlayerPlaybackHost {
   late final Player _player;
+  late final PlayerSurface _surface;
   late final VideoController? _video;
   late final VideoEnhancementController _enhancement;
   late final PlaybackLoader _loader;
@@ -98,8 +101,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   double? _lanFirstPosition;
   late final PlaybackHealthController _health;
+  late final PictureInPictureController _pip;
   Timer? _saveTimer;
-  Timer? _pictureInPictureExitTimer;
   bool _fullscreen = false;
   bool _automaticFullscreenSuppressed = false;
   bool _panelOpen = false;
@@ -108,10 +111,6 @@ class _PlayerScreenState extends State<PlayerScreen>
   Orientation? _lastOrientation;
   bool _closed = false;
   bool _foreground = true;
-  bool _pictureInPictureSupported = false;
-  bool _pictureInPictureActive = false;
-  bool _pictureInPictureRequested = false;
-  bool _pictureInPictureHandlerInstalled = false;
   AppLifecycleState _lifecycleState = AppLifecycleState.resumed;
   double _aspectRatio = 9 / 16;
   bool _rotating = false;
@@ -133,6 +132,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   set _autoAdvance(bool value) => _session.autoAdvance = value;
   bool get _danmakuEnabled => _session.danmakuEnabled;
   set _danmakuEnabled(bool value) => _session.danmakuEnabled = value;
+
+  /// 当前剧集的源是否支持弹幕（由扩展清单的 danmaku 能力声明）。
+  bool get _danmakuSupported =>
+      SourceSite.byId(widget.detail.drama.source).danmaku;
   bool get _preloadEnabled => _session.preloadEnabled;
   set _preloadEnabled(bool value) => _session.preloadEnabled = value;
   bool get _acceptErrors => _session.acceptErrors;
@@ -144,11 +147,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   bool get _handoffOwned => _session.handoffOwned;
   set _handoffOwned(bool value) => _session.handoffOwned = value;
-  bool get _pictureInPictureVisible =>
-      _pictureInPictureActive || _pictureInPictureRequested;
-  bool get _canUsePictureInPicture =>
-      defaultTargetPlatform == TargetPlatform.android &&
-      _pictureInPictureSupported;
+  bool get _pictureInPictureVisible => _pip.visible;
+  bool get _canUsePictureInPicture => _pip.canUse;
   bool get _mobile => isMobilePlatform;
   bool get _desktop => isDesktopPlatform;
   VideoEnhancementController? get _enhancementForUi =>
@@ -204,8 +204,11 @@ class _PlayerScreenState extends State<PlayerScreen>
       category: widget.detail.drama.category,
       tags: widget.detail.drama.tags,
     );
+    // 控件与手势只依赖 PlayerSurface；media_kit 的具体实现只在这里出现，
+    // 使控件层可以在测试里用假实现驱动。
+    _surface = MediaKitPlayerSurface(_player);
     _interactions = PlayerInteractions(
-      player: _player,
+      surface: _surface,
       available: () =>
           !_closed && !_loading && _error == null && _foreground && !_panelOpen,
       baseSpeed: () => _speed,
@@ -257,6 +260,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       preferences: preferences,
       handoff: widget.handoff,
     )..addListener(_sessionChanged);
+    _pip = PictureInPictureController(
+      onVisibilityChanged: _onPictureInPictureVisibility,
+    );
     _configurePictureInPicture();
     _subscriptions.add(
       _player.stream.error.listen((error) {
@@ -349,8 +355,10 @@ class _PlayerScreenState extends State<PlayerScreen>
         unawaited(_logVideoOutput(parameters));
       }),
     );
+    // 心跳只负责兜底：PlaybackProgressController 内部再做节流
+    // （15 秒或前进 5 秒才落盘），暂停/退出/切集走 flush。
     _saveTimer = Timer.periodic(
-      const Duration(seconds: 5),
+      const Duration(seconds: 15),
       (_) => _saveProgress(),
     );
     _health = PlaybackHealthController(
@@ -412,84 +420,21 @@ class _PlayerScreenState extends State<PlayerScreen>
       widget.handoff?.fail('接收端配置已锁定');
       unawaited(_player.pause());
     }
-    if (!_closed && !widget.store.allowsSource('hongguo')) {
+    if (!_closed &&
+        _danmakuSupported &&
+        !widget.store.allowsSource(widget.detail.drama.source)) {
       _danmaku.setPlan(null);
     }
   }
 
   void _configurePictureInPicture() {
-    if (defaultTargetPlatform != TargetPlatform.android) return;
-    _pictureInPictureHandlerInstalled = true;
-    AppDevice.channel.setMethodCallHandler((call) async {
-      if (call.method == 'pictureInPictureChanged') {
-        final arguments = call.arguments;
-        final active = arguments is Map && arguments['active'] == true;
-        _setPictureInPictureStatus(active: active, delayHiddenPause: !active);
-      }
-    });
-    unawaited(_refreshPictureInPictureStatus());
+    unawaited(_pip.install());
   }
 
-  Future<void> _refreshPictureInPictureStatus() async {
-    if (defaultTargetPlatform != TargetPlatform.android) return;
-    try {
-      final status = await AppDevice.channel.invokeMapMethod<String, dynamic>(
-        'pictureInPictureStatus',
-      );
-      if (!mounted || _closed) return;
-      _setPictureInPictureStatus(
-        supported: status?['supported'] == true,
-        active: status?['active'] == true,
-      );
-    } on PlatformException {
-      if (mounted && !_closed) {
-        _setPictureInPictureStatus(supported: false, active: false);
-      }
-    } on MissingPluginException {
-      if (mounted && !_closed) {
-        _setPictureInPictureStatus(supported: false, active: false);
-      }
-    }
-  }
-
-  void _setPictureInPictureStatus({
-    bool? supported,
-    bool? active,
-    bool? requested,
-    bool delayHiddenPause = false,
-  }) {
-    final nextSupported = supported ?? _pictureInPictureSupported;
-    final nextActive = active ?? _pictureInPictureActive;
-    final nextRequested =
-        requested ?? (nextActive ? false : _pictureInPictureRequested);
-    void assign() {
-      _pictureInPictureSupported = nextSupported;
-      _pictureInPictureActive = nextActive;
-      _pictureInPictureRequested = nextRequested;
-    }
-
-    if (mounted && !_closed) {
-      setState(assign);
-    } else {
-      assign();
-    }
-    if (_pictureInPictureVisible ||
-        _lifecycleState == AppLifecycleState.resumed) {
-      _pictureInPictureExitTimer?.cancel();
-      _applyLifecycleVisibility(pauseWhenHidden: false);
-      return;
-    }
-    _pictureInPictureExitTimer?.cancel();
+  /// 画中画状态变化后重新评估前台可见性并（必要时）延迟暂停。
+  void _onPictureInPictureVisibility({required bool delayHiddenPause}) {
+    if (_closed) return;
     _applyLifecycleVisibility(pauseWhenHidden: !delayHiddenPause);
-    if (delayHiddenPause) {
-      _pictureInPictureExitTimer = Timer(const Duration(milliseconds: 700), () {
-        if (!_closed &&
-            !_pictureInPictureVisible &&
-            _lifecycleState != AppLifecycleState.resumed) {
-          _applyLifecycleVisibility();
-        }
-      });
-    }
   }
 
   void _applyLifecycleVisibility({bool pauseWhenHidden = true}) {
@@ -533,45 +478,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     final ratio = rawRatio.clamp(1 / 2.39, 2.39).toDouble();
     final width = ratio >= 1 ? (1000 * ratio).round() : 1000;
     final height = ratio >= 1 ? 1000 : (1000 / ratio).round();
-    _setPictureInPictureStatus(requested: true);
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted || _closed) return;
-    final sourceRect = _pictureInPictureSourceRect();
-    final arguments = <String, int>{'width': width, 'height': height};
-    if (sourceRect != null) arguments.addAll(sourceRect);
-    try {
-      final status = await AppDevice.channel.invokeMapMethod<String, dynamic>(
-        'enterPictureInPicture',
-        arguments,
-      );
-      if (!mounted || _closed) return;
-      final supported = status?['supported'] == true;
-      final active = status?['active'] == true;
-      final requested = status?['requested'] == true;
-      _setPictureInPictureStatus(
-        supported: supported,
-        active: active,
-        requested: requested && !active,
-      );
-      if (!supported || (!active && !requested)) {
-        _notice('当前设备不支持画中画');
-      } else if (requested && !active) {
-        _pictureInPictureExitTimer?.cancel();
-        _pictureInPictureExitTimer = Timer(const Duration(seconds: 2), () {
-          if (!_closed &&
-              _pictureInPictureRequested &&
-              !_pictureInPictureActive) {
-            _setPictureInPictureStatus(requested: false);
-          }
-        });
-      }
-    } on PlatformException {
-      _setPictureInPictureStatus(requested: false);
-      _notice('无法进入画中画，请检查系统权限');
-    } on MissingPluginException {
-      _setPictureInPictureStatus(supported: false, requested: false);
-      _notice('当前平台不支持画中画');
-    }
+    await _pip.enter(
+      width: width,
+      height: height,
+      sourceRect: _pictureInPictureSourceRect(),
+      onNotice: _notice,
+    );
   }
 
   Map<String, int>? _pictureInPictureSourceRect() {
@@ -748,7 +662,7 @@ class _PlayerScreenState extends State<PlayerScreen>
           _error == null &&
           _openedIndex == _index &&
           !widget.store.locked &&
-          widget.store.allowsSource('hongguo'),
+          widget.store.allowsSource(widget.detail.drama.source),
       discontinuity: discontinuity,
     );
   }
@@ -925,7 +839,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Future<void> _toggleDanmaku() async {
-    if (widget.detail.drama.source != 'hongguo') return;
+    if (!_danmakuSupported) return;
     try {
       await _setPreferences(_preferences.copyWith(danmaku: !_danmakuEnabled));
     } catch (_) {
@@ -1003,7 +917,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               mobile: _mobile,
               onEpisode: (index) => Navigator.pop(menuContext, index),
               onPreferences: _setPreferences,
-              showDanmaku: widget.detail.drama.source == 'hongguo',
+              showDanmaku: _danmakuSupported,
               danmakuStatus: _danmaku.status,
               onRetryDanmaku: _danmaku.canRetry ? _danmaku.retry : null,
               preloadStatus: _preloader.status,
@@ -1199,8 +1113,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     _saveTimer?.cancel();
     _health.dispose();
     _recoveryScheduler.dispose();
-    _pictureInPictureExitTimer?.cancel();
-    if (_pictureInPictureHandlerInstalled) {
+    _pip.dispose();
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      // 屏幕销毁后不保留平台回调，避免回调打到已 dispose 的控制器。
       AppDevice.channel.setMethodCallHandler(null);
     }
     _interactions.dispose();

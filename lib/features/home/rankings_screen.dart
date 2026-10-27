@@ -175,7 +175,7 @@ class _RankingsScreenState extends State<RankingsScreen> {
         .where(
           (item) =>
               widget.store.allowsSource(item.drama.source) &&
-              !(item.drama.source == 'huangdou' &&
+              !(SourceSite.byId(item.drama.source).vip &&
                   widget.store.hideVip &&
                   item.drama.vip),
         )
@@ -272,7 +272,8 @@ class _RankingsScreenState extends State<RankingsScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           const CircularProgressIndicator(),
-                          if (_board?.source == 'hongguo') ...[
+                          // 红果榜单在数据未完整时自动重试，其他源没有该行为。
+                          if (_board?.source == SourceSite.hongguo.id) ...[
                             const SizedBox(height: 16),
                             const Text('正在获取榜单，数据未完整返回时会自动重试'),
                           ],

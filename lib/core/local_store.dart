@@ -30,6 +30,41 @@ class LocalStore extends ChangeNotifier
   int _lanUrgentRevision = 0;
   int get lanRevision => _lanRevision;
   int get lanUrgentRevision => _lanUrgentRevision;
+
+  /// 分领域修订号。
+  ///
+  /// `LocalStore` 是单个 ChangeNotifier，任何写入都会唤醒所有监听者；
+  /// 播放时 15 秒一次的进度保存会让详情页、下载页整屏重建。这里按领域
+  /// 维护单调递增的计数，Riverpod 侧用 `select` 订阅，只有对应领域变化
+  /// 才会重建——比给所有模型实现 `==` 可靠（Drama/WatchEntry 都不比内容）。
+  int _libraryRevision = 0;
+  int _settingsRevision = 0;
+  int _accessRevision = 0;
+  int get libraryRevision => _libraryRevision;
+  int get settingsRevision => _settingsRevision;
+  int get accessRevision => _accessRevision;
+
+  /// 各领域对应的持久化键；未列出的键视为设置类。
+  static const _libraryKeys = {'history', 'favorites', 'followStates'};
+  static const _accessKeys = {'sourceSwitches'};
+
+  void _bumpRevisions(Set<String> keys) {
+    if (_libraryKeys.any(keys.contains)) _libraryRevision++;
+    if (_accessKeys.any(keys.contains)) _accessRevision++;
+    if (keys.any(
+      (key) => !_libraryKeys.contains(key) && !_accessKeys.contains(key),
+    )) {
+      _settingsRevision++;
+    }
+  }
+
+  /// 全量重载（恢复备份、清空、解锁）后所有领域都变了。
+  void _bumpAllRevisions() {
+    _libraryRevision++;
+    _settingsRevision++;
+    _accessRevision++;
+  }
+
   LibraryStore? _library;
   late final SettingsStore _settings = SettingsStore(this);
   LibraryStore get _lib => _library!;
@@ -59,7 +94,10 @@ class LocalStore extends ChangeNotifier
   }
 
   /// 扩展安装/卸载后刷新站源列表；其余本地数据不变。
-  void refreshSources() => _notify();
+  void refreshSources() {
+    _accessRevision++;
+    _notify();
+  }
 
   String? _string(String key) => _snapshot?.getString(key);
   bool? _bool(String key) => _snapshot?.getBool(key);
@@ -154,6 +192,7 @@ class LocalStore extends ChangeNotifier
     }
     try {
       await snapshot.commit(values);
+      _bumpRevisions({...changes.keys, ...remove});
       if (trackSync &&
           !replace &&
           {...changes.keys, ...remove}.any(
@@ -341,6 +380,7 @@ class LocalStore extends ChangeNotifier
     _loadSourceSwitches();
     _lib.load();
     _lib.loadSeriesCandidates();
+    _bumpAllRevisions();
     _notify();
   }
 
@@ -371,6 +411,7 @@ class LocalStore extends ChangeNotifier
   Future<void> reload() => _queue(() async {
     await preferences.reload();
     _initialize();
+    _bumpAllRevisions();
     _notify();
   });
 

@@ -58,11 +58,29 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
   @override
   void initState() {
     super.initState();
+    _libraryRevision = widget.store.libraryRevision;
+    _accessRevision = widget.store.accessRevision;
     _updater = DownloadCollectionUpdater(widget.repository, widget.store)
       ..addListener(_changed);
-    widget.store.addListener(_changed);
+    widget.store.addListener(_storeChanged);
     _refresh();
     _timer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
+  }
+
+  int _libraryRevision = 0;
+  int _accessRevision = 0;
+
+  /// 下载列表只关心播放进度（显示"看到第几集"）与站源准入。
+  /// 设置类变更（主题、偏好）与这一屏无关，不应触发整屏重建。
+  void _storeChanged() {
+    final store = widget.store;
+    if (store.libraryRevision == _libraryRevision &&
+        store.accessRevision == _accessRevision) {
+      return;
+    }
+    _libraryRevision = store.libraryRevision;
+    _accessRevision = store.accessRevision;
+    _changed();
   }
 
   void _changed() {
@@ -74,7 +92,7 @@ class _DownloadsScreenState extends State<DownloadsScreen> {
     _stopBatch = true;
     _timer?.cancel();
     _search.dispose();
-    widget.store.removeListener(_changed);
+    widget.store.removeListener(_storeChanged);
     _updater.removeListener(_changed);
     _updater.dispose();
     super.dispose();

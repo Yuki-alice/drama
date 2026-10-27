@@ -71,6 +71,8 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   void initState() {
     super.initState();
+    _libraryRevision = widget.store.libraryRevision;
+    _accessRevision = widget.store.accessRevision;
     widget.store.addListener(_onStoreChanged);
     _model = DetailViewModel(
       repository: widget.repository,
@@ -103,8 +105,28 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _onStoreChanged() {
-    if (mounted) setState(() {});
+    if (!mounted || !_detailRelevantChanged()) return;
+    setState(() {});
   }
+
+  /// 只响应会影响详情页的领域：库数据（收藏/追剧/进度）与站源准入。
+  ///
+  /// 详情页此前监听整个 LocalStore，播放时每 15 秒一次的进度保存都会
+  /// 触发整屏重建。设置类变化（主题、播放偏好）由根组件与播放器处理，
+  /// 与这里无关。
+  bool _detailRelevantChanged() {
+    final store = widget.store;
+    if (store.libraryRevision == _libraryRevision &&
+        store.accessRevision == _accessRevision) {
+      return false;
+    }
+    _libraryRevision = store.libraryRevision;
+    _accessRevision = store.accessRevision;
+    return true;
+  }
+
+  int _libraryRevision = 0;
+  int _accessRevision = 0;
 
   void _onModelChanged() {
     if (!mounted) return;
@@ -552,7 +574,8 @@ class _DetailScreenState extends State<DetailScreen> {
             height: 1.5,
           ),
         ),
-        if (drama.source == 'huangdou')
+        // 只有声明了 vip + detailFields 的源才会出现"待补齐"状态。
+        if (SourceSite.byId(drama.source).tracksVipStatus)
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(

@@ -352,11 +352,23 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<Drama?> supplementMetadata(Drama drama) async {
-    if (!(drama.source == 'hongguo' && drama.onlineDate.isEmpty ||
-        drama.source == 'huangdou' &&
-            (drama.heat.isEmpty || drama.vipStatus == null))) {
-      return null;
-    }
+    // 是否需要补资料由源声明的 detailFields 决定（红果内置规则：缺上线日期）。
+    final site = SourceSite.byId(drama.source);
+    final needs = drama.source == SourceSite.hongguo.id
+        ? drama.onlineDate.isEmpty
+        : site.detailFields.any(
+            (field) => switch (field) {
+              'vip' => drama.vipStatus == null,
+              'heat' => drama.heat.isEmpty,
+              'views' => drama.views.isEmpty,
+              'onlinedate' => drama.onlineDate.isEmpty,
+              'description' => drama.description.isEmpty,
+              'tags' => drama.tags.isEmpty,
+              'releasestatus' => drama.releaseStatus.isEmpty,
+              _ => false,
+            },
+          );
+    if (!needs) return null;
     final result = await _read('metadata', {
       'action': 'metadata',
       'drama': drama.toJson(),
@@ -476,6 +488,30 @@ class NativeRepository extends AppRepository {
         await _call({'action': 'cancelSourceJob', 'source': source}),
       );
 
+  @override
+  Future<List<Map<String, dynamic>>> sourceSettings(String source) async {
+    if (!supportsSourceManagement) return const [];
+    final result = await _call({'action': 'sourceSettings', 'source': source});
+    return [
+      for (final row in result['settings'] as List? ?? const [])
+        Map<String, dynamic>.from(row as Map),
+    ];
+  }
+
+  @override
+  Future<void> saveSourceSetting(
+    String source,
+    String key,
+    String value,
+  ) async {
+    await _call({
+      'action': 'saveSourceSetting',
+      'source': source,
+      'settingKey': key,
+      'settingValue': value,
+    });
+  }
+
   void _authorize(String source) {
     if (!SourceSite.isAvailable(source)) {
       throw AppFailure('当前版本不包含此站源');
@@ -556,14 +592,15 @@ class NativeRepository extends AppRepository {
       if (!unrestricted && access?.locked == true) {
         throw AppFailure('本地配置已锁定，请先恢复配置');
       }
-      if (action == 'rankings') {
-        _authorize(RankingBoard.sourceForID(input['board'] as String));
-      }
+      // 榜单归属由 Go 侧的 findRankingBoard 权威校验（它会覆写 board.Source
+      // 并检查该源是否可用）。这里曾按硬编码的榜单 ID 表反查源，第三方扩展
+      // 声明的榜单不在表里就被直接拒绝，等于插件系统无法新增榜单。
       if (action == 'recommendations' ||
           action == 'cachedRecommendations' ||
           action == 'suggestions' ||
           action == 'danmaku') {
-        _authorize('hongguo');
+        // 这四个能力目前只由内置红果源提供。
+        _authorize(SourceSite.hongguo.id);
       }
       if ({
         'catalog',
@@ -572,6 +609,8 @@ class NativeRepository extends AppRepository {
         'sourceStatus',
         'sourceJob',
         'cancelSourceJob',
+        'sourceSettings',
+        'saveSourceSetting',
       }.contains(action)) {
         _authorize(input['source'] as String);
       }

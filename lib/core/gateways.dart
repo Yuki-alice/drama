@@ -119,6 +119,12 @@ abstract interface class SourceGateway {
     Drama? drama,
   });
   Future<SourceStatus> cancelSourceJob(String source);
+
+  /// 该源可编辑的设置项（目前是镜像地址）。不支持时返回空列表。
+  Future<List<Map<String, dynamic>>> sourceSettings(String source);
+
+  /// 写入单项设置；[value] 为空表示清除，回落到扩展默认值。
+  Future<void> saveSourceSetting(String source, String key, String value);
 }
 
 /// 局域网设备互联。

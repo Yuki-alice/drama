@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import 'package:duanju_app/app/router.dart';
 import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/diary_service.dart';
 import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
 import 'package:duanju_app/core/source_status.dart';
@@ -189,6 +190,87 @@ class _SourcesScreenState extends State<SourcesScreen> {
     }
   }
 
+  /// 展示该扩展源的设置项（目前是镜像地址）。
+  ///
+  /// 设置由宿主声明 → 存进该源的 hg.storage，扩展通过 source.base() 读取，
+  /// 客户端不需要为每个源写一套表单。
+  Future<void> _showSourceSettings(SourceSite source) async {
+    unawaited(_model.loadSettings(source.id));
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) =>
+          _SourceSettingsSheet(source: source, model: _model),
+    );
+  }
+
+  /// 展示该扩展源的原生日志（hg.log / console.log）。
+  Future<void> _showExtensionLogs(SourceSite source) async {
+    final lines = await DiaryService.extensionLogs(source.id);
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        final colors = Theme.of(sheetContext).colorScheme;
+        return SizedBox(
+          height: MediaQuery.sizeOf(sheetContext).height * .7,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '${source.name} 扩展日志',
+                  style: Theme.of(sheetContext).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  lines.isEmpty
+                      ? '还没有该扩展的输出。触发一次目录或播放后回来查看。'
+                      : '共 ${lines.length} 条，最近的在最后。',
+                  style: Theme.of(sheetContext).textTheme.bodyMedium?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: lines.isEmpty
+                      ? const Center(child: Text('暂无日志'))
+                      : ListView.builder(
+                          itemCount: lines.length,
+                          itemBuilder: (context, index) => SelectableText(
+                            lines[index],
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                ),
+                if (lines.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: () async {
+                        await Clipboard.setData(
+                          ClipboardData(text: lines.join('\n')),
+                        );
+                        if (sheetContext.mounted) {
+                          Navigator.of(sheetContext).pop();
+                        }
+                      },
+                      icon: const Icon(Icons.copy_rounded, size: 18),
+                      label: const Text('复制全部'),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   void _openCatalog() {
     showModalBottomSheet<void>(
       context: context,
@@ -198,6 +280,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
         catalog: _catalog,
         busy: _catalogBusy,
         error: _catalogError,
+        remoteConfigured: _model.remoteConfigured,
         onToggle: _toggleInCatalog,
         onRefresh: _loadExtensions,
       ),
@@ -554,7 +637,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
         ],
       ),
       details: expanded
-          ? _ruleDetails(source, status, error, busy: busy, seconds: seconds)
+          ? _ruleDetails(
+              source,
+              status,
+              error,
+              busy: busy,
+              seconds: seconds,
+              builtIn: builtIn,
+            )
           : null,
     );
   }
@@ -565,6 +655,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
     String error, {
     required bool busy,
     required int seconds,
+    required bool builtIn,
   }) {
     final colors = Theme.of(context).colorScheme;
     final enabled =
@@ -609,6 +700,17 @@ class _SourcesScreenState extends State<SourcesScreen> {
               onPressed: () => _copy(source, status),
               icon: const Icon(Icons.copy_rounded, size: 18),
               label: const Text('复制诊断'),
+            ),
+            TextButton.icon(
+              onPressed: builtIn ? null : () => _showExtensionLogs(source),
+              icon: const Icon(Icons.receipt_long_rounded, size: 18),
+              label: const Text('扩展日志'),
+            ),
+            TextButton.icon(
+              key: ValueKey('settings-${source.id}'),
+              onPressed: builtIn ? null : () => _showSourceSettings(source),
+              icon: const Icon(Icons.tune_rounded, size: 18),
+              label: const Text('设置'),
             ),
           ],
         ),
@@ -751,6 +853,7 @@ class _RuleCatalogSheet extends StatefulWidget {
     required this.catalog,
     required this.busy,
     required this.error,
+    required this.remoteConfigured,
     required this.onToggle,
     required this.onRefresh,
   });
@@ -758,6 +861,7 @@ class _RuleCatalogSheet extends StatefulWidget {
   final List<Map<String, dynamic>> catalog;
   final Set<String> busy;
   final String? error;
+  final bool remoteConfigured;
   final ValueChanged<Map<String, dynamic>> onToggle;
   final VoidCallback onRefresh;
 
@@ -803,7 +907,10 @@ class _RuleCatalogSheetState extends State<_RuleCatalogSheet> {
             ),
             const SizedBox(height: 6),
             Text(
-              '随包附带官方规则，安装后才可作为站源使用。',
+              widget.remoteConfigured
+                  ? '随包附带官方规则，安装后才可作为站源使用。'
+                  : '随包附带官方规则，安装后才可作为站源使用。'
+                        '此版本未配置在线仓库，无法检查更新或下架。',
               style: Theme.of(
                 context,
               ).textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
@@ -849,12 +956,15 @@ class _RuleCatalogSheetState extends State<_RuleCatalogSheet> {
                         final id = entry['id'] as String? ?? '';
                         final pending = widget.busy.contains(id);
                         final blocked = entry['killSwitch'] == true;
+                        final updateAvailable =
+                            installed && entry['updateAvailable'] == true;
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 8),
                           child: RuleCard(
                             title: '${entry['name'] ?? id}',
-                            subtitle:
-                                entry['description'] as String? ?? '官方扩展源',
+                            subtitle: blocked
+                                ? '该规则已下架，建议卸载'
+                                : entry['description'] as String? ?? '官方扩展源',
                             installed: installed,
                             caption: entry['changelog'] as String?,
                             tags: [
@@ -875,6 +985,18 @@ class _RuleCatalogSheetState extends State<_RuleCatalogSheet> {
                                   background: colors.secondaryContainer,
                                   foreground: colors.onSecondaryContainer,
                                 ),
+                              if (updateAvailable)
+                                RuleTag(
+                                  label: '可更新',
+                                  background: colors.primaryContainer,
+                                  foreground: colors.onPrimaryContainer,
+                                ),
+                              if (blocked)
+                                RuleTag(
+                                  label: '已下架',
+                                  background: colors.errorContainer,
+                                  foreground: colors.onErrorContainer,
+                                ),
                             ],
                             trailing: pending
                                 ? const Padding(
@@ -889,9 +1011,17 @@ class _RuleCatalogSheetState extends State<_RuleCatalogSheet> {
                                   )
                                 : FilledButton.tonal(
                                     onPressed: blocked
-                                        ? null
+                                        ? (installed
+                                              ? () => widget.onToggle(entry)
+                                              : null)
                                         : () => widget.onToggle(entry),
-                                    child: Text(installed ? '卸载' : '安装'),
+                                    child: Text(
+                                      blocked
+                                          ? '卸载'
+                                          : installed
+                                          ? (updateAvailable ? '更新' : '卸载')
+                                          : '安装',
+                                    ),
                                   ),
                           ),
                         );
@@ -925,4 +1055,197 @@ class SourceDiagnosticsButton extends StatelessWidget {
     icon: const Icon(Icons.network_check),
     label: const Text('站源诊断'),
   );
+}
+
+/// 每源设置的通用表单：宿主下发 schema，这里只负责渲染与保存。
+class _SourceSettingsSheet extends StatefulWidget {
+  const _SourceSettingsSheet({required this.source, required this.model});
+  final SourceSite source;
+  final SourcesViewModel model;
+
+  @override
+  State<_SourceSettingsSheet> createState() => _SourceSettingsSheetState();
+}
+
+class _SourceSettingsSheetState extends State<_SourceSettingsSheet> {
+  final _controllers = <String, TextEditingController>{};
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.model.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    widget.model.removeListener(_changed);
+    for (final controller in _controllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  TextEditingController _controller(String key, String initial) =>
+      _controllers.putIfAbsent(key, () => TextEditingController(text: initial));
+
+  /// 按清单声明的类型渲染控件：input / toggle / choice。
+  /// 未知类型回落到文本框，避免扩展写错时整块表单不可用。
+  Widget _settingField(
+    Map<String, dynamic> setting,
+    TextEditingController controller,
+  ) {
+    final key = setting['key'] as String? ?? '';
+    final type = setting['type'] as String? ?? 'input';
+    if (type == 'toggle') {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: Switch(
+          key: ValueKey('setting-$key'),
+          value: controller.text == 'true',
+          onChanged: _saving
+              ? null
+              : (value) => setState(() => controller.text = '$value'),
+        ),
+      );
+    }
+    if (type == 'choice') {
+      final options = [
+        for (final row in setting['options'] as List? ?? const [])
+          if (row is Map) Map<String, dynamic>.from(row),
+      ];
+      final current = options.any((row) => row['value'] == controller.text)
+          ? controller.text
+          : (setting['default'] as String? ?? '');
+      return DropdownButtonFormField<String>(
+        key: ValueKey('setting-$key'),
+        initialValue: current.isEmpty ? null : current,
+        decoration: const InputDecoration(
+          border: OutlineInputBorder(),
+          isDense: true,
+        ),
+        items: [
+          for (final option in options)
+            DropdownMenuItem(
+              value: option['value'] as String? ?? '',
+              child: Text(option['label'] as String? ?? ''),
+            ),
+        ],
+        onChanged: _saving
+            ? null
+            : (value) => setState(() => controller.text = value ?? ''),
+      );
+    }
+    return TextField(
+      key: ValueKey('setting-$key'),
+      controller: controller,
+      enabled: !_saving,
+      decoration: InputDecoration(
+        hintText: setting['placeholder'] as String?,
+        border: const OutlineInputBorder(),
+        isDense: true,
+      ),
+    );
+  }
+
+  Future<void> _save(Map<String, dynamic> setting) async {
+    final key = setting['key'] as String? ?? '';
+    if (key.isEmpty) return;
+    setState(() => _saving = true);
+    final value = _controllers[key]?.text.trim() ?? '';
+    final saved = await widget.model.saveSetting(widget.source.id, key, value);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    final message = saved
+        ? (value.isEmpty ? '已恢复默认地址' : '已保存')
+        : (widget.model.errors[widget.source.id] ?? '保存失败');
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final settings = widget.model.settings[widget.source.id] ?? const [];
+    final busy = widget.model.settingsBusy.contains(widget.source.id);
+    return SizedBox(
+      height: MediaQuery.sizeOf(context).height * .6,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '${widget.source.name} 设置',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '设置保存在本机，扩展通过 source.base() 读取。',
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
+            ),
+            const SizedBox(height: 16),
+            Expanded(
+              child: busy && settings.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : settings.isEmpty
+                  ? const Center(child: Text('该规则没有可配置项'))
+                  : ListView.separated(
+                      itemCount: settings.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 16),
+                      itemBuilder: (context, index) {
+                        final setting = settings[index];
+                        final key = setting['key'] as String? ?? '';
+                        final controller = _controller(
+                          key,
+                          setting['value'] as String? ?? '',
+                        );
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              setting['title'] as String? ?? key,
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            if ((setting['description'] as String? ?? '')
+                                .isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                setting['description'] as String,
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(color: colors.onSurfaceVariant),
+                              ),
+                            ],
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _settingField(setting, controller),
+                                ),
+                                const SizedBox(width: 8),
+                                FilledButton.tonal(
+                                  onPressed: _saving
+                                      ? null
+                                      : () => _save(setting),
+                                  child: const Text('保存'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

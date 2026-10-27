@@ -292,21 +292,29 @@ class LibraryStore {
               duration: entry.duration,
               updatedAt: entry.updatedAt,
             );
-      final entries = Map.of(_history)..[entry.drama.id] = current;
-      final sorted = entries.values.toList()
-        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      final sorted = Map.of(_history)..[entry.drama.id] = current;
+      // 就地更新内存缓存，不再 load() 全量重解析。
+      // 播放进度每 5 秒写一次，load() 会把 history/favorites/followStates
+      // 全部 JSON 解码一遍，是本方法最大的成本。
+      _history[entry.drama.id] = current;
       final following = _followStates[entry.drama.id];
       final states = Map.of(_followStates);
       final favorites = Map.of(_favorites);
       if (following != null) {
         states[entry.drama.id] = following.afterPlayback(current);
+        _followStates[entry.drama.id] = states[entry.drama.id]!;
         favorites[entry.drama.id] = favorites[entry.drama.id]!.merge(
           current.drama,
         );
+        _favorites[entry.drama.id] = favorites[entry.drama.id]!;
       }
       await backend.commit({
         'history': jsonEncode(
-          sorted.take(300).map((entry) => entry.toJson()).toList(),
+          (sorted.values.toList()
+                ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)))
+              .take(300)
+              .map((entry) => entry.toJson())
+              .toList(),
         ),
         if (following != null) ...{
           'followStates': _encodeFollowStates(states),
@@ -315,7 +323,6 @@ class LibraryStore {
           ),
         },
       }, syncUrgent: false);
-      load();
       backend.notify();
     });
   }

@@ -1,5 +1,9 @@
 import 'package:duanju_app/core/app_build.dart';
+import 'package:duanju_app/core/core_bridge.dart';
+import 'package:duanju_app/core/local_store.dart';
 import 'package:duanju_app/core/models.dart';
+import 'package:duanju_app/data/media/media_library.dart';
+import 'package:duanju_app/features/lan/lan_controller.dart';
 import 'package:duanju_app/app/app_shell.dart';
 import 'package:duanju_app/app/app_theme.dart';
 import 'package:duanju_app/app/main.dart' show ConfigRecoveryScreen;
@@ -49,6 +53,36 @@ class SourcesRouteArgs {
   final Drama? drama;
 }
 
+/// 屏幕的公共依赖。
+///
+/// 路由里 15 处 `ref.read(repositoryProvider)` + `ref.read(storeProvider)`
+/// 是纯样板：每个 builder 都要重复同样的两行。这里一次取齐，屏幕构造时只
+/// 需展开。lan / library 属于少数屏幕才需要的可选依赖，按需传。
+class AppDeps {
+  const AppDeps({
+    required this.repository,
+    required this.store,
+    this.lan,
+    this.library,
+  });
+
+  final AppRepository repository;
+  final LocalStore store;
+  final LanController? lan;
+  final MediaLibrary? library;
+}
+
+AppDeps _deps(
+  WidgetRef ref, {
+  bool withLan = false,
+  bool withLibrary = false,
+}) => AppDeps(
+  repository: ref.read(repositoryProvider),
+  store: ref.read(storeProvider),
+  lan: withLan ? ref.read(lanControllerProvider) : null,
+  library: withLibrary ? ref.read(mediaLibraryProvider) : null,
+);
+
 final routerProvider = Provider<GoRouter>((_) => _buildRouter());
 
 GoRouter _buildRouter() => GoRouter(
@@ -64,12 +98,13 @@ GoRouter _buildRouter() => GoRouter(
             GoRoute(
               path: '/discover',
               name: 'discover',
-              pageBuilder: _page(
-                (ref, state) => DiscoveryScreen(
-                  repository: ref.read(repositoryProvider),
-                  store: ref.read(storeProvider),
-                ),
-              ),
+              pageBuilder: _page((ref, state) {
+                final deps = _deps(ref);
+                return DiscoveryScreen(
+                  repository: deps.repository,
+                  store: deps.store,
+                );
+              }),
             ),
           ],
         ),
@@ -78,13 +113,14 @@ GoRouter _buildRouter() => GoRouter(
             GoRoute(
               path: '/follow',
               name: 'follow',
-              pageBuilder: _page(
-                (ref, state) => FollowScreen(
-                  repository: ref.read(repositoryProvider),
-                  store: ref.read(storeProvider),
+              pageBuilder: _page((ref, state) {
+                final deps = _deps(ref);
+                return FollowScreen(
+                  repository: deps.repository,
+                  store: deps.store,
                   initialHistory: state.uri.queryParameters['tab'] == 'history',
-                ),
-              ),
+                );
+              }),
             ),
           ],
         ),
@@ -93,12 +129,10 @@ GoRouter _buildRouter() => GoRouter(
             GoRoute(
               path: '/me',
               name: 'me',
-              pageBuilder: _page(
-                (ref, state) => MeScreen(
-                  repository: ref.read(repositoryProvider),
-                  store: ref.read(storeProvider),
-                ),
-              ),
+              pageBuilder: _page((ref, state) {
+                final deps = _deps(ref);
+                return MeScreen(repository: deps.repository, store: deps.store);
+              }),
             ),
           ],
         ),
@@ -108,12 +142,13 @@ GoRouter _buildRouter() => GoRouter(
       path: '/detail',
       name: 'detail',
       pageBuilder: _page((ref, state) {
+        final deps = _deps(ref);
         final args = state.extra! as DetailRouteArgs;
         return DetailScreen(
           drama: args.drama,
           resumeOnOpen: args.resumeOnOpen,
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
+          repository: deps.repository,
+          store: deps.store,
         );
       }),
     ),
@@ -121,14 +156,15 @@ GoRouter _buildRouter() => GoRouter(
       path: '/player',
       name: 'player',
       pageBuilder: _immersive((ref, state) {
+        final deps = _deps(ref, withLan: true);
         final args = state.extra! as PlayerRouteArgs;
         return PlayerScreen(
           detail: args.detail,
           initialIndex: args.initialIndex,
           initialPosition: args.initialPosition,
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
-          lan: ref.read(lanControllerProvider),
+          repository: deps.repository,
+          store: deps.store,
+          lan: deps.lan!,
         );
       }),
     ),
@@ -136,11 +172,12 @@ GoRouter _buildRouter() => GoRouter(
       path: '/launch',
       name: 'launch',
       pageBuilder: _immersive((ref, state) {
+        final deps = _deps(ref);
         final drama = state.extra! as Drama;
         return PlaybackLaunchScreen(
           drama: drama,
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
+          repository: deps.repository,
+          store: deps.store,
         );
       }),
     ),
@@ -148,12 +185,13 @@ GoRouter _buildRouter() => GoRouter(
       path: '/search',
       name: 'search',
       pageBuilder: _page((ref, state) {
+        final deps = _deps(ref);
         final group = state.extra is SourceGroup
             ? state.extra as SourceGroup
             : null;
         return SearchScreen(
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
+          repository: deps.repository,
+          store: deps.store,
           group: group,
         );
       }),
@@ -162,10 +200,11 @@ GoRouter _buildRouter() => GoRouter(
       path: '/rankings',
       name: 'rankings',
       pageBuilder: _page((ref, state) {
+        final deps = _deps(ref);
         final group = state.extra as String?;
         return RankingsScreen(
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
+          repository: deps.repository,
+          store: deps.store,
           initialGroup: group ?? 'all',
         );
       }),
@@ -173,21 +212,23 @@ GoRouter _buildRouter() => GoRouter(
     GoRoute(
       path: '/recommendations',
       name: 'recommendations',
-      pageBuilder: _page(
-        (ref, state) => RecommendationsScreen(
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
-        ),
-      ),
+      pageBuilder: _page((ref, state) {
+        final deps = _deps(ref);
+        return RecommendationsScreen(
+          repository: deps.repository,
+          store: deps.store,
+        );
+      }),
     ),
     GoRoute(
       path: '/batch',
       name: 'batch',
       pageBuilder: _page((ref, state) {
+        final deps = _deps(ref);
         final dramas = (state.extra as List<Drama>).toList();
         return BatchDownloadScreen(
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
+          repository: deps.repository,
+          store: deps.store,
           dramas: dramas,
         );
       }),
@@ -195,22 +236,24 @@ GoRouter _buildRouter() => GoRouter(
     GoRoute(
       path: '/settings',
       name: 'settings',
-      pageBuilder: _page(
-        (ref, state) => SettingsScreen(
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
+      pageBuilder: _page((ref, state) {
+        final deps = _deps(ref);
+        return SettingsScreen(
+          repository: deps.repository,
+          store: deps.store,
           initialCategory: state.uri.queryParameters['category'],
-        ),
-      ),
+        );
+      }),
     ),
     GoRoute(
       path: '/sources',
       name: 'sources',
       pageBuilder: _page((ref, state) {
+        final deps = _deps(ref);
         final args = state.extra as SourcesRouteArgs?;
         return SourcesScreen(
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
+          repository: deps.repository,
+          store: deps.store,
           initialSource: args?.initialSource,
           drama: args?.drama,
         );
@@ -219,34 +262,33 @@ GoRouter _buildRouter() => GoRouter(
     GoRoute(
       path: '/downloads',
       name: 'downloads',
-      pageBuilder: _page(
-        (ref, state) => DownloadsScreen(
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
-        ),
-      ),
+      pageBuilder: _page((ref, state) {
+        // DownloadsScreen 不依赖媒体库，不需要 withLibrary。
+        final deps = _deps(ref);
+        return DownloadsScreen(repository: deps.repository, store: deps.store);
+      }),
     ),
     GoRoute(
       path: '/local-media',
       name: 'local-media',
-      pageBuilder: _page(
-        (ref, state) => LocalMediaScreen(
-          repository: ref.read(repositoryProvider),
-          store: ref.read(storeProvider),
-          library: ref.read(mediaLibraryProvider),
-        ),
-      ),
+      pageBuilder: _page((ref, state) {
+        final deps = _deps(ref, withLibrary: true);
+        return LocalMediaScreen(
+          repository: deps.repository,
+          store: deps.store,
+          library: deps.library!,
+        );
+      }),
     ),
     GoRoute(
       path: '/merge-queue',
       name: 'merge-queue',
       pageBuilder: _page((ref, state) {
-        final repository = ref.read(repositoryProvider);
-        final store = ref.read(storeProvider);
+        final deps = _deps(ref, withLibrary: true);
         return MergeQueueScreen(
-          library: ref.read(mediaLibraryProvider),
-          repository: repository,
-          store: store,
+          library: deps.library!,
+          repository: deps.repository,
+          store: deps.store,
         );
       }),
     ),

@@ -271,6 +271,10 @@ class _CachedCoverImageState extends State<CachedCoverImage> {
   void _start() {
     final drama = widget.drama;
     final file = _CoverRequests.run(() => widget.repository.cover(drama));
+    // run 的结果交给 FutureBuilder 消费；但这里必须挂一个错误处理器，
+    // 否则请求失败（离线、站点拒绝）会在 _start 不再持有引用后变成
+    // 未捕获异步异常——测试里表现为"测试结束后抛错"，生产里污染日志。
+    unawaited(file.catchError((Object _) => ''));
     setState(() {
       _file = file;
     });

@@ -4,9 +4,9 @@ import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:duanju_app/widgets/widgets.dart';
-import 'package:media_kit/media_kit.dart';
 
 import 'package:duanju_app/app/app_layout.dart';
+import 'package:duanju_app/features/player/player_surface.dart';
 import 'package:flutter/widgets.dart';
 
 enum SwipeAction { none, brightness, episode }
@@ -19,7 +19,7 @@ class GestureHudState {
 
 class PlayerInteractions extends ChangeNotifier {
   PlayerInteractions({
-    required this.player,
+    required this.surface,
     required this.available,
     required this.baseSpeed,
     required this.onTogglePlayback,
@@ -27,7 +27,7 @@ class PlayerInteractions extends ChangeNotifier {
     required this.onEpisode,
     this.onSeek,
   }) {
-    _playing = player.stream.playing.listen((playing) {
+    _playing = surface.playingStream.listen((playing) {
       if (!playing) cancel();
     });
     AppDevice.getBrightness()
@@ -40,7 +40,7 @@ class PlayerInteractions extends ChangeNotifier {
         .catchError((_) {});
   }
 
-  final Player player;
+  final PlayerSurface surface;
   final bool Function() available;
   final double Function() baseSpeed;
   final VoidCallback onTogglePlayback;
@@ -113,7 +113,7 @@ class PlayerInteractions extends ChangeNotifier {
   Future<void> _setRate(double value) {
     _rates = _rates
         .catchError((Object _) {})
-        .then((_) => player.setRate(value));
+        .then((_) => surface.setRate(value));
     unawaited(
       _rates.catchError((Object _) {
         hint('倍速调整失败，请重试');
@@ -129,8 +129,8 @@ class PlayerInteractions extends ChangeNotifier {
       _holdTimer = null;
       if (_disposed ||
           !available() ||
-          !player.state.playing ||
-          player.state.completed) {
+          !surface.state.playing ||
+          surface.state.completed) {
         return;
       }
       _boosting = true;
@@ -284,28 +284,28 @@ class PlayerInteractions extends ChangeNotifier {
   }
 
   void seek(int seconds) {
-    if (!available() || player.state.duration <= Duration.zero) return;
+    if (!available() || surface.state.duration <= Duration.zero) return;
     _endHold();
-    final target = (player.state.position.inMilliseconds + seconds * 1000)
-        .clamp(0, player.state.duration.inMilliseconds);
-    unawaited((onSeek ?? player.seek)(Duration(milliseconds: target)));
+    final target = (surface.state.position.inMilliseconds + seconds * 1000)
+        .clamp(0, surface.state.duration.inMilliseconds);
+    unawaited((onSeek ?? surface.seek)(Duration(milliseconds: target)));
     hint('${seconds > 0 ? '快进至' : '后退至'} ${formatPosition(target / 1000)}');
   }
 
   void changeVolume(double delta) {
     if (!available()) return;
-    final volume = (player.state.volume + delta).clamp(0.0, 100.0);
-    unawaited(player.setVolume(volume));
+    final volume = (surface.state.volume + delta).clamp(0.0, 100.0);
+    unawaited(surface.setVolume(volume));
     if (volume > 0) _unmutedVolume = volume;
     hint(volume == 0 ? '已静音' : '音量 ${volume.round()}%');
   }
 
   void toggleMute() {
     if (!available()) return;
-    final current = player.state.volume;
+    final current = surface.state.volume;
     if (current > 0) _unmutedVolume = current;
     final target = current > 0 ? 0.0 : _unmutedVolume;
-    unawaited(player.setVolume(target));
+    unawaited(surface.setVolume(target));
     hint(target == 0 ? '已静音' : '音量 ${target.round()}%');
   }
 

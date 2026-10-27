@@ -110,7 +110,7 @@ extension _PlayerLayout on _PlayerScreenState {
     final Widget controls = hideOverlayForPictureInPicture
         ? const SizedBox.shrink()
         : PlayerControls(
-            player: _player,
+            surface: _surface,
             interactions: _interactions,
             enabled: !_loading && _error == null,
             enhancement: _enhancementForUi,
@@ -127,15 +127,13 @@ extension _PlayerLayout on _PlayerScreenState {
             onSeek: _seekTo,
             speed: _speed,
             qualityLabel: _qualityLabel,
-            showDanmaku: widget.detail.drama.source == 'hongguo',
+            showDanmaku: _danmakuSupported,
             danmakuEnabled: _danmakuEnabled,
             danmakuStatus: _danmaku.status,
             onEpisodes: () => _openPanel(PlayerMenuSection.episodes),
             onSpeed: () => _openPanel(PlayerMenuSection.speed),
             onQuality: () => _openPanel(PlayerMenuSection.quality),
-            onDanmaku: widget.detail.drama.source == 'hongguo'
-                ? _toggleDanmaku
-                : null,
+            onDanmaku: _danmakuSupported ? _toggleDanmaku : null,
             onRetryDanmaku: _danmaku.canRetry
                 ? _retryDanmakuFromControls
                 : null,

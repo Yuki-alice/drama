@@ -12,28 +12,12 @@ class RankingBoard {
   final String name;
   final String description;
   String get groupId => SourceSite.byId(source).displayGroupId;
-  static String sourceForID(String id) => switch (id) {
-    'hongguo-hot' ||
-    'hongguo-real' ||
-    'hongguo-comic' ||
-    'hongguo-ai' => 'hongguo',
-    'huangdou-all' ||
-    'huangdou-mogai' ||
-    'huangdou-search' ||
-    'huangdou-favorite' ||
-    'huangdou-finish' => 'huangdou',
-    'huangguo-hot' ||
-    'huangguo-recommend' ||
-    'huangguo-potential' => 'huangguoai',
-    'huangju-hot' || 'huangju-new' => 'huangju',
-    'yeguo-recommend' => 'yeguo',
-    'dsd-catalog' => 'dsd',
-    _ => '',
-  };
+
+  /// source 由 Go 侧覆盖写入（扩展不能声明别的源的榜单），
+  /// 因此这里不再维护 board→source 的硬编码映射。
   factory RankingBoard.fromJson(Map<String, dynamic> json) => RankingBoard(
     id: json['id'] as String? ?? '',
-    source:
-        json['source'] as String? ?? sourceForID(json['id'] as String? ?? ''),
+    source: json['source'] as String? ?? '',
     name: json['name'] as String? ?? '',
     description: json['description'] as String? ?? '',
   );

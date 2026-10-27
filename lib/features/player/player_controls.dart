@@ -1,17 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:media_kit/media_kit.dart';
 
 import 'package:duanju_app/features/lan/lan_controller.dart';
 import 'package:duanju_app/features/player/player_interactions.dart';
+import 'package:duanju_app/features/player/player_surface.dart';
 import 'package:duanju_app/widgets/widgets.dart';
 import 'package:duanju_app/features/player/video_enhancement.dart';
 
 class PlayerControls extends StatefulWidget {
   const PlayerControls({
     super.key,
-    required this.player,
+    required this.surface,
     required this.interactions,
     required this.enabled,
     required this.fullscreen,
@@ -42,7 +42,7 @@ class PlayerControls extends StatefulWidget {
     this.link,
   });
 
-  final Player player;
+  final PlayerSurface surface;
   final PlayerInteractions interactions;
   final bool enabled;
   final bool fullscreen;
@@ -89,14 +89,14 @@ class _PlayerControlsState extends State<PlayerControls> {
     super.initState();
     _visible = widget.showOnPlaybackReady;
     _suppressAutoPlaybackStart = !widget.showOnPlaybackReady;
-    _lastPlaying = widget.player.state.playing;
+    _lastPlaying = widget.surface.state.playing;
     for (final stream in [
-      widget.player.stream.position,
-      widget.player.stream.duration,
-      widget.player.stream.buffer,
-      widget.player.stream.playing,
-      widget.player.stream.buffering,
-      widget.player.stream.volume,
+      widget.surface.positionStream,
+      widget.surface.durationStream,
+      widget.surface.bufferStream,
+      widget.surface.playingStream,
+      widget.surface.bufferingStream,
+      widget.surface.volumeStream,
     ]) {
       _subscriptions.add(
         stream.listen((_) {
@@ -105,7 +105,7 @@ class _PlayerControlsState extends State<PlayerControls> {
       );
     }
     _subscriptions.add(
-      widget.player.stream.playing.listen((playing) {
+      widget.surface.playingStream.listen((playing) {
         final wasPlaying = _lastPlaying;
         _lastPlaying = playing;
         if (!mounted || !widget.enabled) return;
@@ -136,13 +136,13 @@ class _PlayerControlsState extends State<PlayerControls> {
       if (widget.showOnPlaybackReady) {
         _suppressAutoPlaybackStart = false;
       } else if (widget.enabled && !oldWidget.enabled) {
-        _suppressAutoPlaybackStart = !widget.player.state.playing;
+        _suppressAutoPlaybackStart = !widget.surface.state.playing;
       } else if (!widget.enabled && oldWidget.enabled) {
         _suppressAutoPlaybackStart = true;
         _visible = false;
       }
       if (widget.enabled && !oldWidget.enabled) {
-        if (widget.showOnPlaybackReady || !widget.player.state.playing) {
+        if (widget.showOnPlaybackReady || !widget.surface.state.playing) {
           _visible = true;
         } else {
           _visible = false;
@@ -163,7 +163,7 @@ class _PlayerControlsState extends State<PlayerControls> {
     _hideTimer?.cancel();
     if (!widget.enabled ||
         widget.panelOpen ||
-        !widget.player.state.playing ||
+        !widget.surface.state.playing ||
         _seekValue != null) {
       return;
     }
@@ -171,8 +171,8 @@ class _PlayerControlsState extends State<PlayerControls> {
       if (mounted &&
           widget.enabled &&
           !widget.panelOpen &&
-          widget.player.state.playing &&
-          !widget.player.state.buffering &&
+          widget.surface.state.playing &&
+          !widget.surface.state.buffering &&
           !widget.interactions.boosting &&
           _seekValue == null) {
         setState(() => _visible = false);
@@ -212,7 +212,7 @@ class _PlayerControlsState extends State<PlayerControls> {
 
   @override
   Widget build(BuildContext context) {
-    final state = widget.player.state;
+    final state = widget.surface.state;
     final duration = state.duration.inMilliseconds / 1000;
     final position = state.position.inMilliseconds / 1000;
     final buffered = state.buffer.inMilliseconds / 1000;
@@ -395,7 +395,7 @@ class _PlayerControlsState extends State<PlayerControls> {
   );
 
   Widget _playbackGroup() {
-    final playing = widget.player.state.playing;
+    final playing = widget.surface.state.playing;
     return _toolGroup([
       _toolIcon(
         key: const ValueKey('player-toggle-playback'),
@@ -560,7 +560,7 @@ class _PlayerControlsState extends State<PlayerControls> {
                         },
                   onChangeEnd: (value) {
                     if (widget.enabled && duration > 0) {
-                      (widget.onSeek ?? widget.player.seek)(
+                      (widget.onSeek ?? widget.surface.seek)(
                         Duration(milliseconds: (value * 1000).round()),
                       );
                     }
@@ -893,7 +893,7 @@ class _PlayerControlsState extends State<PlayerControls> {
                             onPressed: () {
                               final next = volume == 0 ? 100.0 : 0.0;
                               setState(() => volume = next);
-                              unawaited(widget.player.setVolume(next));
+                              unawaited(widget.surface.setVolume(next));
                             },
                             icon: Icon(
                               volume == 0
@@ -924,7 +924,7 @@ class _PlayerControlsState extends State<PlayerControls> {
                                   divisions: 20,
                                   onChanged: (value) {
                                     setState(() => volume = value);
-                                    unawaited(widget.player.setVolume(value));
+                                    unawaited(widget.surface.setVolume(value));
                                   },
                                 ),
                               ),

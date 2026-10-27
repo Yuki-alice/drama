@@ -12,6 +12,20 @@ class DiaryService {
   static String _nativeText = '';
   static final ValueNotifier<int> revision = ValueNotifier<int>(0);
 
+  /// 原生诊断日志里对用户有意义的事件前缀。
+  ///
+  /// `stream.*` 是播放链路；`extension_log` 是扩展脚本的 `hg.log` 与
+  /// `console.log` 输出——之前只收 `stream.`，导致扩展日志虽然写进了
+  /// 诊断文件却在界面上完全不可见，插件出问题时用户拿不到任何线索。
+  static const _visibleEventPrefixes = ['stream.'];
+  static const _visibleEvents = {'extension_log'};
+
+  static bool _visible(Map<String, dynamic> event) {
+    final name = event['event'] as String? ?? '';
+    return _visibleEvents.contains(name) ||
+        _visibleEventPrefixes.any(name.startsWith);
+  }
+
   /// 记录一条日记
   static void add(String message) {
     final now = DateTime.now();
@@ -60,9 +74,7 @@ class DiaryService {
         for (final line in text.split('\n').skip(start > 0 ? 1 : 0)) {
           try {
             final event = jsonDecode(line) as Map<String, dynamic>;
-            if ((event['event'] as String? ?? '').startsWith('stream.')) {
-              lines.add(line);
-            }
+            if (_visible(event)) lines.add(line);
           } catch (_) {}
         }
       } on FileSystemException {
@@ -74,6 +86,45 @@ class DiaryService {
     _nativeText = lines
         .skip(lines.length > 500 ? lines.length - 500 : 0)
         .join('\n');
+  }
+
+  /// 读取某扩展源最近的原生日志行（`hg.log` / `console.log`）。
+  ///
+  /// 站源页用它给出「这个源刚才报了什么」，不必让用户去翻整份诊断文件。
+  static Future<List<String>> extensionLogs(
+    String source, {
+    int limit = 200,
+  }) async {
+    final path = nativeLogPath;
+    if (path == null || source.isEmpty) return const [];
+    final lines = <String>[];
+    for (final name in ['$path.1', path]) {
+      RandomAccessFile? file;
+      try {
+        file = await File(name).open();
+        final size = await file.length();
+        final start = size > 512 * 1024 ? size - 512 * 1024 : 0;
+        await file.setPosition(start);
+        final text = utf8.decode(
+          await file.read(size - start),
+          allowMalformed: true,
+        );
+        for (final line in text.split('\n').skip(start > 0 ? 1 : 0)) {
+          try {
+            final event = jsonDecode(line) as Map<String, dynamic>;
+            if (event['event'] == 'extension_log' &&
+                event['source'] == source) {
+              lines.add(line);
+            }
+          } catch (_) {}
+        }
+      } on FileSystemException {
+        continue;
+      } finally {
+        await file?.close();
+      }
+    }
+    return lines.length > limit ? lines.sublist(lines.length - limit) : lines;
   }
 
   /// 复制全部日记到剪贴板

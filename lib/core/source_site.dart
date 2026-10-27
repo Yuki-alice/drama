@@ -10,6 +10,9 @@ class SourceSite {
     this.onlineSearch = false,
     this.pagedSearch = false,
     this.suggestions = false,
+    this.vip = false,
+    this.danmaku = false,
+    this.detailFields = const [],
   });
 
   final String id;
@@ -23,10 +26,22 @@ class SourceSite {
   final bool pagedSearch;
   final bool suggestions;
 
+  /// 该源会返回 VIP 标记：界面据此显示 VIP 筛选与详情状态。
+  final bool vip;
+
+  /// 该源支持弹幕：播放器据此显示弹幕开关。
+  final bool danmaku;
+
+  /// 目录里可能缺失、需要拉详情补齐的字段（与扩展清单 detailFields 一致）。
+  final List<String> detailFields;
+
   bool get searchSuggestions => id == 'hongguo' || suggestions;
   String get displayGroupId => group.isEmpty ? id : group;
   String get displayGroupName => groupName.isEmpty ? name : groupName;
   String get displayEntryName => entryName.isEmpty ? name : entryName;
+
+  /// 是否需要为该源显示「VIP 状态待补齐」这类提示。
+  bool get tracksVipStatus => vip && detailFields.contains('vip');
 
   static const hongguo = SourceSite(
     'hongguo',
@@ -34,6 +49,7 @@ class SourceSite {
     '短剧 · 漫剧 · AI 剧',
     onlineSearch: true,
     suggestions: true,
+    danmaku: true,
   );
   static const dsd = SourceSite(
     'dsd',
@@ -42,6 +58,7 @@ class SourceSite {
     restricted: true,
     onlineSearch: true,
     pagedSearch: true,
+    vip: true,
   );
   static const sorani = SourceSite(
     'sorani',
@@ -69,6 +86,8 @@ class SourceSite {
     '黄豆',
     '精选短剧',
     restricted: true,
+    vip: true,
+    detailFields: ['vip', 'heat'],
   );
   static const huangju = SourceSite(
     'huangju',
@@ -85,6 +104,7 @@ class SourceSite {
     restricted: true,
     onlineSearch: true,
     pagedSearch: true,
+    vip: true,
   );
   static const huangguoVideo = SourceSite(
     'huangguo-video',
@@ -112,6 +132,7 @@ class SourceSite {
     group: 'huangguo',
     groupName: '黄果',
     entryName: '旧版',
+    vip: true,
   );
 
   /// 默认开启的站源：红果、韩小圈、鬼片网、青空次元。
@@ -160,6 +181,12 @@ class SourceSite {
             onlineSearch: entry['onlineSearch'] == true,
             pagedSearch: entry['pagedSearch'] == true,
             suggestions: entry['suggestions'] == true,
+            vip: entry['vip'] == true,
+            danmaku: entry['danmaku'] == true,
+            detailFields: [
+              for (final field in entry['detailFields'] as List? ?? const [])
+                if (field is String) field,
+            ],
           ),
     ];
     // Go 端按 map 遍历返回，排序后再进入界面，避免每次启动顺序漂移。

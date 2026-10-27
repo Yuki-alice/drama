@@ -20,6 +20,11 @@ void installAllTestSources() {
           'onlineSearch': site.onlineSearch,
           'pagedSearch': site.pagedSearch,
           'suggestions': site.suggestions,
+          // 能力声明必须一起带上，否则测试里的 VIP/弹幕/补资料行为
+          // 会和生产不一致（生产走的是 Go 下发的同一份清单）。
+          'vip': site.vip,
+          'danmaku': site.danmaku,
+          'detailFields': site.detailFields,
         },
   ]);
 }
