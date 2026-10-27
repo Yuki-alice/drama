@@ -62,9 +62,15 @@ func (r *providerRegistry) get(source string) (sourceProvider, bool) {
 	return provider, ok
 }
 
-// toleratesEmptyCatalog：目录首页为空时不报错的源（与支持在线搜索的源一致，
-// 这些源的分类页可能合法为空，由前端展示空态）。
-func (r *providerRegistry) toleratesEmptyCatalog(source string) bool {
+// toleratesEmptyCatalog：目录首页为空时不报错的源。
+//
+// 带分类的请求可能合法为空（该分类暂时没有内容）；全站首页为空说明站源异常。
+// 不再借用 SupportsOnlineSearch：能力标志改由扩展清单声明后两者已无关，
+// 继续耦合会让「不支持站内搜索」的源在空分类页上误报错误。
+func (r *providerRegistry) toleratesEmptyCatalog(source, category string) bool {
+	if strings.TrimSpace(category) != "" {
+		return true
+	}
 	if provider, ok := r.get(source); ok {
 		return provider.SupportsOnlineSearch()
 	}

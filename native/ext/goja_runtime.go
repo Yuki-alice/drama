@@ -25,57 +25,55 @@ import (
 	"github.com/dop251/goja"
 )
 
-// Registry 构造绑定宿主能力的 goja 运行时。
-// callCtx 保存当前调用的 context：Extension 串行执行同一源的脚本，
-// 因此单个 Registry 字段即可让 hg.fetch 响应取消。
+// Registry 是扩展运行时的工厂：只持有宿主能力面，不保存任何调用状态。
+// 调用 context 属于每个 Extension 自己的运行时，见 gojaRuntime.ctx。
 type Registry struct {
-	host    Host
-	callCtx context.Context
+	host Host
 }
 
 func NewRegistry(host Host) *Registry { return &Registry{host: host} }
-
-// setCallContext 由 gojaRuntime 在每次调用前写入。
-func (r *Registry) setCallContext(ctx context.Context) { r.callCtx = ctx }
-
-// callContext 返回本次脚本调用的 context；未注入时退回 Background。
-func (r *Registry) callContext() context.Context {
-	if r.callCtx != nil {
-		return r.callCtx
-	}
-	return context.Background()
-}
 
 // NewRuntime 编译扩展脚本并注入宿主对象。
 func (r *Registry) NewRuntime(manifest Manifest, code string) (Runtime, error) {
 	vm := goja.New()
 	vm.SetFieldNameMapper(goja.UncapFieldNameMapper())
+	runtime := &gojaRuntime{vm: vm, source: manifest.ID, host: r.host, registry: r}
 	console := vm.NewObject()
 	_ = console.Set("log", func(args ...goja.Value) {
 		r.host.Log(manifest.ID, consoleText(args))
 	})
 	_ = vm.Set("console", console)
-	_ = vm.Set("hg", r.hostObject(manifest.ID, vm))
-	kitProgram, err := goja.Compile("hgkit.js", hostKitSource, false)
-	if err != nil {
-		return nil, fmt.Errorf("扩展工具库无法编译: %w", err)
-	}
-	if _, err := vm.RunProgram(kitProgram); err != nil {
-		return nil, fmt.Errorf("扩展工具库初始化失败: %w", err)
+	_ = vm.Set("hg", r.hostObject(manifest.ID, runtime))
+	// 工具库按层注入：kit-core 建立命名空间，后续片段依次扩充，
+	// kit.js 最后把能力挂到 source 上。文件名保留在 goja 的报错里。
+	for _, file := range hostKitSources {
+		kitProgram, err := goja.Compile(file.name, file.source, false)
+		if err != nil {
+			return nil, fmt.Errorf("扩展工具库 %s 无法编译: %w", file.name, err)
+		}
+		if _, err := vm.RunProgram(kitProgram); err != nil {
+			return nil, fmt.Errorf("扩展工具库 %s 初始化失败: %w", file.name, err)
+		}
 	}
 	program, err := goja.Compile(manifest.ID+".js", code, false)
 	if err != nil {
 		return nil, err
 	}
-	return &gojaRuntime{vm: vm, program: program, source: manifest.ID, host: r.host, registry: r}, nil
+	runtime.program = program
+	return runtime, nil
 }
 
 type gojaRuntime struct {
-	vm       *goja.Runtime
-	program  *goja.Program
-	source   string
-	host     Host
+	vm      *goja.Runtime
+	program *goja.Program
+	source  string
+	host    Host
+	// registry 只用于中断后重建运行时，不承载调用状态。
 	registry *Registry
+	// ctx 是本次脚本调用的 context，由 Extension 在持锁状态下写入，
+	// 因此同一运行时的读写天然串行；不同扩展各有自己的运行时，
+	// 不再共享可写字段（旧实现把 context 放在 Registry 上，跨源并发会互相覆盖）。
+	ctx context.Context
 }
 
 func (r *gojaRuntime) RunProgram() error {
@@ -124,14 +122,19 @@ func (r *gojaRuntime) Call(method string, args []any) (any, error) {
 
 func (r *gojaRuntime) Interrupt(reason error) { r.vm.Interrupt(reason) }
 
-func (r *gojaRuntime) SetContext(ctx context.Context) { r.registry.setCallContext(ctx) }
+func (r *gojaRuntime) SetContext(ctx context.Context) { r.ctx = ctx }
 
-// callContext 是 Registry.callContext 的就近转发；hg.fetch 与 Registry
-// 共享同一份调用 context。
-func (r *gojaRuntime) callContext() context.Context { return r.registry.callContext() }
+// callContext 返回本次脚本调用的 context；未注入时退回 Background。
+func (r *gojaRuntime) callContext() context.Context {
+	if r.ctx != nil {
+		return r.ctx
+	}
+	return context.Background()
+}
 
 // hostObject 构造 hg 宿主对象：网络、HTML、加密、存储与日志。
-func (r *Registry) hostObject(source string, vm *goja.Runtime) *goja.Object {
+func (r *Registry) hostObject(source string, runtime *gojaRuntime) *goja.Object {
+	vm := runtime.vm
 	hg := vm.NewObject()
 	_ = hg.Set("fetch", func(call goja.FunctionCall) goja.Value {
 		url := strings.TrimSpace(toString(call.Argument(0)))
@@ -144,7 +147,7 @@ func (r *Registry) hostObject(source string, vm *goja.Runtime) *goja.Object {
 		}
 		// 扩展网络调用使用请求的 context；VM 中断后阻塞在宿主的调用
 		// 会随 context 取消返回，不会悬挂。
-		response, err := r.host.Fetch(r.callContext(), source, request)
+		response, err := r.host.Fetch(runtime.callContext(), source, request)
 		if err != nil {
 			panic(vm.NewGoError(err))
 		}
@@ -182,7 +185,7 @@ func (r *Registry) hostObject(source string, vm *goja.Runtime) *goja.Object {
 			}
 			requests[index] = request
 		}
-		ctx := r.callContext()
+		ctx := runtime.callContext()
 		type outcome struct {
 			response *Response
 			err      error

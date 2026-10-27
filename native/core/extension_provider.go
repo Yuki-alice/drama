@@ -23,9 +23,11 @@ import (
 type extensionProvider struct {
 	d      *Downloader
 	source string
-	// rankings 缓存扩展声明的榜单；rankingsOnce 保证只查询一次。
-	rankingsOnce sync.Once
-	rankings     []rankingBoard
+	// rankings 缓存扩展声明的榜单；rankingsLoaded 只在成功解析后置位，
+	// 失败（网络抖动、超时）不会把空结果永久固化。
+	rankingsMu     sync.Mutex
+	rankingsLoaded bool
+	rankings       []rankingBoard
 }
 
 // registerExtensionProvider 把已装扩展注册进 registry（幂等）。
@@ -86,8 +88,26 @@ func (p *extensionProvider) BaseURL() string {
 	return strings.TrimRight(p.d.providerBaseURL(p.source), "/")
 }
 
+// manifest 返回扩展声明的能力元数据；未安装时返回 nil。
+// 能力标志必须由清单驱动：宿主侧硬编码 true 会让不支持站内搜索的源
+// 被路由到脚本的 catalog(query=...)，脚本直接抛错，用户看到的是报错而非本地过滤。
+func (p *extensionProvider) manifest() *ext.Manifest {
+	if p.d == nil || p.d.extensions == nil {
+		return nil
+	}
+	installed := p.d.extensions.Manifest(p.source)
+	if installed == nil {
+		return nil
+	}
+	manifest := installed.Manifest
+	return &manifest
+}
+
 func (p *extensionProvider) SupportsOnlineSearch() bool {
-	return true
+	if manifest := p.manifest(); manifest != nil {
+		return manifest.OnlineSearch
+	}
+	return false
 }
 
 func (p *extensionProvider) ValidCategory(category string) bool {
@@ -97,11 +117,15 @@ func (p *extensionProvider) ValidCategory(category string) bool {
 	if len(category) > 128 || strings.ContainsAny(category, "|/\\\x00\r\n") {
 		return false
 	}
-	loaded, err := p.runtime(context.Background())
+	// 分类校验在目录请求的热路径上，必须有界：无 deadline 的调用会因
+	// 死循环脚本长期占用该源的执行锁。
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	loaded, err := p.runtime(ctx)
 	if err != nil {
 		return false
 	}
-	result, err := loaded.Call(context.Background(), "validCategory", []any{category})
+	result, err := loaded.Call(ctx, "validCategory", []any{category})
 	if err != nil {
 		return false
 	}
@@ -334,11 +358,11 @@ func (p *extensionProvider) ResolveMedia(ctx context.Context, task Task) (provid
 	}
 	raw, _ := json.Marshal(result)
 	var parsed struct {
-		URL       string            `json:"url"`
-		Referer   string            `json:"referer,omitempty"`
-		Quality   int               `json:"quality,omitempty"`
-		Qualities []int             `json:"qualities,omitempty"`
-		Headers   map[string]string `json:"headers,omitempty"`
+		URL     string `json:"url"`
+		Referer string `json:"referer,omitempty"`
+		Quality int    `json:"quality,omitempty"`
+		// Headers 是额外媒体请求头，由宿主在出站请求上应用（见 providerMedia.Headers）。
+		Headers map[string]string `json:"headers,omitempty"`
 		// HLSKey 是 16 字节密钥的 hex：加密 HLS 的站源（黄豆）在响应里下发密钥。
 		HLSKey string `json:"hlsKey,omitempty"`
 		// credentials 透传签名 Cookie 等播放凭证（宿主在媒体请求上应用）。
@@ -361,6 +385,28 @@ func (p *extensionProvider) ResolveMedia(ctx context.Context, task Task) (provid
 		return providerMedia{}, fmt.Errorf("%s 返回的播放地址无效", p.source)
 	}
 	media := providerMedia{URL: parsed.URL, Referer: parsed.Referer, Quality: parsed.Quality}
+	if len(parsed.Headers) > 0 {
+		// 传输层头由宿主独占（Host/Content-Length/Connection/Range 等），
+		// 这里直接丢弃而不是留给发请求时过滤，保证 providerMedia 里
+		// 不会出现无法生效的头。
+		headers := make(map[string]string, len(parsed.Headers))
+		for name, value := range parsed.Headers {
+			name = strings.TrimSpace(name)
+			if name == "" || len(name) > 64 || len(value) > 4096 || strings.ContainsAny(value, "\r\n\x00") {
+				continue
+			}
+			if reservedMediaHeader(name) {
+				continue
+			}
+			headers[name] = value
+		}
+		if len(headers) > 16 {
+			return providerMedia{}, fmt.Errorf("%s 返回了过多的媒体请求头", p.source)
+		}
+		if len(headers) > 0 {
+			media.Headers = headers
+		}
+	}
 	if parsed.HLSKey != "" {
 		key, err := hex.DecodeString(parsed.HLSKey)
 		if err != nil || len(key) != aes.BlockSize {
@@ -427,40 +473,44 @@ type extensionRankingResult struct {
 }
 
 // RankingBoards 读取扩展声明的榜单；未实现 rankings 契约时返回空。
-// 结果按扩展缓存，避免每帧一次脚本调用。
+// 成功结果按扩展缓存，避免每帧一次脚本调用；失败不缓存，
+// 否则一次抖动（网络、超时）会让该源榜单永久消失。
 func (p *extensionProvider) RankingBoards() []rankingBoard {
-	p.rankingsOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		loaded, err := p.runtime(ctx)
-		if err != nil {
-			return
+	p.rankingsMu.Lock()
+	defer p.rankingsMu.Unlock()
+	if p.rankingsLoaded {
+		return append([]rankingBoard{}, p.rankings...)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loaded, err := p.runtime(ctx)
+	if err != nil {
+		return nil
+	}
+	result, err := loaded.Call(ctx, "rankingBoards", []any{extensionContext(ctx)})
+	if err != nil {
+		return nil
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil
+	}
+	var rows []extensionRankingBoard
+	if json.Unmarshal(raw, &rows) != nil {
+		return nil
+	}
+	boards := make([]rankingBoard, 0, len(rows))
+	for _, row := range rows {
+		id, name := strings.TrimSpace(row.ID), strings.TrimSpace(row.Name)
+		if id == "" || name == "" || len(id) > 64 || len([]rune(name)) > 32 {
+			continue
 		}
-		result, err := loaded.Call(ctx, "rankingBoards", []any{extensionContext(ctx)})
-		if err != nil {
-			return
-		}
-		raw, err := json.Marshal(result)
-		if err != nil {
-			return
-		}
-		var rows []extensionRankingBoard
-		if json.Unmarshal(raw, &rows) != nil {
-			return
-		}
-		boards := make([]rankingBoard, 0, len(rows))
-		for _, row := range rows {
-			id, name := strings.TrimSpace(row.ID), strings.TrimSpace(row.Name)
-			if id == "" || name == "" || len(id) > 64 || len([]rune(name)) > 32 {
-				continue
-			}
-			boards = append(boards, rankingBoard{
-				ID: id, Source: p.source, Name: name,
-				Description: strings.TrimSpace(row.Description), path: row.Data,
-			})
-		}
-		p.rankings = boards
-	})
+		boards = append(boards, rankingBoard{
+			ID: id, Source: p.source, Name: name,
+			Description: strings.TrimSpace(row.Description), path: row.Data,
+		})
+	}
+	p.rankings, p.rankingsLoaded = boards, true
 	return append([]rankingBoard{}, p.rankings...)
 }
 

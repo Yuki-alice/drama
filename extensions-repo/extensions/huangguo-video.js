@@ -172,61 +172,56 @@ function cardRemark(card) {
   return '';
 }
 
+// 列表解析交给宿主的 source.cards：卡片定位与去重由宿主负责，
+// 站点的特异之处（多锚点找链接、标题/封面多属性回退、描述来源）走 extra。
 function parseCards(body, pageURL) {
-  const document = hg.html.parse(body);
-  let cards = hg.html.findAll(document, 'article.video-card');
-  if (!cards.length) {
-    cards = hg.html.findAll(document, 'article').filter(
-      (card) => (hg.html.attr(card, 'class') || '').toLowerCase().includes('video-card'),
-    );
-  }
-  const items = [];
-  const seen = new Set();
-  for (const card of cards) {
-    let link = '';
-    for (const anchor of hg.html.findAll(card, 'a')) {
-      const href = hg.html.attr(anchor, 'href') || '';
-      if (videoSourceID(href)) {
-        link = href;
-        break;
+  const base = pageURL || source.baseURL + '/';
+  return source.cards(body, {
+    base: base,
+    item: 'article.video-card, article',
+    // 该站卡片可能只有图片没有标题，交给宿主 DisplayTitle 兜底。
+    allowEmptyTitle: true,
+    id: (node) => {
+      for (const anchor of hg.html.findAll(node, 'a')) {
+        const parsed = videoSourceID(hg.html.attr(anchor, 'href'));
+        if (parsed) return parsed.sourceID;
       }
-    }
-    if (!link) continue;
-    const parsed = videoSourceID(link);
-    if (!parsed || seen.has(parsed.sourceID)) continue;
-    seen.add(parsed.sourceID);
+      return '';
+    },
     // 标题可能为空：宿主统一用 DisplayTitle 兜底（与内置 provider 一致）。
-    const title = firstPresent([
-      closestAttr(card, ['title', 'alt', 'aria-label']),
-      cleanText(hg.html.text(card)),
-    ]);
-    let cover = '';
-    for (const image of hg.html.findAll(card, 'img')) {
-      cover = firstPresent([
-        resolveURL(pageURL, hg.html.attr(image, 'data-src')),
-        resolveURL(pageURL, hg.html.attr(image, 'data-original')),
-        resolveURL(pageURL, hg.html.attr(image, 'src')),
+    title: (node) => firstPresent([
+      closestAttr(node, ['title', 'alt', 'aria-label']),
+      cleanText(hg.html.text(node)),
+    ]),
+    cover: (node) => {
+      for (const image of hg.html.findAll(node, 'img')) {
+        const address = firstPresent([
+          resolveURL(base, hg.html.attr(image, 'data-src')),
+          resolveURL(base, hg.html.attr(image, 'data-original')),
+          resolveURL(base, hg.html.attr(image, 'src')),
+        ]);
+        if (address) return address;
+      }
+      return '';
+    },
+    remark: (node) => cardRemark(node),
+    extra: (node, chunk, row) => {
+      const path = videoSourceID(
+        hg.html.attr(hg.html.findFirst(node, 'a'), 'href'),
+      );
+      const description = firstPresent([
+        hg.html.attr(node, 'data-description'),
+        hg.html.attr(node, 'description'),
+        metaContent(body, 'description'),
+        metaContent(body, 'og:description'),
       ]);
-      if (cover) break;
-    }
-    const item = {
-      sourceId: parsed.sourceID,
-      title: title,
-      cover: cover,
-      category: parsed.path.startsWith('series/') ? 'series' : 'video',
-      channelName: 'huangguo.video',
-      remark: cardRemark(card),
-    };
-    const description = firstPresent([
-      hg.html.attr(card, 'data-description'),
-      hg.html.attr(card, 'description'),
-      metaContent(body, 'description'),
-      metaContent(body, 'og:description'),
-    ]);
-    if (description) item.description = description;
-    items.push(item);
-  }
-  return items;
+      return {
+        category: path && path.path.startsWith('series/') ? 'series' : 'video',
+        channelName: 'huangguo.video',
+        ...(description ? {description: description} : {}),
+      };
+    },
+  });
 }
 
 // videoSourceID 从 href 里取 series/{id} 或 video/{id} 形态的标识。

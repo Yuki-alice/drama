@@ -78,7 +78,10 @@ func (engine *nativeEngine) markCatalogSavePendingLocked() {
 	for key := range engine.catalogs {
 		source, _, _ := strings.Cut(key, "|")
 		record := engine.sourceRecords[source]
-		if !isKnownProviderSource(source) || record.NeedsSave {
+		// 站源可用性由运行期安装表决定，不再用内置源白名单过滤：
+		// 白名单外的扩展源同样需要"等待保存"状态，否则重启后计数与
+		// 保存待办会静默丢失。
+		if !validExtensionSourceID(source) || record.NeedsSave {
 			continue
 		}
 		record.NeedsSave = true

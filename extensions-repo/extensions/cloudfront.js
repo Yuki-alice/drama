@@ -8,6 +8,7 @@
 // @group huangguo
 // @groupName 黄果
 // @entryName 旧版
+// @vip true
 // ==/HongguoExtension==
 
 // 黄果旧版扩展源：CloudFront 前端 + 加密 API（与原 Go legacy provider 对齐）。
@@ -274,13 +275,6 @@ function parseProtocol(script) {
 const text = (value) => source.text(value);
 const firstPresent = (values) => source.first(values);
 
-function integer(value, maximum) {
-  const raw = text(value);
-  if (!/^\d+$/.test(raw)) return null;
-  const number = Number(raw);
-  if (!Number.isInteger(number) || number < 0 || number > maximum) return null;
-  return number;
-}
 
 // tabList 兼容裸数组与 {list:[...]} 两种分类响应（与原 Go 版 legacyTabList 一致）。
 function tabList(payload) {
@@ -326,7 +320,7 @@ function dramaFromMap(row, channelName) {
   if (cover) drama.cover = cover;
   const description = firstPresent([row.desc, row.description, row.summary, row.intro]);
   if (description) drama.description = description;
-  const episodes = integer(firstPresent([
+  const episodes = source.int(firstPresent([
     text(row.totalEpisode), text(row.total_episode),
     text(row.episodeCount), text(row.episode_count), text(row.total),
   ]), 100000);
@@ -360,7 +354,7 @@ function normalizeDate(value) {
 
 // chapterNumber 取分集序号：优先 currentEpisode，其次标题里的「第N集」。
 function chapterNumber(chapter, fallback) {
-  const explicit = integer(chapter && chapter.currentEpisode, 100000);
+  const explicit = source.int(chapter && chapter.currentEpisode, 100000);
   if (explicit != null && explicit > 0) return explicit;
   const match = /第\s*0*(\d+)\s*(?:集|话|期)/.exec(text(chapter && chapter.title));
   if (match) {

@@ -123,17 +123,7 @@ globalThis.source = hgkit.defineSource({
     if (!playURL || !playURL.includes('/play/') || !playURL.endsWith('.html')) {
       throw new Error('鬼片网播放页地址无效');
     }
-    const body = source.getText(ctx, playURL, {label: '鬼片网'});
-    let address = (body.match(/var\s+now\s*=\s*["']([^"']+)["']/i) || [])[1] || '';
-    address = address.trim();
-    if (!address) {
-      address = (body.match(/https?:\/\/[^"'\s<>\\]+\.(?:m3u8|mp4)(?:\?[^"'\s<>\\]*)?/i) || [])[0] || '';
-    }
-    address = source.mediaURL(address);
-    if (!address) {
-      throw new Error('鬼片网该集暂无可用播放地址');
-    }
-    return {url: address, referer: source.base(ctx) + '/'};
+    return source.macPlaylist(ctx, playURL, {label: '鬼片网'});
   },
 });
 
@@ -142,29 +132,25 @@ function extract(body, pattern) {
   return match ? match[1] : '';
 }
 
+// 列表解析交给宿主的 source.cards：只声明选择器与字段位置，
+// 去重、上限、封面地址校验由宿主保证。
 function parseCards(body) {
-  let segment = body;
-  const list = body.match(/<ul class="row video-list video-film-list[^"]*">([\s\S]*?)<\/ul>/i);
-  if (list) {
-    segment = list[1];
-  }
-  const items = [];
-  const seen = new Set();
-  for (const match of segment.matchAll(
-    /<a class="video-link" href="\/nv\/(\d+)\.html"[^>]*title="([^"]*)"([\s\S]*?)<\/a>/gis,
-  )) {
-    const id = match[1];
-    if (seen.has(id)) continue;
-    const title = source.clean(match[2]);
-    if (!title) continue;
-    seen.add(id);
-    const chunk = match[3];
-    const cover = source.url((chunk.match(/data-(?:original|background)="([^"]+)"/i) || [])[1]);
-    const remark = source.clean((chunk.match(/<div class="video-duration">([\s\S]*?)<\/div>/i) || [])[1]);
-    items.push({sourceId: id, title: title, cover: cover, category: '影视', remark: remark.slice(0, 64)});
-    if (items.length > 500) break;
-  }
-  return items;
+  return source.cards(body, {
+    container: 'ul.row.video-list.video-film-list',
+    item: 'a.video-link',
+    id: /\/nv\/(\d+)\.html/,
+    title: 'attr:title',
+    // 封面属性在不同模板里叫 data-original 或 data-background。
+    cover: (node) => {
+      const target = hg.html.findFirst(node, '[data-original]') ||
+        hg.html.findFirst(node, '[data-background]');
+      if (!target) return '';
+      return hg.html.attr(target, 'data-original') ||
+        hg.html.attr(target, 'data-background') || '';
+    },
+    remark: '.video-duration',
+    defaultCategory: '影视',
+  });
 }
 
 // pickPlaylist 选出分集最多的一条线路。

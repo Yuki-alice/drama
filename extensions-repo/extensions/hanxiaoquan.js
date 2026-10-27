@@ -91,42 +91,28 @@ globalThis.source = hgkit.defineSource({
     if (!playURL || !playPageURL(playURL, ctx)) {
       throw new Error('韩小圈播放页地址无效');
     }
-    const body = source.getText(ctx, playURL, {label: '韩小圈'});
-    let address = (body.match(/var\s+now\s*=\s*["']([^"']+)["']/i) || [])[1] || '';
-    address = address.trim();
-    if (!address) {
-      address = (body.match(/https?:\/\/[^"'\s<>\\]+\.(?:m3u8|mp4)(?:\?[^"'\s<>\\]*)?/i) || [])[0] || '';
-    }
-    address = source.mediaURL(address);
-    if (!address) {
-      throw new Error('韩小圈该集暂无可用播放地址');
-    }
-    return {url: address, referer: source.baseURL + '/'};
+    return source.macPlaylist(ctx, playURL, {label: '韩小圈'});
   },
 });
 
+// 列表解析交给宿主的 source.cards。这里的卡片是"标题锚点 + 后续 600
+// 字符内的封面/备注"，用 window 保留原实现的取值边界。
 function parseCards(body) {
-  const items = [];
-  const seen = new Set();
-  const cardPic = /<a href="\/hanxiaoquan\/(\d+)\.html"[^>]*title="([^"]*)"[^>]*class="module-item-pic"/gis;
-  for (const match of body.matchAll(cardPic)) {
-    const id = match[1];
-    let title = source.clean(match[2]);
-    if (seen.has(id)) continue;
-    // 卡片后续 600 字符内取封面与备注（与 Go 侧窗口一致）。
-    let chunk = body.slice(match.index);
-    if (chunk.length > 600) chunk = chunk.slice(0, 600);
-    const cover = source.url((chunk.match(/<img[^>]*data-src="([^"]+)"/i) || [])[1]);
-    const note = source.clean((chunk.match(/class="module-item-text"[^>]*>([^<]*)</i) || [])[1]);
-    if (!title) {
-      title = source.clean((chunk.match(/<a href="\/hanxiaoquan\/\d+\.html"[^>]*class="module-item-title"[^>]*>([^<]*)<\/a>/i) || [])[1]);
-    }
-    if (!title) continue;
-    seen.add(id);
-    items.push({sourceId: id, title: title, cover: cover, category: '韩剧', remark: note.slice(0, 64)});
-    if (items.length > 500) break;
-  }
-  return items;
+  return source.cards(body, {
+    item: 'a.module-item-pic',
+    window: 600,
+    id: /\/hanxiaoquan\/(\d+)\.html/,
+    title: 'attr:title',
+    cover: 'img@data-src',
+    remark: '.module-item-text',
+    defaultCategory: '韩剧',
+    extra: (node, chunk, row) => {
+      if (row.title) return null;
+      // title 属性缺失时退到 .module-item-title 的文本。
+      const anchor = hg.html.findFirst(node, 'a.module-item-title');
+      return anchor ? {title: hg.html.text(anchor).trim()} : null;
+    },
+  });
 }
 
 function infoFields(body) {

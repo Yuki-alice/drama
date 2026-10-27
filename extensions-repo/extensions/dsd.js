@@ -7,6 +7,7 @@
 // @description 分类视频 · 在线搜索
 // @onlineSearch true
 // @pagedSearch true
+// @vip true
 // ==/HongguoExtension==
 
 // 帝果扩展源：MacCMS 风格 HTML 站点的 JS 移植（与原 Go provider 对齐）。
@@ -119,8 +120,8 @@ globalThis.source = hgkit.defineSource({
     if (parts.length !== 2) {
       throw new Error('帝果播放分集无效');
     }
-    const line = integer(parts[0], 1000000);
-    const episode = integer(parts[1], 1000000);
+    const line = source.int(parts[0], 1000000);
+    const episode = source.int(parts[1], 1000000);
     if (line == null || line < 1 || episode == null || episode < 1) {
       throw new Error('帝果播放分集无效');
     }
@@ -133,7 +134,7 @@ globalThis.source = hgkit.defineSource({
       if (actual == null || actual.line !== line || actual.episode !== episode) {
         throw new Error('帝果返回的播放地址与请求分集不符');
       }
-      const preview = integer(player.value.trysee, 86400);
+      const preview = source.int(player.value.trysee, 86400);
       if (preview != null && preview > 0) {
         throw new Error('帝果仅提供试看，暂未取得正片播放地址');
       }
@@ -333,7 +334,7 @@ function pagination(document, pageURL, category, page) {
   }
   let active = null;
   for (const node of hg.html.findAll(container, '.active.number, .page-current')) {
-    active = integer(hg.html.text(node), 1000000);
+    active = source.int(hg.html.text(node), 1000000);
     break;
   }
   if (active !== page) {
@@ -343,7 +344,7 @@ function pagination(document, pageURL, category, page) {
   for (const anchor of hg.html.findAll(container, 'a')) {
     const route = routeParameters(pageURL, hg.html.attr(anchor, 'href'));
     if (!route) continue;
-    const value = integer(route.values.page, 1000000);
+    const value = source.int(route.values.page, 1000000);
     if (value != null && value > pages) pages = value;
   }
   return pages;
@@ -430,8 +431,8 @@ function parseDetail(body, pageURL, sourceID, site) {
   const addEpisode = (reference, title) => {
     const route = routeParameters(pageURL, reference);
     if (!route || route.action !== 'play' || route.values.id !== sourceID) return;
-    const candidateLine = integer(route.values.sid, 1000000);
-    const episode = integer(route.values.nid, 1000000);
+    const candidateLine = source.int(route.values.sid, 1000000);
+    const episode = source.int(route.values.nid, 1000000);
     if (candidateLine == null || candidateLine !== line) return;
     if (episode == null || episode < 1 || seenEpisodes.has(episode)) return;
     seenEpisodes.add(episode);
@@ -546,8 +547,8 @@ function scriptBodies(body) {
 }
 
 function playerIdentity(player, sourceID) {
-  const line = integer(player.sid, 1000000);
-  const episode = integer(player.nid, 1000000);
+  const line = source.int(player.sid, 1000000);
+  const episode = source.int(player.nid, 1000000);
   if (text(player.id) !== sourceID || line == null || line < 1 || episode == null || episode < 1) {
     return null;
   }
@@ -829,13 +830,6 @@ const resolveURL = hgkit.url;
 const coverAddress = hgkit.url;
 const isMediaURL = (value) => source.isMediaURL(value);
 
-function integer(value, maximum) {
-  const raw = text(value);
-  if (!/^-?\d+$/.test(raw)) return null;
-  const number = Number(raw);
-  if (!Number.isInteger(number) || number < 0 || number > maximum) return null;
-  return number;
-}
 
 function nodeText(node) {
   return node ? text(hg.html.text(node)) : '';

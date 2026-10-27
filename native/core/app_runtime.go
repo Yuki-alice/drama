@@ -43,23 +43,26 @@ type Config struct {
 }
 
 type Downloader struct {
-	rankings        rankingCache
-	cfg             Config
-	client          *http.Client
-	providerMu      sync.Mutex
-	providerHosts   map[string]string
-	providers       *providerRegistry
-	extensions      *extensionStore
-	limiter         *requestLimiter
-	proxyRouter     *proxyRouter
-	hongguoOnce     sync.Once
-	hongguo         *hongguoAppClient
-	diagnostics     *diagnosticLog
-	apiMu           sync.Mutex
-	apiBase         string
-	apiFailures     map[string]time.Time
-	previewMu       sync.Mutex
-	previewSessions map[string]*huangguoPreviewSession
+	rankings      rankingCache
+	cfg           Config
+	client        *http.Client
+	providerMu    sync.Mutex
+	providerHosts map[string]string
+	providers     *providerRegistry
+	extensions    *extensionStore
+	limiter       *requestLimiter
+	proxyRouter   *proxyRouter
+	// allowLocalExtensionHost 只由测试打开：允许扩展访问 127.0.0.1 的
+	// httptest 合成站点。生产构建永远为 false。
+	allowLocalExtensionHost bool
+	hongguoOnce             sync.Once
+	hongguo                 *hongguoAppClient
+	diagnostics             *diagnosticLog
+	apiMu                   sync.Mutex
+	apiBase                 string
+	apiFailures             map[string]time.Time
+	previewMu               sync.Mutex
+	previewSessions         map[string]*huangguoPreviewSession
 }
 
 func defaultConfig() Config { return Config{MaxPagesPerSort: 50, PageSize: 30, Retries: 2} }
@@ -101,15 +104,18 @@ type nativeInput struct {
 	Page             int                     `json:"page"`
 	Query            string                  `json:"query"`
 	Category         string                  `json:"category"`
-	Drama            nativeDrama             `json:"drama"`
-	Chapter          Chapter                 `json:"chapter"`
-	Index            int                     `json:"index"`
-	Quality          int                     `json:"quality"`
-	Session          string                  `json:"session"`
-	Sequence         int64                   `json:"sequence"`
-	Force            bool                    `json:"force"`
-	ExtensionURL     string                  `json:"extensionUrl,omitempty"`
-	ExtensionSHA256  string                  `json:"extensionSha256,omitempty"`
+	// SettingKey / SettingValue 用于每源设置的读写（如 baseURL 镜像域名）。
+	SettingKey      string      `json:"settingKey,omitempty"`
+	SettingValue    string      `json:"settingValue,omitempty"`
+	Drama           nativeDrama `json:"drama"`
+	Chapter         Chapter     `json:"chapter"`
+	Index           int         `json:"index"`
+	Quality         int         `json:"quality"`
+	Session         string      `json:"session"`
+	Sequence        int64       `json:"sequence"`
+	Force           bool        `json:"force"`
+	ExtensionURL    string      `json:"extensionUrl,omitempty"`
+	ExtensionSHA256 string      `json:"extensionSha256,omitempty"`
 	// ExtensionCode 用于随包内置或本地导入的扩展脚本；与 ExtensionURL 二选一。
 	ExtensionCode string `json:"extensionCode,omitempty"`
 }
@@ -474,6 +480,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "installedExtensions":
 		// 应用启动后据此构建站源列表；不依赖远程索引（离线也可用）。
 		return map[string]any{"entries": engine.downloader.extensions.installedExtensions()}, nil
+	case "sourceSettings":
+		return engine.sourceSettings(input.Source)
+	case "saveSourceSetting":
+		return engine.saveSourceSetting(input.Source, input.SettingKey, input.SettingValue)
 	case "cancelSourceJob":
 		return engine.cancelSourceTask(input.Source), nil
 	case "cover":
@@ -620,7 +630,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && !d.providers.toleratesEmptyCatalog(source) {
+	if len(items) == 0 && page == 1 && !d.providers.toleratesEmptyCatalog(source, category) {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {

@@ -89,7 +89,7 @@ func (manager *nativeDownloads) transferMedia(ctx context.Context, job nativeDow
 			err = nativeDownloadWrite(target, asset.data)
 			size = int64(len(asset.data))
 		} else {
-			size, err = manager.downloadFile(ctx, asset.address, media.Referer, target, asset.key, func(received, total int64) {
+			size, err = manager.downloadFile(ctx, asset.address, media.Referer, media.Headers, target, asset.key, func(received, total int64) {
 				progress := 0.0
 				if total > 0 {
 					progress = min(1, float64(received)/float64(total))
@@ -142,7 +142,7 @@ func nativeDownloadRange(value string) (int64, int64, int64, bool) {
 	return start, end, total, start >= 0 && end >= start && total > end
 }
 
-func (manager *nativeDownloads) downloadFile(ctx context.Context, address, referer, target string, key bool, progress func(int64, int64)) (int64, error) {
+func (manager *nativeDownloads) downloadFile(ctx context.Context, address, referer string, headers map[string]string, target string, key bool, progress func(int64, int64)) (int64, error) {
 	var metadata nativeDownloadFileState
 	if data, err := os.ReadFile(target + ".json"); err == nil {
 		_ = json.Unmarshal(data, &metadata)
@@ -164,7 +164,7 @@ func (manager *nativeDownloads) downloadFile(ctx context.Context, address, refer
 		}
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		size, restart, err := manager.downloadFileAttempt(ctx, address, referer, target, key, offset, metadata, progress)
+		size, restart, err := manager.downloadFileAttempt(ctx, address, referer, headers, target, key, offset, metadata, progress)
 		if !restart {
 			return size, err
 		}
@@ -173,7 +173,7 @@ func (manager *nativeDownloads) downloadFile(ctx context.Context, address, refer
 	return 0, errors.New("服务器无法恢复下载，请重试")
 }
 
-func (manager *nativeDownloads) downloadFileAttempt(ctx context.Context, address, referer, target string, key bool, offset int64, old nativeDownloadFileState, progress func(int64, int64)) (int64, bool, error) {
+func (manager *nativeDownloads) downloadFileAttempt(ctx context.Context, address, referer string, headers map[string]string, target string, key bool, offset int64, old nativeDownloadFileState, progress func(int64, int64)) (int64, bool, error) {
 	if !isProviderHTTPMediaURL(address) {
 		return 0, false, errors.New("媒体下载地址无效")
 	}
@@ -188,6 +188,7 @@ func (manager *nativeDownloads) downloadFileAttempt(ctx context.Context, address
 	request.Header.Set("User-Agent", userAgent)
 	request.Header.Set("Referer", referer)
 	request.Header.Set("Accept-Encoding", "identity")
+	applyExtensionMediaHeaders(request, headers)
 	if offset > 0 {
 		request.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		request.Header.Set("If-Range", old.Validator)
@@ -300,6 +301,6 @@ func (manager *nativeDownloads) downloadFileAttempt(ctx context.Context, address
 	return received, false, nil
 }
 
-func (manager *nativeDownloads) downloadPlaylist(ctx context.Context, address, referer string) (string, string, error) {
-	return manager.engine.downloader.fetchMediaPlaylist(ctx, address, referer)
+func (manager *nativeDownloads) downloadPlaylist(ctx context.Context, address, referer string, headers map[string]string) (string, string, error) {
+	return manager.engine.downloader.fetchMediaPlaylist(ctx, address, referer, headers)
 }

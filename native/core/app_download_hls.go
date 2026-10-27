@@ -124,7 +124,7 @@ func (manager *nativeDownloads) downloadBundle(ctx context.Context, media provid
 		base := address
 		if body == "" {
 			var err error
-			body, base, err = manager.downloadPlaylist(ctx, address, media.Referer)
+			body, base, err = manager.downloadPlaylist(ctx, address, media.Referer, media.Headers)
 			if err != nil {
 				return "", err
 			}

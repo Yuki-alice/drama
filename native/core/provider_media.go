@@ -13,12 +13,15 @@ type providerMedia struct {
 	credentials *providerMediaCredentials
 	URL         string
 	Referer     string
-	Duration    time.Duration
-	Playlist    string
-	HLSKey      []byte
-	CENCKey     []byte
-	Quality     int
-	Variants    []providerMedia
+	// Headers 是扩展 resolve 契约声明的额外媒体请求头（如自定义鉴权头）。
+	// 只允许出现在宿主出站请求上，不下发给播放器。
+	Headers  map[string]string
+	Duration time.Duration
+	Playlist string
+	HLSKey   []byte
+	CENCKey  []byte
+	Quality  int
+	Variants []providerMedia
 }
 
 // providerBaseURL 返回站源的站点根地址。
@@ -107,7 +110,7 @@ func (d *Downloader) finalizeProviderMedia(ctx context.Context, media providerMe
 		if media.credentials != nil {
 			ctx = providerMediaContext(ctx, media.credentials)
 		}
-		playlist, finalURL, err := d.fetchMediaPlaylist(ctx, media.URL, media.Referer)
+		playlist, finalURL, err := d.fetchMediaPlaylist(ctx, media.URL, media.Referer, media.Headers)
 		if err != nil {
 			return providerMedia{}, fmt.Errorf("获取播放列表失败: %w", err)
 		}

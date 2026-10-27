@@ -5,12 +5,13 @@
     "name": "黄果旧版",
     "version": "1.0.0",
     "restricted": true,
+    "vip": true,
     "description": "旧 API 剧库",
     "group": "huangguo",
     "groupName": "黄果",
     "entryName": "旧版",
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/cloudfront.js",
-    "sha256": "c617b24a452a3868cb6ae07c6babcbaea1d859d9fe3f2272137e1cf742abee27",
+    "sha256": "a1b9914607f79a481b86ff6df7ff1c0177187e6c8aed4b457996394ecdcc78b3",
     "changelog": "官方扩展源"
   },
   {
@@ -18,12 +19,13 @@
     "id": "dsd",
     "name": "帝果",
     "version": "1.0.0",
-    "pagedSearch": true,
     "restricted": true,
+    "vip": true,
     "onlineSearch": true,
+    "pagedSearch": true,
     "description": "分类视频 · 在线搜索",
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/dsd.js",
-    "sha256": "dd2859c58c4a5874214e9d21104b31ed86a780de28e63a94bfd50341199c8739",
+    "sha256": "f229023dead2117a202c2b7f02889adc46ffd70dc957c6326c054e61adae1a34",
     "changelog": "官方扩展源"
   },
   {
@@ -31,11 +33,11 @@
     "id": "guipian",
     "name": "鬼片",
     "version": "1.0.0",
-    "pagedSearch": true,
     "onlineSearch": true,
+    "pagedSearch": true,
     "description": "鬼片 · 电视剧 · 动漫",
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/guipian.js",
-    "sha256": "a8c4f3851102c765481b4bbe6125aa8f7c62dcaa4c5ed3f5316c12b4278c338d",
+    "sha256": "c3676480f195fa2cda32d35b386053cdcded8b7553f0f91b705957687038e79d",
     "changelog": "官方扩展源"
   },
   {
@@ -43,11 +45,11 @@
     "id": "hanxiaoquan",
     "name": "韩小圈",
     "version": "1.0.0",
-    "pagedSearch": true,
     "onlineSearch": true,
+    "pagedSearch": true,
     "description": "韩剧 · 韩国电影 · 综艺动漫",
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/hanxiaoquan.js",
-    "sha256": "4d59e0f850aab6ac65bb11d7b3c8b0c39bf235db951b13853c0e4b0ab196788e",
+    "sha256": "ace4d62032f3564e319f745c09deb1e7db3fd7e5b6d368a42c5e66d86e309b0d",
     "changelog": "官方扩展源"
   },
   {
@@ -56,9 +58,14 @@
     "name": "黄豆",
     "version": "1.0.0",
     "restricted": true,
+    "vip": true,
     "description": "精选短剧",
+    "detailFields": [
+      "vip",
+      "heat"
+    ],
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/huangdou.js",
-    "sha256": "a31a31814d831ff6cf7a44de26b06ac629155b4b28fa0b0af4ee9a7a05bea5f0",
+    "sha256": "45994d773ead1be9d0ab8a65f8e3014a939d877f3849ad6444886c1f48f1c839",
     "changelog": "官方扩展源"
   },
   {
@@ -72,7 +79,7 @@
     "groupName": "黄果",
     "entryName": "视频",
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/huangguo-video.js",
-    "sha256": "27f5cb3c25a3a385ebbb86036605f1dff9f27c070dda1016a0a69aee16ec0ed6",
+    "sha256": "352da8d61d0df426678c5ae7c66fa1d6bc767d6fca39ea3ff1a9d51ea56e3fd0",
     "changelog": "官方扩展源"
   },
   {
@@ -86,7 +93,7 @@
     "groupName": "黄果",
     "entryName": "AI",
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/huangguoai.js",
-    "sha256": "889a95b6e1bff6e53f4ae76381958992976f5b6294dd25eca40aa94ba5cf1032",
+    "sha256": "aa8440c7e5dbf42a3135ddcb0c1322267619fcde16fd7dc790986884a7207bbe",
     "changelog": "官方扩展源"
   },
   {
@@ -94,12 +101,12 @@
     "id": "huangju",
     "name": "剧果",
     "version": "1.0.0",
-    "pagedSearch": true,
     "restricted": true,
     "onlineSearch": true,
+    "pagedSearch": true,
     "description": "热门 · 最新 · 分类短剧",
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/huangju.js",
-    "sha256": "d57b004004222cc3ea17557c54f489a70eb6ed29a73ecd97cbb923ff41d1e13a",
+    "sha256": "5836bff84e7561e2354d0741d5566f4ed01efda312f750fbbaca1ced913bb3fb",
     "changelog": "官方扩展源"
   },
   {
@@ -107,11 +114,33 @@
     "id": "sorani",
     "name": "青空",
     "version": "1.0.0",
-    "pagedSearch": true,
     "onlineSearch": true,
+    "pagedSearch": true,
     "description": "番剧 · 剧场动画 · 特摄",
+    "settings": [
+      {
+        "key": "pageSize",
+        "title": "每页数量",
+        "type": "choice",
+        "default": "24",
+        "options": [
+          {
+            "value": "24",
+            "label": "="
+          },
+          {
+            "value": "48",
+            "label": "="
+          },
+          {
+            "value": "96",
+            "label": "="
+          }
+        ]
+      }
+    ],
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/sorani.js",
-    "sha256": "d496b5b26d0116880d6fbebdf3dac907c2fa18e3e63cbce12c41b3ee1bfada90",
+    "sha256": "70c1f28208c71fa63473281e121d6a2ba99ea9679075ff8a6bc8bc763e8e298e",
     "changelog": "官方扩展源"
   },
   {
@@ -119,12 +148,13 @@
     "id": "yeguo",
     "name": "野果",
     "version": "1.0.0",
-    "pagedSearch": true,
     "restricted": true,
+    "vip": true,
     "onlineSearch": true,
+    "pagedSearch": true,
     "description": "分类短剧 · 在线搜索",
     "url": "https://raw.githubusercontent.com/hongguojian/hongguojian-extensions/main/extensions/yeguo.js",
-    "sha256": "b916de965a199b4faf2650aca7c0889a02aef15a65620baa2f7058070788ead4",
+    "sha256": "90eca46d0d5be7f5834fb6a550abbf85b50d174d832e4d02d84e174b0df71003",
     "changelog": "官方扩展源"
   }
 ]

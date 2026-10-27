@@ -138,13 +138,6 @@ function get(ctx, path) {
   return {body: source.getText(ctx, path, {label: '黄果 AI 页面'}), url: address};
 }
 
-function integer(value, maximum) {
-  const raw = source.text(value);
-  if (!/^\d+$/.test(raw)) return null;
-  const number = Number(raw);
-  if (!Number.isInteger(number) || number < 0 || number > maximum) return null;
-  return number;
-}
 
 const text = (value) => source.text(value);
 const firstPresent = (values) => source.first(values);
@@ -279,7 +272,7 @@ function titleNeedsRepair(title, sourceID) {
 
 function mapEpisodes(row) {
   for (const key of ['totalEpisode', 'total_episode', 'episodeCount', 'episode_count', 'total', 'episodes']) {
-    const value = integer(row[key], 100000);
+    const value = source.int(row[key], 100000);
     if (value != null && value > 0) return value;
   }
   return 0;

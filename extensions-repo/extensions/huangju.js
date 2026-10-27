@@ -70,13 +70,13 @@ globalThis.source = hgkit.defineSource({
     }
     let pageSize = 20;
     if (row.pageSize != null) {
-      pageSize = integer(row.pageSize, 500);
+      pageSize = source.int(row.pageSize, 500);
       if (pageSize == null || pageSize < 1) {
         throw new Error('剧果分页数据格式无效');
       }
     }
     if (row.page != null) {
-      const actualPage = integer(row.page, 1000000);
+      const actualPage = source.int(row.page, 1000000);
       if (actualPage == null || actualPage !== page) {
         throw new Error('剧果返回的页码与请求不符');
       }
@@ -86,7 +86,7 @@ globalThis.source = hgkit.defineSource({
     }
     let hasMore = rows.length >= pageSize;
     if (row.total != null) {
-      const total = integer(row.total, 100000000);
+      const total = source.int(row.total, 100000000);
       if (total == null || total < rows.length) {
         throw new Error('剧果分页总数无效');
       }
@@ -139,7 +139,7 @@ globalThis.source = hgkit.defineSource({
       }
       let number = index;
       if (entry && entry.epNo != null) {
-        number = integer(entry.epNo, 100000);
+        number = source.int(entry.epNo, 100000);
         if (number == null) {
           throw new Error('剧果分集编号无效');
         }
@@ -200,11 +200,6 @@ function text(value) {
   return '';
 }
 
-function integer(value, maximum) {
-  const number = Number(text(value));
-  if (!Number.isInteger(number) || number < 0 || number > maximum) return null;
-  return number;
-}
 
 // —— 访客令牌：deviceId 与 token 持久化，401 时换新重试 ——
 
@@ -283,7 +278,7 @@ function dramaFromMap(row, sourceID) {
   if (!row || typeof row !== 'object' || typeof row.title !== 'string') return null;
   const id = source.text(row.id);
   if (!validID(id) || !row.title.trim()) return null;
-  if (row.totalEpisodes != null && integer(row.totalEpisodes, 100000) == null) return null;
+  if (row.totalEpisodes != null && source.int(row.totalEpisodes, 100000) == null) return null;
   if (!sourceID) {
     const slug = source.text(row.slug);
     if (!validID(slug)) return null;
@@ -299,7 +294,7 @@ function dramaFromMap(row, sourceID) {
   const tagValues = categories.slice();
   const region = source.text(row.region);
   if (region) tagValues.push(region.slice(0, 48));
-  const year = integer(row.year, 9999);
+  const year = source.int(row.year, 9999);
   if (year != null && year >= 1000) tagValues.push(year + '年');
   const score = source.text(row.score);
   const scoreValue = Number(score);

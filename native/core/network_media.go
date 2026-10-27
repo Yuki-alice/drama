@@ -178,7 +178,29 @@ func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *htt
 	return nil, errors.New("播放凭证刷新失败")
 }
 
-func (d *Downloader) fetchMediaPlaylist(ctx context.Context, address, referer string) (string, string, error) {
+// reservedMediaHeader 报告该头是否由宿主独占，扩展不得覆盖。
+func reservedMediaHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "host", "content-length", "connection", "range", "if-range",
+		"referer", "user-agent", "accept-encoding", "cookie":
+		return true
+	default:
+		return false
+	}
+}
+
+// applyExtensionMediaHeaders 应用扩展 resolve 声明的额外请求头。
+// 传输层头由宿主独占，扩展不能覆盖。
+func applyExtensionMediaHeaders(request *http.Request, headers map[string]string) {
+	for name, value := range headers {
+		if reservedMediaHeader(name) {
+			continue
+		}
+		request.Header.Set(name, value)
+	}
+}
+
+func (d *Downloader) fetchMediaPlaylist(ctx context.Context, address, referer string, headers map[string]string) (string, string, error) {
 	if !isProviderHTTPMediaURL(address) {
 		return "", "", errors.New("播放列表地址无效")
 	}
@@ -187,6 +209,7 @@ func (d *Downloader) fetchMediaPlaylist(ctx context.Context, address, referer st
 		return "", "", err
 	}
 	request.Header.Set("Referer", referer)
+	applyExtensionMediaHeaders(request, headers)
 	response, err := d.doMediaRequest(request)
 	if err != nil {
 		return "", "", err

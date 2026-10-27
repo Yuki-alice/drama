@@ -216,6 +216,8 @@ func TestNativeCatalogCacheFreshnessPagingAndRefresh(t *testing.T) {
 		installTestExtension(t, engine, "huangguoai")
 		setExtensionBaseURL(t, engine, "huangguoai", upstream.URL)
 		engine.downloader.limiter = newRequestLimiter(3, 0)
+		// fixture 是 httptest（127.0.0.1），需要打开本机访问豁免。
+		engine.downloader.allowLocalExtensionHost = true
 		return engine
 	}
 	engine := open()

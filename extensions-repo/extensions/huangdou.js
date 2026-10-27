@@ -5,6 +5,8 @@
 // @apiLevel 1
 // @restricted true
 // @description 精选短剧
+// @vip true
+// @detailFields vip,heat
 // ==/HongguoExtension==
 
 // 黄豆扩展源：设备签名 + gzip + AES 请求体 + 响应解密的四层协议（与原 Go provider 对齐）。
@@ -64,7 +66,7 @@ globalThis.source = hgkit.defineSource({
     }
     const row = detailRow(ctx, sourceID);
     const episodes = listOf(row.episodes);
-    let count = integer(firstPresent([row.episode_count, row.free_episodes]), 10000);
+    let count = source.int(firstPresent([row.episode_count, row.free_episodes]), 10000);
     if (count == null || count <= 0) count = episodes.length;
     if (count <= 0 || count > 10000) {
       throw new Error('黄豆返回了无效集数: ' + count);
@@ -73,7 +75,7 @@ globalThis.source = hgkit.defineSource({
     const seen = new Set();
     if (episodes.length) {
       episodes.forEach((episode, index) => {
-        let sequence = integer(firstPresent([episode.seq, episode.episode, episode.ep]), 10000);
+        let sequence = source.int(firstPresent([episode.seq, episode.episode, episode.ep]), 10000);
         if (sequence == null || sequence <= 0) sequence = index + 1;
         const key = String(sequence);
         if (seen.has(key)) return;
@@ -110,7 +112,7 @@ globalThis.source = hgkit.defineSource({
 
   resolve(ctx, task) {
     const sourceID = text(task.dramaId).replace(/^rp_/, '');
-    const sequence = integer(task.chapterId, 10000);
+    const sequence = source.int(task.chapterId, 10000);
     if (!sourceID || sequence == null || sequence < 1) {
       throw new Error('黄豆集数无效');
     }
@@ -373,13 +375,6 @@ const text = (value) => source.text(value);
 const firstPresent = (values) => source.first(values);
 const resolveURL = hgkit.url;
 
-function integer(value, maximum) {
-  const raw = typeof value === 'number' ? String(value) : text(value);
-  if (!/^\d+$/.test(raw)) return null;
-  const number = Number(raw);
-  if (!Number.isInteger(number) || number < 0 || number > maximum) return null;
-  return number;
-}
 
 function base(ctx) {
   return source.base(ctx);
@@ -452,7 +447,7 @@ function dramaFromMap(item) {
   if (description) {
     drama.description = description;
   }
-  const episodes = integer(text(item.episode_count), 100000);
+  const episodes = source.int(text(item.episode_count), 100000);
   if (episodes != null && episodes > 0) drama.episodes = episodes;
   const vip = vipFlag(item);
   if (vip != null) drama.vip = vip;
@@ -522,7 +517,7 @@ function vipEpisodes(item) {
   if (!Array.isArray(values)) return [];
   const out = [];
   for (const value of values) {
-    const index = integer(value, 10000);
+    const index = source.int(value, 10000);
     if (index != null && index > 0) out.push(index);
   }
   return out;
@@ -537,7 +532,7 @@ function episodeVIP(detail, episode, sequence) {
   const flag = episode ? vipFlag(episode) : null;
   if (flag != null) return flag;
   if (text(detail.pay_type).toLowerCase() === 'vip') {
-    const free = integer(text(detail.free_episodes), 10000);
+    const free = source.int(text(detail.free_episodes), 10000);
     return free != null && free >= 0 && sequence > free;
   }
   return false;

@@ -6,6 +6,7 @@
 // @description 番剧 · 剧场动画 · 特摄
 // @onlineSearch true
 // @pagedSearch true
+// @settings pageSize|每页数量|choice|24|24=24 条|48=48 条|96=96 条
 // ==/HongguoExtension==
 
 // 青空次元扩展源：纯 JSON API。
@@ -37,10 +38,12 @@ globalThis.source = hgkit.defineSource({
     if (query.length > 256) {
       throw new Error('青空次元搜索关键词过长');
     }
-    let route = '/video?page=' + page + '&size=' + source.pageSize;
+    // 每页数量可在「站源管理 → 青空 → 设置」里调整；未设置时用声明默认值。
+    const pageSize = hg.storage.get('pageSize') || source.pageSize;
+    let route = '/video?page=' + page + '&size=' + pageSize;
     if (query) {
       route = '/video/search?keyword=' + encodeURIComponent(query) +
-        '&page=' + page + '&size=' + source.pageSize;
+        '&page=' + page + '&size=' + pageSize;
     } else if (category) {
       route += '&categoryId=' + encodeURIComponent(category);
     }

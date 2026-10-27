@@ -5,6 +5,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/dop251/goja"
 )
 
 type fakeHost struct {
@@ -173,6 +176,77 @@ func scriptWithHeader(header, body string) string {
 	return "// ==HongguoExtension==\n" + header + "\n// ==/HongguoExtension==\n\n" + body
 }
 
+// 回归：调用 context 曾保存在共享 Registry 上，跨扩展并发调用会互相覆盖，
+// 导致 A 源的 fetch 拿到 B 源的 context（取消串源、race detector 报警）。
+func TestConcurrentExtensionsDoNotShareCallContext(t *testing.T) {
+	registry := NewRegistry(&fakeHost{})
+	build := func(id string) *Extension {
+		code := scriptWithHeader(
+			"// @id "+id+"\n// @name 并发源\n// @version 1.0.0\n// @apiLevel 1",
+			`globalThis.source = {
+  catalog(ctx, page) {
+    hg.fetch('https://example.test/' + page);
+    hg.fetch('https://example.test/' + page + '?next=1');
+    return {items: [], hasMore: false};
+  },
+};`,
+		)
+		manifest, err := ParseScript(code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		extension, err := NewExtension(manifest, code, registry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return extension
+	}
+	first, second := build("concurrent-a"), build("concurrent-b")
+	var group sync.WaitGroup
+	for index := 0; index < 4; index++ {
+		group.Add(2)
+		go func() {
+			defer group.Done()
+			if _, err := first.Call(context.Background(), "catalog", []any{map[string]any{}, 1, "", ""}); err != nil {
+				t.Errorf("a: %v", err)
+			}
+		}()
+		go func() {
+			defer group.Done()
+			if _, err := second.Call(context.Background(), "catalog", []any{map[string]any{}, 2, "", ""}); err != nil {
+				t.Errorf("b: %v", err)
+			}
+		}()
+	}
+	group.Wait()
+}
+
+// 回归：没有 deadline 的调用也必须能退出，否则死循环脚本会永久持有 e.mu。
+func TestScriptCallWatchdogInterruptsLoop(t *testing.T) {
+	code := scriptWithHeader(
+		"// @id spinner\n// @name 死循环源\n// @version 1.0.0\n// @apiLevel 1",
+		`globalThis.source = { catalog(ctx, page) { for (;;) {} } };`,
+	)
+	manifest, err := ParseScript(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension, err := NewExtension(manifest, code, NewRegistry(&fakeHost{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 用短 context 模拟看门狗提前触发（真跑 20 秒不适合测试）。
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := extension.Call(ctx, "catalog", []any{map[string]any{}, 1, "", ""}); err == nil {
+		t.Fatal("死循环脚本应当被中断")
+	}
+	// 中断后锁已释放、运行时已重建，可以继续服务（该脚本仍是死循环，故继续报错）。
+	if _, err := extension.Call(ctx, "catalog", []any{map[string]any{}, 1, "", ""}); err == nil {
+		t.Fatal("死循环脚本重建后仍应超时")
+	}
+}
+
 func TestScriptManifestValidation(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -216,6 +290,51 @@ func TestManifestMetadata(t *testing.T) {
 		manifest.GroupName != "黄果" || manifest.EntryName != "视频" ||
 		!manifest.OnlineSearch || !manifest.PagedSearch || manifest.APILevel != CurrentAPILevel {
 		t.Fatalf("metadata mismatch: %+v", manifest)
+	}
+}
+
+// 能力声明（vip / danmaku / detailFields）必须能被解析与校验，
+// 它们是宿主用来替代按源 ID 硬编码的唯一依据。
+func TestManifestCapabilities(t *testing.T) {
+	manifest, err := ParseScript(scriptWithHeader(`// @id abc
+// @name 源
+// @version 1.0.0
+// @vip true
+// @danmaku true
+// @detailFields vip, Heat ,onlineDate`, "globalThis.source = {};"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.VIP || !manifest.Danmaku {
+		t.Fatalf("capability flags lost: %+v", manifest)
+	}
+	want := []string{"vip", "heat", "onlinedate"}
+	if len(manifest.DetailFields) != len(want) {
+		t.Fatalf("detailFields mismatch: %v", manifest.DetailFields)
+	}
+	for index, field := range want {
+		if manifest.DetailFields[index] != field {
+			t.Fatalf("detailFields[%d]=%q want %q", index, manifest.DetailFields[index], field)
+		}
+	}
+
+	// 无效字段、重复字段、超量字段都必须拒绝。
+	for _, header := range []string{
+		"// @id abc\n// @name 源\n// @version 1.0.0\n// @detailFields vip,unknown",
+		"// @id abc\n// @name 源\n// @version 1.0.0\n// @detailFields vip,vip",
+		"// @id abc\n// @name 源\n// @version 1.0.0\n// @detailFields vip,heat,views,onlineDate,description,tags,releaseStatus",
+	} {
+		if _, err := ParseScript(scriptWithHeader(header, "globalThis.source = {};")); err == nil {
+			t.Fatalf("invalid detailFields accepted: %s", header)
+		}
+	}
+	// 未声明时三者都应保持关闭。
+	plain, err := ParseScript(scriptWithHeader("// @id abc\n// @name 源\n// @version 1.0.0", "globalThis.source = {};"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.VIP || plain.Danmaku || len(plain.DetailFields) != 0 {
+		t.Fatalf("capabilities defaulted to true: %+v", plain)
 	}
 }
 
@@ -437,5 +556,250 @@ globalThis.source = hgkit.defineSource({
 		cloud["origin"] != "https://media.test" || cloud["referer"] != "https://example.test/" ||
 		cloud["expiresAt"] != int64(4102444800) {
 		t.Fatalf("cloudfront credentials = %v", cloud)
+	}
+}
+
+// source.cards 把"找卡片→取字段→去重→限上限"的骨架沉到宿主，
+// 6 个扩展此前各写一份同构的 parseCards。这里覆盖三种取值方式。
+func TestHostKitCards(t *testing.T) {
+	host := &fakeHost{}
+	code := scriptWithHeader(`// @id cards
+// @name 卡片源
+// @version 1.0.0`, `
+globalThis.source = hgkit.defineSource({
+  name: '卡片源',
+  baseURL: 'https://example.test',
+  catalog(ctx, page) { return source.page([], page); },
+  detail(ctx, id) { return {drama: {sourceId: id, title: 'x'}, chapters: []}; },
+  probe() {
+    const body = '<ul class="list">' +
+      '<li><a class="card" href="/v/11.html" title=" 剧名A ">' +
+      '<img data-src="/c/11.jpg"><span class="note">更新至12集</span></a></li>' +
+      '<li><a class="card" href="/v/22.html" title="剧名B">' +
+      '<img data-src="/c/22.jpg"><span class="note">完结</span></a></li>' +
+      '<li><a class="card" href="/v/11.html" title="重复条目"></a></li>' +
+      '</ul>';
+    const rows = source.cards(body, {
+      container: 'ul.list',
+      item: 'a.card',
+      id: /\/v\/(\d+)\.html/,
+      title: 'attr:title',
+      cover: 'img@data-src',
+      remark: '.note',
+      defaultCategory: '影视',
+    });
+    // 窗口模式：只取卡片后续 N 字符，模拟 hanxiaoquan 的写法。
+    const windowed = source.cards(
+      '<a href="/v/33.html" title="窗口剧">' + 'x'.repeat(700) +
+      '<img data-src="/c/wrong.jpg"></a>',
+      {
+        item: 'a',
+        id: /\/v\/(\d+)\.html/,
+        title: 'attr:title',
+        cover: 'img@data-src',
+        window: 300,
+      },
+    );
+    return {
+      count: rows.length,
+      first: rows[0],
+      second: rows[1],
+      windowedCover: windowed.length ? windowed[0].cover : '',
+    };
+  },
+});
+`)
+	manifest, err := ParseScript(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension, err := NewExtension(manifest, code, NewRegistry(host))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := extension.Call(context.Background(), "probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := result.(map[string]any)
+
+	// 重复 ID 应被去掉：3 张卡片只留 2 条。
+	if row["count"] != int64(2) {
+		t.Fatalf("cards count = %v", row["count"])
+	}
+	first := row["first"].(map[string]any)
+	if first["sourceId"] != "11" || first["title"] != "剧名A" {
+		t.Fatalf("first card = %v", first)
+	}
+	// 相对封面应解析成绝对地址并通过媒体地址校验。
+	if first["cover"] != "https://example.test/c/11.jpg" {
+		t.Fatalf("cover = %v", first["cover"])
+	}
+	if first["remark"] != "更新至12集" || first["category"] != "影视" {
+		t.Fatalf("first card remark/category = %v", first)
+	}
+	// 窗口模式：只取前 300 字符，后面的 img 不该被读到。
+	if row["windowedCover"] != "" {
+		t.Fatalf("window should hide trailing cover, got %v", row["windowedCover"])
+	}
+}
+
+// source.macPlaylist 覆盖苹果 CMS 的两种播放页形态。
+func TestHostKitMacPlaylist(t *testing.T) {
+	host := &fakeHost{}
+	code := scriptWithHeader(`// @id mac
+// @name MacCMS 源
+// @version 1.0.0`, `
+globalThis.source = hgkit.defineSource({
+  name: 'MacCMS 源',
+  baseURL: 'https://example.test',
+  catalog(ctx, page) { return source.page([], page); },
+  detail(ctx, id) { return {drama: {sourceId: id, title: 'x'}, chapters: []}; },
+  probe() {
+    const now = source.macPlaylist({}, '/play/1-1-1.html', {
+      body: '<script>var now="https://media.test/v/1.m3u8";</script>',
+    });
+    const direct = source.macPlaylist({}, '/play/1-1-1.html', {
+      body: '<div>https://media.test/direct/2.mp4?token=a</div>',
+    });
+    let missing = '';
+    try {
+      source.macPlaylist({}, '/play/1-1-1.html', {body: '<div>no media here</div>'});
+    } catch (error) {
+      missing = error.message;
+    }
+    return {now: now.url, nowReferer: now.referer, direct: direct.url, missing: missing};
+  },
+});
+`)
+	manifest, err := ParseScript(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension, err := NewExtension(manifest, code, NewRegistry(host))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := extension.Call(context.Background(), "probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := result.(map[string]any)
+	if row["now"] != "https://media.test/v/1.m3u8" {
+		t.Fatalf("var now extraction = %v", row["now"])
+	}
+	if row["nowReferer"] != "https://example.test/" {
+		t.Fatalf("referer = %v", row["nowReferer"])
+	}
+	if row["direct"] != "https://media.test/direct/2.mp4?token=a" {
+		t.Fatalf("direct url = %v", row["direct"])
+	}
+	if missing, _ := row["missing"].(string); !strings.Contains(missing, "暂无可用播放地址") {
+		t.Fatalf("missing media should error, got %q", missing)
+	}
+}
+
+// source.int 是 7 个扩展此前各自实现的 integer() 的统一版本。
+// 语义固定为"非负整数，超上限返回 null"，这里锁定边界。
+func TestHostKitIntBoundaries(t *testing.T) {
+	code := scriptWithHeader(`// @id ints
+// @name 整数源
+// @version 1.0.0`, `
+globalThis.source = hgkit.defineSource({
+  name: '整数源', baseURL: 'https://e.test',
+  catalog(ctx, p) { return source.page([], p); },
+  detail(ctx, i) { return {drama: {sourceId: i, title: 'x'}, chapters: []}; },
+  probe() {
+    return {
+      number: source.int(42, 100),
+      numericText: source.int(' 42 ', 100),
+      zero: source.int(0, 100),
+      negative: source.int(-1, 100),
+      overLimit: source.int(101, 100),
+      notNumber: source.int('abc', 100),
+      decimal: source.int(1.9, 100),
+      empty: source.int('', 100),
+    };
+  },
+});
+`)
+	manifest, err := ParseScript(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension, err := NewExtension(manifest, code, NewRegistry(&fakeHost{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := extension.Call(context.Background(), "probe", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := result.(map[string]any)
+	// 有效值：数字、带空格的数字串、0；小数向下取整。
+	if row["number"] != int64(42) || row["numericText"] != int64(42) || row["zero"] != int64(0) {
+		t.Fatalf("valid ints = %v", row)
+	}
+	if row["decimal"] != int64(1) {
+		t.Fatalf("decimal should floor, got %v", row["decimal"])
+	}
+	// 无效值：负数、超限、非数字、空串一律 null。
+	for _, key := range []string{"negative", "overLimit", "notNumber", "empty"} {
+		if row[key] != nil {
+			t.Fatalf("%s should be nil, got %v", key, row[key])
+		}
+	}
+}
+
+// hgkit 按层拆分后，注入顺序就是依赖顺序。若有人在 kit-core 里引用
+// 上层能力（例如 cleanText 依赖 hg.html），运行时会得到 undefined。
+// 这里逐层加载并断言公开面在每一步之后都成立。
+func TestHostKitLayerOrder(t *testing.T) {
+	if len(hostKitSources) < 2 {
+		t.Fatal("工具库应至少拆成两层")
+	}
+	// 每层必须声明自己的文件名，便于 goja 报错定位。
+	for _, file := range hostKitSources {
+		if file.name == "" || file.source == "" {
+			t.Fatalf("工具库片段缺少名称或内容: %+v", file.name)
+		}
+	}
+	// 顺序断言：core 建立命名空间 → ... → kit.js 最后装配。
+	if hostKitSources[0].name != "kit-core.js" {
+		t.Fatalf("首层应为 kit-core.js，实际 %s", hostKitSources[0].name)
+	}
+	if last := hostKitSources[len(hostKitSources)-1].name; last != "kit.js" {
+		t.Fatalf("末层应为 kit.js，实际 %s", last)
+	}
+
+	// 逐层加载：任何一层单独失败都会在这里暴露，而不是等到扩展运行期。
+	vm := goja.New()
+	for _, file := range hostKitSources {
+		program, err := goja.Compile(file.name, file.source, false)
+		if err != nil {
+			t.Fatalf("%s 编译失败: %v", file.name, err)
+		}
+		if _, err := vm.RunProgram(program); err != nil {
+			t.Fatalf("%s 执行失败: %v", file.name, err)
+		}
+	}
+	kit := vm.Get("hgkit")
+	if kit == nil || goja.IsUndefined(kit) {
+		t.Fatal("hgkit 命名空间未建立")
+	}
+	object, ok := kit.(*goja.Object)
+	if !ok {
+		t.Fatal("hgkit 必须是对象")
+	}
+	// 装配完成后，扩展会用到的公开面必须齐全。
+	for _, name := range []string{
+		"defineSource", "url", "text", "int", "pick", "first",
+		"cleanText", "tags", "mediaURL", "isMediaURL", "coverURL",
+		"metaContent", "page", "chapters", "drama", "fetchText", "fetchJSON",
+		"cloudFrontCredentials", "extractMacMedia", "cards", "fieldValue",
+	} {
+		if value := object.Get(name); value == nil || goja.IsUndefined(value) {
+			t.Fatalf("hgkit.%s 缺失", name)
+		}
 	}
 }

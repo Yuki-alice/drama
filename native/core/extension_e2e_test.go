@@ -76,12 +76,14 @@ func TestExtensionEndToEnd(t *testing.T) {
 		nativeState.Unlock()
 	})
 	engine.downloader.client.Transport = server.Client().Transport
+	// 合成站点是 httptest（127.0.0.1），需要打开本机访问豁免。
+	engine.downloader.allowLocalExtensionHost = true
 
 	// 安装前不可用。
 	if nativeSourceAvailable("e2etest") {
 		t.Fatal("extension should be unavailable before install")
 	}
-	installed, err := engine.installExtension(context.Background(), nativeInput{
+	installed, err := engine.installExtension(parityContext(server), nativeInput{
 		Source:          "e2etest",
 		ExtensionURL:    server.URL + "/e2etest.js",
 		ExtensionSHA256: hex.EncodeToString(digest[:]),

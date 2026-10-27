@@ -87,7 +87,9 @@ func (engine *nativeEngine) loadSourceRecords() {
 		return
 	}
 	for source, record := range records {
-		if !isKnownProviderSource(source) {
+		// 只做 ID 形态校验：来源是内置还是扩展由安装表决定，
+		// 白名单过滤会丢掉第三方扩展的更新状态。
+		if !validExtensionSourceID(source) {
 			continue
 		}
 		if record.Running {
@@ -135,7 +137,7 @@ func (engine *nativeEngine) sourceStatusLocked(source string) nativeSourceStatus
 	warning := engine.storageWarningLocked()
 	stage := record.Stage
 	unknownVIP := 0
-	if source == sourceHuangdou {
+	if engine.sourceSupportsVIP(source) {
 		for _, drama := range engine.catalogs[source] {
 			if drama.VIP == nil {
 				unknownVIP++
@@ -178,7 +180,7 @@ func (engine *nativeEngine) startSourceTask(source, operation string, drama nati
 	default:
 		return nativeSourceStatus{}, errors.New("无效的站源操作")
 	}
-	if operation == "vipMetadata" && source != sourceHuangdou {
+	if operation == "vipMetadata" && !engine.sourceSupportsVIP(source) {
 		return nativeSourceStatus{}, errors.New("当前站源不需要补齐 VIP 资料")
 	}
 	if drama.ID != "" && (!nativeDramaAvailable(drama) || sourceFromDramaID(drama.ID) != source) {
@@ -347,7 +349,7 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 		if time.Now().Before(record.MetadataRetryAt[drama.ID]) {
 			continue
 		}
-		if operation == "metadata" || operation == "vipMetadata" || drama.Episodes <= 0 || drama.Description == "" || source == sourceHuangdou && drama.VIP == nil {
+		if operation == "metadata" || operation == "vipMetadata" || drama.Episodes <= 0 || drama.Description == "" || engine.sourceSupportsVIP(source) && drama.VIP == nil {
 			pending = append(pending, drama)
 		}
 	}
@@ -365,10 +367,10 @@ func (engine *nativeEngine) updateSource(ctx context.Context, source, operation 
 		if err == nil {
 			fresh := result.(map[string]any)["drama"].(nativeDrama)
 			var metadataErr error
-			if nativeNeedsExtraMetadata(fresh) {
+			if nativeNeedsExtraMetadata(engine.downloader, fresh) {
 				fresh, metadataErr = engine.nativeExtraMetadata(ctx, fresh)
 			}
-			unknownVIP = source == sourceHuangdou && fresh.VIP == nil
+			unknownVIP = engine.sourceSupportsVIP(source) && fresh.VIP == nil
 			engine.mu.Lock()
 			engine.catalogs[source] = mergeNativeCatalog(engine.catalogs[source], []nativeDrama{fresh})
 			for key, items := range engine.catalogs {

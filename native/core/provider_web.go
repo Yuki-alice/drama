@@ -116,7 +116,7 @@ func (d *Downloader) prepareWebProviderMedia(ctx context.Context, media provider
 		if media.credentials != nil {
 			ctx = providerMediaContext(ctx, media.credentials)
 		}
-		media.Playlist, media.URL, err = d.fetchMediaPlaylist(ctx, media.URL, media.Referer)
+		media.Playlist, media.URL, err = d.fetchMediaPlaylist(ctx, media.URL, media.Referer, media.Headers)
 		if err != nil {
 			return providerMedia{}, fmt.Errorf("获取%s播放列表失败：%w", sourceName, err)
 		}

@@ -40,8 +40,24 @@ FIELD_MAP = {
     "pagedsearch": "pagedSearch",
     "suggestions": "suggestions",
     "minapp": "minApp",
+    "vip": "vip",
+    "danmaku": "danmaku",
+    "detailfields": "detailFields",
+    "settings": "settings",
 }
-BOOL_FIELDS = {"restricted", "onlineSearch", "pagedSearch", "suggestions"}
+BOOL_FIELDS = {"restricted", "onlineSearch", "pagedSearch", "suggestions", "vip", "danmaku"}
+
+# 与 native/ext/manifest.go 的 detailFieldValues 保持一致（统一小写）。
+DETAIL_FIELD_VALUES = {
+    "vip",
+    "heat",
+    "views",
+    "onlinedate",
+    "description",
+    "tags",
+    "releasestatus",
+}
+MAX_DETAIL_FIELDS = 6
 
 
 def fail(message: str) -> None:
@@ -79,6 +95,22 @@ def parse_manifest(path: Path) -> tuple[dict, str]:
     for key in ("description", "group", "groupName", "entryName", "minApp"):
         if fields.get(key):
             manifest[key] = fields[key]
+    if fields.get("settings"):
+        manifest["settings"] = parse_settings(path, fields["settings"])
+    if fields.get("detailFields"):
+        parts = [
+            part.strip().lower()
+            for part in fields["detailFields"].split(",")
+            if part.strip()
+        ]
+        if len(parts) > MAX_DETAIL_FIELDS:
+            fail(f"{path}: detailFields 不能超过 {MAX_DETAIL_FIELDS} 个")
+        unknown = [part for part in parts if part not in DETAIL_FIELD_VALUES]
+        if unknown:
+            fail(f"{path}: detailFields 含无效字段 {', '.join(unknown)}")
+        if len(set(parts)) != len(parts):
+            fail(f"{path}: detailFields 有重复项")
+        manifest["detailFields"] = parts
     if not ID_RE.fullmatch(manifest["id"]):
         fail(f"{path}: id 必须是 2–32 位小写字母、数字或连字符")
     if manifest["id"] != path.stem:
@@ -115,6 +147,57 @@ def check_syntax(path: Path, source: str) -> None:
     except subprocess.CalledProcessError as error:
         fail(f"{path}: JavaScript 语法错误\n{error.stderr.decode('utf-8', 'replace')}")
 
+
+
+SETTING_TYPES = {"input", "toggle", "choice"}
+MAX_SETTINGS = 6
+BUILTIN_SETTING_KEYS = {"baseURL"}
+
+
+def parse_settings(path: Path, raw: str) -> list[dict]:
+    """校验并解析 @settings 声明（与 native/ext/manifest.go 的 parseSettings 对齐）。"""
+    declarations = [item.strip() for item in raw.split(";") if item.strip()]
+    if len(declarations) > MAX_SETTINGS:
+        fail(f"{path}: 设置项不能超过 {MAX_SETTINGS} 个")
+    settings = []
+    seen = set()
+    for declaration in declarations:
+        parts = [part.strip() for part in declaration.split("|")]
+        if len(parts) < 3:
+            fail(f"{path}: 设置 {declaration!r} 需要至少 key|title|type")
+        key, title, kind = parts[0], parts[1], parts[2].lower()
+        if not key or key in BUILTIN_SETTING_KEYS:
+            fail(f"{path}: 设置 key {key!r} 无效或与内置项冲突")
+        if key in seen:
+            fail(f"{path}: 设置 key {key!r} 重复")
+        seen.add(key)
+        if not title:
+            fail(f"{path}: 设置 {key!r} 缺少标题")
+        if kind not in SETTING_TYPES:
+            fail(f"{path}: 设置 {key!r} 类型无效（input / toggle / choice）")
+        entry = {"key": key, "title": title, "type": kind}
+        if len(parts) > 3 and parts[3]:
+            entry["default"] = parts[3]
+        # 与 Go 侧对齐：choice 的第 5 段起全是选项，没有 placeholder。
+        rest = parts[4:]
+        if kind == "choice":
+            options = [item for item in rest if item]
+            if not 2 <= len(options) <= 12:
+                fail(f"{path}: 设置 {key!r} 需要 2–12 个选项")
+            parsed = []
+            for option in options:
+                value, label, found = option.partition("=")
+                if not found or not value.strip() or not label.strip():
+                    fail(f"{path}: 设置 {key!r} 的选项 {option!r} 需要 value=label")
+                parsed.append({"value": value.strip(), "label": label.strip()})
+            entry["options"] = parsed
+        else:
+            if rest and rest[0]:
+                entry["placeholder"] = rest[0]
+            if len(rest) > 1:
+                fail(f"{path}: 设置 {key!r} 只有 choice 类型可以带选项")
+        settings.append(entry)
+    return settings
 
 def main() -> None:
     parser = argparse.ArgumentParser()

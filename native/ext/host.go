@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Request 是宿主网络能力的入参。
@@ -38,6 +39,16 @@ type Host interface {
 
 // ErrScriptCancel 表示脚本执行被 context 取消中断。
 var ErrScriptCancel = errors.New("扩展脚本执行已取消")
+
+// ErrScriptTimeout 表示脚本执行超过单次调用上限。
+var ErrScriptTimeout = errors.New("扩展脚本执行超时")
+
+// ScriptCallTimeout 是单次脚本调用的硬上限。
+//
+// 调用方通常已经给了更短的 context（目录 60s、预加载 15s 等），本上限只是
+// 兜底：没有 deadline 的调用（如 ValidCategory、RankingBoards）也必须能退出，
+// 否则死循环脚本会永久持有 e.mu，该站源后续所有请求全部挂死。
+const ScriptCallTimeout = 20 * time.Second
 
 // Extension 是一个已加载的扩展源运行时。
 // goja.Runtime 非并发安全：同源请求串行执行，取消通过 vm.Interrupt 注入；
@@ -82,10 +93,18 @@ func (e *Extension) Call(ctx context.Context, method string, args []any) (any, e
 	return e.call(ctx, method, args)
 }
 
-// call 在锁保护下执行脚本方法；ctx 取消时中断 VM 并等待执行协程退出。
+// call 在锁保护下执行脚本方法；ctx 取消或超过 ScriptCallTimeout 时中断 VM
+// 并等待执行协程退出。
 func (e *Extension) call(ctx context.Context, method string, args []any) (any, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// 无论调用方是否给 deadline，都套一层硬上限；已更短的 deadline 由
+	// WithTimeout 保留（它取两者中较早到期的一个）。
+	ctx, cancel := context.WithTimeout(ctx, ScriptCallTimeout)
+	defer cancel()
 	type result struct {
 		value any
 		err   error
@@ -116,6 +135,9 @@ func (e *Extension) call(ctx context.Context, method string, args []any) (any, e
 		}
 		if outcome.err != nil {
 			return nil, outcome.err
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%s 执行超时: %w", method, ErrScriptTimeout)
 		}
 		return nil, ctx.Err()
 	}

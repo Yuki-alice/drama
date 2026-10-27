@@ -48,7 +48,60 @@ type Manifest struct {
 	PagedSearch  bool   `json:"pagedSearch,omitempty"`
 	Suggestions  bool   `json:"suggestions,omitempty"`
 	MinApp       string `json:"minApp,omitempty"`
+	// VIP 声明该源会返回 VIP 标记：界面据此显示 VIP 筛选与详情状态。
+	// 不声明时宿主不会按 VIP 过滤，也不会提示"VIP 状态待补齐"。
+	VIP bool `json:"vip,omitempty"`
+	// Danmaku 声明该源支持弹幕：播放器据此显示弹幕开关并允许请求弹幕。
+	Danmaku bool `json:"danmaku,omitempty"`
+	// DetailFields 列出目录里可能缺失、需要拉详情补齐的字段
+	// （vip / heat / views / onlineDate / description / tags）。
+	// 取代宿主里按源 ID 硬编码的补齐规则。
+	DetailFields []string `json:"detailFields,omitempty"`
+	// Settings 声明该源的可配置项。宿主据此渲染通用表单，
+	// 值存进该源的 hg.storage，扩展用 hg.storage.get(key) 读取。
+	// 「镜像地址」（baseURL）是所有扩展都有的内置项，不必声明。
+	Settings []Setting `json:"settings,omitempty"`
 }
+
+// Setting 是扩展声明的一项可配置设置。
+type Setting struct {
+	Key         string `json:"key"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	// Type 决定控件：input（文本）/ toggle（开关）/ choice（单选）。
+	Type string `json:"type"`
+	// Default 是未设置时的取值。
+	Default string `json:"default,omitempty"`
+	// Placeholder 仅对 input 有意义。
+	Placeholder string `json:"placeholder,omitempty"`
+	// Options 仅对 choice 有意义，形如 "a=选项A|b=选项B"。
+	Options []SettingOption `json:"options,omitempty"`
+}
+
+// SettingOption 是 choice 型设置的一个选项。
+type SettingOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// settingTypes 是允许的控件类型。
+var settingTypes = map[string]bool{"input": true, "toggle": true, "choice": true}
+
+// BuiltinSettingBaseURL 是宿主为每个扩展提供的内置设置（镜像地址）。
+// 扩展不能重复声明；core 侧保存时也用它作为键名。
+const BuiltinSettingBaseURL = "baseURL"
+
+// maxSettings 限制每源设置数量，避免表单无限长。
+const maxSettings = 6
+
+// detailFieldValues 是 DetailFields 允许的取值（统一小写，扩展可写任意大小写）。
+var detailFieldValues = map[string]bool{
+	"vip": true, "heat": true, "views": true, "onlinedate": true,
+	"description": true, "tags": true, "releasestatus": true,
+}
+
+// maxDetailFields 限制补齐字段数量，避免扩展声明一长串导致每次都要拉详情。
+const maxDetailFields = 6
 
 // ParseScript 从扩展脚本的文件头注释中解析并校验元数据。
 //
@@ -82,6 +135,14 @@ func ParseScript(code string) (Manifest, error) {
 		PagedSearch:  parseHeaderBool(fields["pagedsearch"]),
 		Suggestions:  parseHeaderBool(fields["suggestions"]),
 		MinApp:       strings.TrimSpace(fields["minapp"]),
+		VIP:          parseHeaderBool(fields["vip"]),
+		Danmaku:      parseHeaderBool(fields["danmaku"]),
+		DetailFields: parseDetailFields(fields["detailfields"]),
+	}
+	if settings, settingsErr := parseSettings(fields["settings"]); settingsErr != nil {
+		return Manifest{}, settingsErr
+	} else {
+		manifest.Settings = settings
 	}
 	if raw := strings.TrimSpace(fields["restricted"]); raw != "" {
 		value, err := parseHeaderBoolStrict(raw)
@@ -135,6 +196,150 @@ func (manifest Manifest) Validate() error {
 	}
 	if manifest.APILevel <= 0 || manifest.APILevel > CurrentAPILevel {
 		return fmt.Errorf("扩展 API 级别 %d 超出宿主支持范围（1–%d）", manifest.APILevel, CurrentAPILevel)
+	}
+	if len(manifest.DetailFields) > maxDetailFields {
+		return fmt.Errorf("扩展补齐字段不能超过 %d 个", maxDetailFields)
+	}
+	seen := map[string]bool{}
+	for _, field := range manifest.DetailFields {
+		if !detailFieldValues[field] {
+			return fmt.Errorf("扩展补齐字段 %q 无效", field)
+		}
+		if seen[field] {
+			return fmt.Errorf("扩展补齐字段 %q 重复", field)
+		}
+		seen[field] = true
+	}
+	return nil
+}
+
+// parseDetailFields 解析逗号分隔的补齐字段列表，大小写与空格不敏感。
+func parseDetailFields(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	fields := make([]string, 0, len(parts))
+	for _, part := range parts {
+		field := strings.ToLower(strings.TrimSpace(part))
+		if field != "" {
+			fields = append(fields, field)
+		}
+	}
+	return fields
+}
+
+// parseSettings 解析 @settings 声明。
+//
+// 语法（多项用 ; 分隔，每项用 | 分隔字段）：
+//
+//	// @settings useProxy|使用代理|toggle|false
+//	// @settings quality|画质偏好|choice|auto|auto=自动|1080=1080P
+//
+// 字段顺序：key|title|type|default|其余。
+//   - input / toggle：第 5 段是 placeholder。
+//   - choice：第 5 段起全部是选项（value=label），没有 placeholder——
+//     否则 "24|24=24 条|..." 会把第一个选项当成 placeholder 吃掉。
+//
+// 用紧凑语法而不是 JSON：文件头是注释，写 JSON 会很难维护。
+func parseSettings(raw string) ([]Setting, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	declarations := []string{}
+	for _, line := range strings.Split(raw, ";") {
+		if line = strings.TrimSpace(line); line != "" {
+			declarations = append(declarations, line)
+		}
+	}
+	if len(declarations) > maxSettings {
+		return nil, fmt.Errorf("扩展设置项不能超过 %d 个", maxSettings)
+	}
+	settings := make([]Setting, 0, len(declarations))
+	seen := map[string]bool{}
+	for _, declaration := range declarations {
+		parts := strings.Split(declaration, "|")
+		if len(parts) < 3 {
+			return nil, fmt.Errorf("扩展设置 %q 需要至少 key|title|type", declaration)
+		}
+		setting := Setting{
+			Key:   strings.TrimSpace(parts[0]),
+			Title: strings.TrimSpace(parts[1]),
+			Type:  strings.ToLower(strings.TrimSpace(parts[2])),
+		}
+		if len(parts) > 3 {
+			setting.Default = strings.TrimSpace(parts[3])
+		}
+		rest := parts[min(4, len(parts)):]
+		if setting.Type == "choice" {
+			for _, option := range rest {
+				option = strings.TrimSpace(option)
+				if option == "" {
+					continue
+				}
+				value, label, found := strings.Cut(option, "=")
+				if !found {
+					return nil, fmt.Errorf("扩展设置选项 %q 需要 value=label", option)
+				}
+				setting.Options = append(setting.Options, SettingOption{
+					Value: strings.TrimSpace(value),
+					Label: strings.TrimSpace(label),
+				})
+			}
+		} else if len(rest) > 0 {
+			setting.Placeholder = strings.TrimSpace(rest[0])
+		}
+		if err := validateSetting(setting); err != nil {
+			return nil, err
+		}
+		if seen[setting.Key] {
+			return nil, fmt.Errorf("扩展设置 %q 重复", setting.Key)
+		}
+		seen[setting.Key] = true
+		settings = append(settings, setting)
+	}
+	return settings, nil
+}
+
+// validateSetting 校验单项设置的字段。
+func validateSetting(setting Setting) error {
+	key := strings.TrimSpace(setting.Key)
+	if key == "" || len(key) > 32 {
+		return errors.New("扩展设置 key 需为 1–32 个字符")
+	}
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+		default:
+			return fmt.Errorf("扩展设置 key %q 只能包含字母、数字、- _ .", key)
+		}
+	}
+	if key == BuiltinSettingBaseURL {
+		return fmt.Errorf("扩展设置 %q 是宿主内置项，不能重复声明", key)
+	}
+	if title := strings.TrimSpace(setting.Title); title == "" || len([]rune(title)) > 24 {
+		return errors.New("扩展设置标题需为 1–24 个字")
+	}
+	if description := strings.TrimSpace(setting.Description); len([]rune(description)) > 80 {
+		return errors.New("扩展设置描述不能超过 80 个字")
+	}
+	if !settingTypes[setting.Type] {
+		return fmt.Errorf("扩展设置 %q 类型无效（input / toggle / choice）", key)
+	}
+	if setting.Type == "choice" {
+		if len(setting.Options) < 2 || len(setting.Options) > 12 {
+			return fmt.Errorf("扩展设置 %q 需要 2–12 个选项", key)
+		}
+		for _, option := range setting.Options {
+			if option.Value == "" || option.Label == "" {
+				return fmt.Errorf("扩展设置 %q 的选项不能为空", key)
+			}
+		}
+	} else if len(setting.Options) > 0 {
+		return fmt.Errorf("扩展设置 %q 只有 choice 类型可以带选项", key)
 	}
 	return nil
 }

@@ -44,6 +44,8 @@ func sourceFixtureEngine(t *testing.T, transport sourceFixtureTransport) *native
 	engine.downloader.client.Transport = transport
 	engine.downloader.limiter = newRequestLimiter(3, 0)
 	engine.downloader.cfg.Retries = 1
+	// 测试把扩展站点根指向 httptest（127.0.0.1），需要打开本机访问豁免。
+	engine.downloader.allowLocalExtensionHost = true
 	engine.downloader.hongguoClient().state.Registered = true
 	// 生产环境始终只有一个进程级 engine；测试挂在全局，供 nativeSourceAvailable 等入口查询。
 	nativeState.Lock()

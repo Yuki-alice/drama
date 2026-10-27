@@ -232,7 +232,7 @@ func (d *Downloader) sourceProbeResources(ctx context.Context, media providerMed
 		if !master {
 			return key, segment, nil
 		}
-		body, address, err = d.fetchMediaPlaylist(ctx, segment, media.Referer)
+		body, address, err = d.fetchMediaPlaylist(ctx, segment, media.Referer, media.Headers)
 		if err != nil {
 			return "", "", err
 		}

@@ -7,6 +7,7 @@
 // @description 分类短剧 · 在线搜索
 // @onlineSearch true
 // @pagedSearch true
+// @vip true
 // ==/HongguoExtension==
 
 // 野果扩展源：PWA 站点的 JS 移植（与 Go provider 对齐）。
@@ -77,15 +78,15 @@ globalThis.source = hgkit.defineSource({
     if (!Array.isArray(rows) || rows.length > 500) {
       throw new Error('野果目录格式无效');
     }
-    const actualPage = integer(firstPresent(data, ['page', 'page_num', 'pageNum', 'current_page', 'currentPage']), 1000000);
+    const actualPage = source.int(firstPresent(data, ['page', 'page_num', 'pageNum', 'current_page', 'currentPage']), 1000000);
     if (actualPage != null && actualPage !== page) {
       throw new Error('野果分页信息无效，请重试');
     }
-    let limit = integer(firstPresent(data, ['limit', 'page_size', 'pageSize', 'per_page', 'perPage']), 500);
+    let limit = source.int(firstPresent(data, ['limit', 'page_size', 'pageSize', 'per_page', 'perPage']), 500);
     if (limit == null || limit < 1 || limit < rows.length) {
       limit = rows.length;
     }
-    let total = integer(firstPresent(data, ['total', 'total_count', 'totalCount']), 100000000);
+    let total = source.int(firstPresent(data, ['total', 'total_count', 'totalCount']), 100000000);
     if (total != null && total < rows.length) total = null;
     let hasMore = limit > 0 && rows.length >= limit;
     if (total != null && limit > 0) {
@@ -138,7 +139,7 @@ globalThis.source = hgkit.defineSource({
     for (const episode of episodes) {
       if (flag(episode && episode.is_adv) === true) continue;
       const chapterID = text(episode && episode.id);
-      const number = integer(episode && episode.sort, 100000);
+      const number = source.int(episode && episode.sort, 100000);
       if (!/^\d+$/.test(chapterID) || number == null || number < 1 ||
           seenIDs.has(chapterID) || seenNumbers.has(number)) {
         throw new Error('野果分集编号无效或重复，请刷新详情');
@@ -168,7 +169,7 @@ globalThis.source = hgkit.defineSource({
     if (flag(row.is_adv) === true) {
       throw new Error('野果未返回该集正片，请重试');
     }
-    const number = integer(row.episode_sort, 100000);
+    const number = source.int(row.episode_sort, 100000);
     if (number == null || number < 1) {
       throw new Error('野果播放分集编号无效');
     }
@@ -454,7 +455,7 @@ function dramaFromMap(row) {
   if (!/^\d+$/.test(id) || !title) return null;
   let episodes = 0;
   for (const key of ['episode_count', 'episodes', 'total_serial']) {
-    const count = integer(row[key], 100000);
+    const count = source.int(row[key], 100000);
     if (count != null) episodes = Math.max(episodes, count);
   }
   let status = '';
@@ -490,8 +491,8 @@ function releaseDate(value) {
 function mediaQuality(resolution) {
   const parts = String(resolution || '').toLowerCase().split('x');
   if (parts.length !== 2) return 0;
-  const width = integer(parts[0], 16384);
-  const height = integer(parts[1], 16384);
+  const width = source.int(parts[0], 16384);
+  const height = source.int(parts[1], 16384);
   if (width == null || height == null || width < 1 || height < 1) return 0;
   return Math.min(width, height);
 }
@@ -553,11 +554,6 @@ function normalizePath(address) {
 
 const text = (value) => source.text(value);
 
-function integer(value, maximum) {
-  const number = Number(text(value));
-  if (!Number.isInteger(number) || number < 0 || number > maximum) return null;
-  return number;
-}
 
 function firstPresent(data, keys) {
   for (const key of keys) {

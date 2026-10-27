@@ -31,6 +31,11 @@ func (engine *nativeEngine) installExtension(ctx context.Context, input nativeIn
 		if err != nil || parsed.Host == "" || !strings.HasSuffix(strings.ToLower(parsed.Path), ".js") {
 			return nil, errors.New("扩展脚本地址无效")
 		}
+		if !engine.downloader.allowLocalExtensionHost {
+			if err := validateExtensionAddress(parsed); err != nil {
+				return nil, err
+			}
+		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 		if err != nil {
 			return nil, err
